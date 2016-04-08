@@ -54,8 +54,9 @@ for.body:                                         ; preds = %entry, %for.body
   %indvars.iv = phi i64 [ %indvars.iv.next, %for.body ], [ 0, %entry ]
   %arrayidx = getelementptr inbounds i32, i32* %A, i64 %indvars.iv, !dbg !16
   %0 = trunc i64 %indvars.iv to i32, !dbg !16
+  %ld = load i32, i32* %arrayidx, align 4
   store i32 %0, i32* %arrayidx, align 4, !dbg !16, !tbaa !18
-  %cmp3 = icmp sle i32 %0, %Length, !dbg !22
+  %cmp3 = icmp sle i32 %ld, %Length, !dbg !22
   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1, !dbg !12
   %1 = trunc i64 %indvars.iv.next to i32
   %cmp = icmp slt i32 %1, %Length, !dbg !12
@@ -122,7 +123,7 @@ attributes #0 = { nounwind }
 !llvm.module.flags = !{!9, !10}
 !llvm.ident = !{!11}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, producer: "clang version 3.5.0", isOptimized: true, runtimeVersion: 6, emissionKind: 2, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, producer: "clang version 3.5.0", isOptimized: true, runtimeVersion: 6, emissionKind: LineTablesOnly, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
 !1 = !DIFile(filename: "source.cpp", directory: ".")
 !2 = !{}
 !3 = !{!4, !7, !8}

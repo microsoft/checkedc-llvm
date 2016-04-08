@@ -7,7 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the machine instruction level if-conversion pass.
+// This file implements the machine instruction level if-conversion pass, which
+// tries to convert conditional branches into predicated instructions.
 //
 //===----------------------------------------------------------------------===//
 
@@ -187,6 +188,11 @@ namespace {
     }
 
     bool runOnMachineFunction(MachineFunction &MF) override;
+
+    MachineFunctionProperties getRequiredProperties() const override {
+      return MachineFunctionProperties().set(
+          MachineFunctionProperties::Property::AllVRegsAllocated);
+    }
 
   private:
     bool ReverseBranchCondition(BBInfo &BBI);

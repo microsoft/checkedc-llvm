@@ -52,6 +52,10 @@ Non-comprehensive list of changes in this release
 * The C API function LLVMGetDataLayout is deprecated
   in favor of LLVMGetDataLayoutStr.
 
+* ``TargetFrameLowering::eliminateCallFramePseudoInstr`` now returns an
+  iterator to the next instruction instead of ``void``. Targets that previously
+  did ``MBB.erase(I); return;`` now probably want ``return MBB.erase(I);``.
+
 .. NOTE
    For small 1-3 sentence descriptions, just add an entry at the end of
    this list. If your description won't fit comfortably in one bullet
@@ -71,6 +75,13 @@ Non-comprehensive list of changes in this release
 
    Makes programs 10x faster by doing Special New Thing.
 
+Changes to the LLVM IR
+----------------------
+
+* New intrinsics ``llvm.masked.load``, ``llvm.masked.store``,
+  ``llvm.masked.gather`` and ``llvm.masked.scatter`` were introduced to the
+  LLVM IR to allow selective memory access for vector data types.
+
 Changes to the ARM Backend
 --------------------------
 
@@ -86,13 +97,19 @@ Changes to the MIPS Target
 Changes to the PowerPC Target
 -----------------------------
 
- During this release ...
+ Moved some optimizations from O3 to O2 (D18562)
 
 
 Changes to the X86 Target
------------------------------
+-------------------------
 
- During this release ...
+* LLVM now supports the Intel CPU codenamed Skylake Server with AVX-512
+  extensions using ``-march=skylake-avx512``. The switch enables the
+  ISA extensions AVX-512{F, CD, VL, BW, DQ}.
+
+* LLVM now supports the Intel CPU codenamed Knights Landing with AVX-512
+  extensions using ``-march=knl``. The switch enables the ISA extensions
+  AVX-512{F, CD, ER, PF}.
 
 Changes to the AMDGPU Target
 -----------------------------

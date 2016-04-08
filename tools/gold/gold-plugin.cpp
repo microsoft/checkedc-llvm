@@ -31,7 +31,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Linker/IRMover.h"
 #include "llvm/MC/SubtargetFeature.h"
-#include "llvm/Object/FunctionIndexObjectFile.h"
+#include "llvm/Object/ModuleSummaryIndexObjectFile.h"
 #include "llvm/Object/IRObjectFile.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -362,7 +362,7 @@ ld_plugin_status onload(ld_plugin_tv *tv) {
     return LDPS_ERR;
   }
   if (!release_input_file) {
-    message(LDPL_ERROR, "relesase_input_file not passed to LLVMgold.");
+    message(LDPL_ERROR, "release_input_file not passed to LLVMgold.");
     return LDPS_ERR;
   }
 
@@ -624,8 +624,8 @@ static const void *getSymbolsAndView(claimed_file &F) {
   return View;
 }
 
-static std::unique_ptr<FunctionInfoIndex>
-getFunctionIndexForFile(claimed_file &F, ld_plugin_input_file &Info) {
+static std::unique_ptr<ModuleSummaryIndex>
+getModuleSummaryIndexForFile(claimed_file &F, ld_plugin_input_file &Info) {
   const void *View = getSymbolsAndView(F);
   if (!View)
     return nullptr;
@@ -635,18 +635,20 @@ getFunctionIndexForFile(claimed_file &F, ld_plugin_input_file &Info) {
 
   // Don't bother trying to build an index if there is no summary information
   // in this bitcode file.
-  if (!object::FunctionIndexObjectFile::hasFunctionSummaryInMemBuffer(
+  if (!object::ModuleSummaryIndexObjectFile::hasGlobalValueSummaryInMemBuffer(
           BufferRef, diagnosticHandler))
-    return std::unique_ptr<FunctionInfoIndex>(nullptr);
+    return std::unique_ptr<ModuleSummaryIndex>(nullptr);
 
-  ErrorOr<std::unique_ptr<object::FunctionIndexObjectFile>> ObjOrErr =
-      object::FunctionIndexObjectFile::create(BufferRef, diagnosticHandler);
+  ErrorOr<std::unique_ptr<object::ModuleSummaryIndexObjectFile>> ObjOrErr =
+      object::ModuleSummaryIndexObjectFile::create(BufferRef,
+                                                   diagnosticHandler);
 
   if (std::error_code EC = ObjOrErr.getError())
-    message(LDPL_FATAL, "Could not read function index bitcode from file : %s",
+    message(LDPL_FATAL,
+            "Could not read module summary index bitcode from file : %s",
             EC.message().c_str());
 
-  object::FunctionIndexObjectFile &Obj = **ObjOrErr;
+  object::ModuleSummaryIndexObjectFile &Obj = **ObjOrErr;
 
   return Obj.takeIndex();
 }
@@ -844,8 +846,8 @@ class CodeGen {
   /// The task ID when this was invoked in a thread (ThinLTO).
   int TaskID;
 
-  /// The function index for ThinLTO tasks.
-  const FunctionInfoIndex *CombinedIndex;
+  /// The module summary index for ThinLTO tasks.
+  const ModuleSummaryIndex *CombinedIndex;
 
   /// The target machine for generating code for this module.
   std::unique_ptr<TargetMachine> TM;
@@ -862,11 +864,11 @@ public:
   }
   /// Constructor used by ThinLTO.
   CodeGen(std::unique_ptr<llvm::Module> M, raw_fd_ostream *OS, int TaskID,
-          const FunctionInfoIndex *CombinedIndex, std::string Filename)
+          const ModuleSummaryIndex *CombinedIndex, std::string Filename)
       : M(std::move(M)), OS(OS), TaskID(TaskID), CombinedIndex(CombinedIndex),
         SaveTempsFilename(Filename) {
     assert(options::thinlto == !!CombinedIndex &&
-           "Expected function index iff performing ThinLTO");
+           "Expected module summary index iff performing ThinLTO");
     initTargetMachine();
   }
 
@@ -886,7 +888,9 @@ private:
 
   /// Sets up output files necessary to perform optional multi-threaded
   /// split code generation, and invokes the code generation implementation.
-  void runSplitCodeGen();
+  /// If BCFileName is not empty, saves bitcode for module partitions into
+  /// {BCFileName}0 .. {BCFileName}N.
+  void runSplitCodeGen(const SmallString<128> &BCFilename);
 };
 }
 
@@ -899,22 +903,17 @@ static SubtargetFeatures getFeatures(Triple &TheTriple) {
 }
 
 static CodeGenOpt::Level getCGOptLevel() {
-  CodeGenOpt::Level CGOptLevel;
   switch (options::OptLevel) {
   case 0:
-    CGOptLevel = CodeGenOpt::None;
-    break;
+    return CodeGenOpt::None;
   case 1:
-    CGOptLevel = CodeGenOpt::Less;
-    break;
+    return CodeGenOpt::Less;
   case 2:
-    CGOptLevel = CodeGenOpt::Default;
-    break;
+    return CodeGenOpt::Default;
   case 3:
-    CGOptLevel = CodeGenOpt::Aggressive;
-    break;
+    return CodeGenOpt::Aggressive;
   }
-  return CGOptLevel;
+  llvm_unreachable("Invalid optimization level");
 }
 
 void CodeGen::initTargetMachine() {
@@ -951,7 +950,7 @@ void CodeGen::runLTOPasses() {
   PMB.LoopVectorize = true;
   PMB.SLPVectorize = true;
   PMB.OptLevel = options::OptLevel;
-  PMB.FunctionIndex = CombinedIndex;
+  PMB.ModuleSummary = CombinedIndex;
   PMB.populateLTOPassManager(passes);
   passes.run(*M);
 }
@@ -990,7 +989,7 @@ void CodeGen::runCodegenPasses() {
   CodeGenPasses.run(*M);
 }
 
-void CodeGen::runSplitCodeGen() {
+void CodeGen::runSplitCodeGen(const SmallString<128> &BCFilename) {
   const std::string &TripleStr = M->getTargetTriple();
   Triple TheTriple(TripleStr);
 
@@ -1013,6 +1012,7 @@ void CodeGen::runSplitCodeGen() {
   unsigned int MaxThreads = options::Parallelism ? options::Parallelism : 1;
 
   std::vector<SmallString<128>> Filenames(MaxThreads);
+  std::vector<SmallString<128>> BCFilenames(MaxThreads);
   bool TempOutFile = Filename.empty();
   {
     // Open a file descriptor for each backend task. This is done in a block
@@ -1027,8 +1027,18 @@ void CodeGen::runSplitCodeGen() {
       OSPtrs[I] = &OSs.back();
     }
 
+    std::list<llvm::raw_fd_ostream> BCOSs;
+    std::vector<llvm::raw_pwrite_stream *> BCOSPtrs;
+    if (!BCFilename.empty() && MaxThreads > 1) {
+      for (unsigned I = 0; I != MaxThreads; ++I) {
+        int FD = openOutputFile(BCFilename, false, BCFilenames[I], I);
+        BCOSs.emplace_back(FD, true);
+        BCOSPtrs.push_back(&BCOSs.back());
+      }
+    }
+
     // Run backend tasks.
-    splitCodeGen(std::move(M), OSPtrs, options::mcpu, Features.getString(),
+    splitCodeGen(std::move(M), OSPtrs, BCOSPtrs, options::mcpu, Features.getString(),
                  Options, RelocationModel, CodeModel::Default, CGOptLevel);
   }
 
@@ -1039,14 +1049,16 @@ void CodeGen::runSplitCodeGen() {
 void CodeGen::runAll() {
   runLTOPasses();
 
+  SmallString<128> OptFilename;
   if (options::TheOutputType == options::OT_SAVE_TEMPS) {
-    std::string OptFilename = output_name;
+    OptFilename = output_name;
     // If the CodeGen client provided a filename, use it. Always expect
     // a provided filename if we are in a task (i.e. ThinLTO backend).
     assert(!SaveTempsFilename.empty() || TaskID == -1);
     if (!SaveTempsFilename.empty())
       OptFilename = SaveTempsFilename;
-    saveBCFile(OptFilename + ".opt.bc", *M);
+    OptFilename += ".opt.bc";
+    saveBCFile(OptFilename, *M);
   }
 
   // If we are already in a thread (i.e. ThinLTO), just perform
@@ -1055,7 +1067,7 @@ void CodeGen::runAll() {
     runCodegenPasses();
   // Otherwise attempt split code gen.
   else
-    runSplitCodeGen();
+    runSplitCodeGen(OptFilename);
 }
 
 /// Links the module in \p View from file \p F into the combined module
@@ -1094,7 +1106,7 @@ static bool linkInModule(LLVMContext &Context, IRMover &L, claimed_file &F,
 static void thinLTOBackendTask(claimed_file &F, const void *View,
                                ld_plugin_input_file &File,
                                raw_fd_ostream *ApiFile,
-                               const FunctionInfoIndex &CombinedIndex,
+                               const ModuleSummaryIndex &CombinedIndex,
                                raw_fd_ostream *OS, unsigned TaskID) {
   // Need to use a separate context for each task
   LLVMContext Context;
@@ -1115,7 +1127,7 @@ static void thinLTOBackendTask(claimed_file &F, const void *View,
 
 /// Launch each module's backend pipeline in a separate task in a thread pool.
 static void thinLTOBackends(raw_fd_ostream *ApiFile,
-                            const FunctionInfoIndex &CombinedIndex) {
+                            const ModuleSummaryIndex &CombinedIndex) {
   unsigned TaskCount = 0;
   std::vector<ThinLTOTaskInfo> Tasks;
   Tasks.reserve(Modules.size());
@@ -1184,18 +1196,18 @@ static ld_plugin_status allSymbolsReadHook(raw_fd_ostream *ApiFile) {
     cl::ParseCommandLineOptions(NumOpts, &options::extra[0]);
 
   // If we are doing ThinLTO compilation, simply build the combined
-  // function index/summary and emit it. We don't need to parse the modules
+  // module index/summary and emit it. We don't need to parse the modules
   // and link them in this case.
   if (options::thinlto) {
-    FunctionInfoIndex CombinedIndex;
+    ModuleSummaryIndex CombinedIndex;
     uint64_t NextModuleId = 0;
     for (claimed_file &F : Modules) {
       PluginInputFile InputFile(F.handle);
 
-      std::unique_ptr<FunctionInfoIndex> Index =
-          getFunctionIndexForFile(F, InputFile.file());
+      std::unique_ptr<ModuleSummaryIndex> Index =
+          getModuleSummaryIndexForFile(F, InputFile.file());
 
-      // Skip files without a function summary.
+      // Skip files without a module summary.
       if (Index)
         CombinedIndex.mergeFrom(std::move(Index), ++NextModuleId);
     }
@@ -1206,7 +1218,7 @@ static ld_plugin_status allSymbolsReadHook(raw_fd_ostream *ApiFile) {
     if (EC)
       message(LDPL_FATAL, "Unable to open %s.thinlto.bc for writing: %s",
               output_name.data(), EC.message().c_str());
-    WriteFunctionSummaryToFile(CombinedIndex, OS);
+    WriteIndexToFile(CombinedIndex, OS);
     OS.close();
 
     if (options::thinlto_index_only) {
@@ -1292,10 +1304,14 @@ static ld_plugin_status all_symbols_read_hook(void) {
 
   if (options::TheOutputType == options::OT_BC_ONLY ||
       options::TheOutputType == options::OT_DISABLE) {
-    if (options::TheOutputType == options::OT_DISABLE)
+    if (options::TheOutputType == options::OT_DISABLE) {
       // Remove the output file here since ld.bfd creates the output file
       // early.
-      sys::fs::remove(output_name);
+      std::error_code EC = sys::fs::remove(output_name);
+      if (EC)
+        message(LDPL_ERROR, "Failed to delete '%s': %s", output_name.c_str(),
+                EC.message().c_str());
+    }
     exit(0);
   }
 

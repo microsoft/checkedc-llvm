@@ -257,6 +257,16 @@ SITargetLowering::SITargetLowering(TargetMachine &TM,
   setOperationAction(ISD::FDIV, MVT::f32, Custom);
   setOperationAction(ISD::FDIV, MVT::f64, Custom);
 
+  // BUFFER/FLAT_ATOMIC_CMP_SWAP on GCN GPUs needs input marshalling,
+  // and output demarshalling
+  setOperationAction(ISD::ATOMIC_CMP_SWAP, MVT::i32, Custom);
+  setOperationAction(ISD::ATOMIC_CMP_SWAP, MVT::i64, Custom);
+
+  // We can't return success/failure, only the old value,
+  // let LLVM add the comparison
+  setOperationAction(ISD::ATOMIC_CMP_SWAP_WITH_SUCCESS, MVT::i32, Expand);
+  setOperationAction(ISD::ATOMIC_CMP_SWAP_WITH_SUCCESS, MVT::i64, Expand);
+
   setTargetDAGCombine(ISD::FADD);
   setTargetDAGCombine(ISD::FSUB);
   setTargetDAGCombine(ISD::FMINNUM);
@@ -596,15 +606,13 @@ SDValue SITargetLowering::LowerFormalArguments(
   SIMachineFunctionInfo *Info = MF.getInfo<SIMachineFunctionInfo>();
   const AMDGPUSubtarget &ST = MF.getSubtarget<AMDGPUSubtarget>();
 
-  if (Subtarget->isAmdHsaOS() && Info->getShaderType() != ShaderType::COMPUTE) {
+  if (Subtarget->isAmdHsaOS() && AMDGPU::isShader(CallConv)) {
     const Function *Fn = MF.getFunction();
     DiagnosticInfoUnsupported NoGraphicsHSA(
         *Fn, "unsupported non-compute shaders with HSA", DL.getDebugLoc());
     DAG.getContext()->diagnose(NoGraphicsHSA);
     return SDValue();
   }
-
-  // FIXME: We currently assume all calling conventions are kernels.
 
   SmallVector<ISD::InputArg, 16> Splits;
   BitVector Skipped(Ins.size());
@@ -613,7 +621,7 @@ SDValue SITargetLowering::LowerFormalArguments(
     const ISD::InputArg &Arg = Ins[i];
 
     // First check if it's a PS input addr
-    if (Info->getShaderType() == ShaderType::PIXEL && !Arg.Flags.isInReg() &&
+    if (CallConv == CallingConv::AMDGPU_PS && !Arg.Flags.isInReg() &&
         !Arg.Flags.isByVal() && PSInputNum <= 15) {
 
       if (!Arg.Used && !Info->isPSInputAllocated(PSInputNum)) {
@@ -631,7 +639,8 @@ SDValue SITargetLowering::LowerFormalArguments(
     }
 
     // Second split vertices into their elements
-    if (Info->getShaderType() != ShaderType::COMPUTE && Arg.VT.isVector()) {
+    if (AMDGPU::isShader(CallConv) &&
+        Arg.VT.isVector()) {
       ISD::InputArg NewArg = Arg;
       NewArg.Flags.setSplit();
       NewArg.VT = Arg.VT.getVectorElementType();
@@ -647,7 +656,7 @@ SDValue SITargetLowering::LowerFormalArguments(
         NewArg.PartOffset += NewArg.VT.getStoreSize();
       }
 
-    } else if (Info->getShaderType() != ShaderType::COMPUTE) {
+    } else if (AMDGPU::isShader(CallConv)) {
       Splits.push_back(Arg);
     }
   }
@@ -668,7 +677,7 @@ SDValue SITargetLowering::LowerFormalArguments(
   // - At least one of PERSP_* (0xF) or LINEAR_* (0x70) must be enabled.
   // - If POS_W_FLOAT (11) is enabled, at least one of PERSP_* must be
   //   enabled too.
-  if (Info->getShaderType() == ShaderType::PIXEL &&
+  if (CallConv == CallingConv::AMDGPU_PS &&
       ((Info->getPSInputAddr() & 0x7F) == 0 ||
        ((Info->getPSInputAddr() & 0xF) == 0 &&
 	Info->isPSInputAllocated(11)))) {
@@ -678,7 +687,7 @@ SDValue SITargetLowering::LowerFormalArguments(
     Info->PSInputEna |= 1;
   }
 
-  if (Info->getShaderType() == ShaderType::COMPUTE) {
+  if (!AMDGPU::isShader(CallConv)) {
     getOriginalFunctionArgs(DAG, DAG.getMachineFunction().getFunction(), Ins,
                             Splits);
   }
@@ -922,7 +931,7 @@ SDValue SITargetLowering::LowerReturn(SDValue Chain,
   MachineFunction &MF = DAG.getMachineFunction();
   SIMachineFunctionInfo *Info = MF.getInfo<SIMachineFunctionInfo>();
 
-  if (Info->getShaderType() == ShaderType::COMPUTE)
+  if (!AMDGPU::isShader(CallConv))
     return AMDGPUTargetLowering::LowerReturn(Chain, CallConv, isVarArg, Outs,
                                              OutVals, DL, DAG);
 
@@ -1054,10 +1063,22 @@ MachineBasicBlock * SITargetLowering::EmitInstrWithCustomInserter(
     MachineInstr * MI, MachineBasicBlock * BB) const {
 
   switch (MI->getOpcode()) {
-  default:
-    return AMDGPUTargetLowering::EmitInstrWithCustomInserter(MI, BB);
   case AMDGPU::BRANCH:
     return BB;
+  case AMDGPU::GET_GROUPSTATICSIZE: {
+    const SIInstrInfo *TII =
+      static_cast<const SIInstrInfo *>(Subtarget->getInstrInfo());
+    MachineFunction *MF = BB->getParent();
+    SIMachineFunctionInfo *MFI = MF->getInfo<SIMachineFunctionInfo>();
+    DebugLoc DL = MI->getDebugLoc();
+    BuildMI (*BB, MI, DL, TII->get(AMDGPU::S_MOVK_I32))
+      .addOperand(MI->getOperand(0))
+      .addImm(MFI->LDSSize);
+    MI->eraseFromParent();
+    return BB;
+  }
+  default:
+    return AMDGPUTargetLowering::EmitInstrWithCustomInserter(MI, BB);
   }
   return BB;
 }
@@ -1144,6 +1165,7 @@ SDValue SITargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
     return LowerTrig(Op, DAG);
   case ISD::SELECT: return LowerSELECT(Op, DAG);
   case ISD::FDIV: return LowerFDIV(Op, DAG);
+  case ISD::ATOMIC_CMP_SWAP: return LowerATOMIC_CMP_SWAP(Op, DAG);
   case ISD::STORE: return LowerSTORE(Op, DAG);
   case ISD::GlobalAddress: {
     MachineFunction &MF = DAG.getMachineFunction();
@@ -1989,6 +2011,34 @@ SDValue SITargetLowering::LowerTrig(SDValue Op, SelectionDAG &DAG) const {
   default:
     llvm_unreachable("Wrong trig opcode");
   }
+}
+
+SDValue SITargetLowering::LowerATOMIC_CMP_SWAP(SDValue Op, SelectionDAG &DAG) const {
+  AtomicSDNode *AtomicNode = cast<AtomicSDNode>(Op);
+  assert(AtomicNode->isCompareAndSwap());
+  unsigned AS = AtomicNode->getAddressSpace();
+
+  // No custom lowering required for local address space
+  if (!isFlatGlobalAddrSpace(AS))
+    return Op;
+
+  // Non-local address space requires custom lowering for atomic compare
+  // and swap; cmp and swap should be in a v2i32 or v2i64 in case of _X2
+  SDLoc DL(Op);
+  SDValue ChainIn = Op.getOperand(0);
+  SDValue Addr = Op.getOperand(1);
+  SDValue Old = Op.getOperand(2);
+  SDValue New = Op.getOperand(3);
+  EVT VT = Op.getValueType();
+  MVT SimpleVT = VT.getSimpleVT();
+  MVT VecType = MVT::getVectorVT(SimpleVT, 2);
+
+  SDValue NewOld = DAG.getNode(ISD::BUILD_VECTOR, DL, VecType,
+                               New, Old);
+  SDValue Ops[] = { ChainIn, Addr, NewOld };
+  SDVTList VTList = DAG.getVTList(VT, MVT::Other);
+  return DAG.getMemIntrinsicNode(AMDGPUISD::ATOMIC_CMP_SWAP, DL,
+                                 VTList, Ops, VT, AtomicNode->getMemOperand());
 }
 
 //===----------------------------------------------------------------------===//
@@ -2837,8 +2887,31 @@ void SITargetLowering::AdjustInstrPostInstrSelection(MachineInstr *MI,
     if (!Node->hasAnyUseOfValue(0)) {
       MI->setDesc(TII->get(NoRetAtomicOp));
       MI->RemoveOperand(0);
+      return;
     }
 
+    // For mubuf_atomic_cmpswap, we need to have tablegen use an extract_subreg
+    // instruction, because the return type of these instructions is a vec2 of
+    // the memory type, so it can be tied to the input operand.
+    // This means these instructions always have a use, so we need to add a
+    // special case to check if the atomic has only one extract_subreg use,
+    // which itself has no uses.
+    if ((Node->hasNUsesOfValue(1, 0) &&
+         Node->use_begin()->getMachineOpcode() == AMDGPU::EXTRACT_SUBREG &&
+         !Node->use_begin()->hasAnyUseOfValue(0))) {
+      unsigned Def = MI->getOperand(0).getReg();
+
+      // Change this into a noret atomic.
+      MI->setDesc(TII->get(NoRetAtomicOp));
+      MI->RemoveOperand(0);
+
+      // If we only remove the def operand from the atomic instruction, the
+      // extract_subreg will be left with a use of a vreg without a def.
+      // So we need to insert an implicit_def to avoid machine verifier
+      // errors.
+      BuildMI(*MI->getParent(), MI, MI->getDebugLoc(),
+              TII->get(AMDGPU::IMPLICIT_DEF), Def);
+    }
     return;
   }
 }

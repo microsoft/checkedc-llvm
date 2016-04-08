@@ -24,7 +24,7 @@
 ; OBJ:    InlineSite {
 ; OBJ:      PtrParent: 0x0
 ; OBJ:      PtrEnd: 0x0
-; OBJ:      Inlinee: file_change (0x1003)
+; OBJ:      Inlinee: file_change (0x1002)
 ; OBJ:      BinaryAnnotations [
 ; OBJ:        ChangeCodeOffsetAndLineOffset: {CodeOffset: 0x6, LineOffset: 1}
 ; OBJ:        ChangeFile: D:\src\llvm\build\t.inc (0x8)
@@ -76,7 +76,7 @@ attributes #0 = { norecurse nounwind uwtable "disable-tail-calls"="false" "less-
 !llvm.module.flags = !{!12, !13, !14}
 !llvm.ident = !{!15}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.9.0 ", isOptimized: true, runtimeVersion: 0, emissionKind: 1, enums: !2, subprograms: !3, globals: !8)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.9.0 ", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, subprograms: !3, globals: !8)
 !1 = !DIFile(filename: "t.cpp", directory: "D:\5Csrc\5Cllvm\5Cbuild")
 !2 = !{}
 !3 = !{!4, !7}

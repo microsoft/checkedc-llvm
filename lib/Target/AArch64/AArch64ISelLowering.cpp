@@ -1216,8 +1216,14 @@ static SDValue emitComparison(SDValue LHS, SDValue RHS, ISD::CondCode CC,
                               SDLoc dl, SelectionDAG &DAG) {
   EVT VT = LHS.getValueType();
 
-  if (VT.isFloatingPoint())
+  if (VT.isFloatingPoint()) {
+    assert(VT != MVT::f128);
+    if (VT == MVT::f16) {
+      LHS = DAG.getNode(ISD::FP_EXTEND, dl, MVT::f32, LHS);
+      RHS = DAG.getNode(ISD::FP_EXTEND, dl, MVT::f32, RHS);
+    }
     return DAG.getNode(AArch64ISD::FCMP, dl, VT, LHS, RHS);
+  }
 
   // The CMP instruction is just an alias for SUBS, and representing it as
   // SUBS means that it's possible to get CSE with subtract operations.
@@ -1301,9 +1307,14 @@ static SDValue emitConditionalComparison(SDValue LHS, SDValue RHS,
                                          AArch64CC::CondCode OutCC,
                                          SDLoc DL, SelectionDAG &DAG) {
   unsigned Opcode = 0;
-  if (LHS.getValueType().isFloatingPoint())
+  if (LHS.getValueType().isFloatingPoint()) {
+    assert(LHS.getValueType() != MVT::f128);
+    if (LHS.getValueType() == MVT::f16) {
+      LHS = DAG.getNode(ISD::FP_EXTEND, DL, MVT::f32, LHS);
+      RHS = DAG.getNode(ISD::FP_EXTEND, DL, MVT::f32, RHS);
+    }
     Opcode = AArch64ISD::FCCMP;
-  else if (RHS.getOpcode() == ISD::SUB) {
+  } else if (RHS.getOpcode() == ISD::SUB) {
     SDValue SubOp0 = RHS.getOperand(0);
     if (isNullConstant(SubOp0) && (CC == ISD::SETEQ || CC == ISD::SETNE)) {
       // See emitComparison() on why we can only do this for SETEQ and SETNE.
@@ -1333,6 +1344,8 @@ static bool isConjunctionDisjunctionTree(const SDValue Val, bool &CanNegate,
     return false;
   unsigned Opcode = Val->getOpcode();
   if (Opcode == ISD::SETCC) {
+    if (Val->getOperand(0).getValueType() == MVT::f128)
+      return false;
     CanNegate = true;
     return true;
   }
@@ -2456,6 +2469,7 @@ CCAssignFn *AArch64TargetLowering::CCAssignFnForCall(CallingConv::ID CC,
   case CallingConv::C:
   case CallingConv::Fast:
   case CallingConv::PreserveMost:
+  case CallingConv::CXX_FAST_TLS:
     if (!Subtarget->isTargetDarwin())
       return CC_AArch64_AAPCS;
     return IsVarArg ? CC_AArch64_DarwinPCS_VarArg : CC_AArch64_DarwinPCS;
@@ -2788,7 +2802,6 @@ SDValue AArch64TargetLowering::LowerCallResult(
 
 bool AArch64TargetLowering::isEligibleForTailCallOptimization(
     SDValue Callee, CallingConv::ID CalleeCC, bool isVarArg,
-    bool isCalleeStructRet, bool isCallerStructRet,
     const SmallVectorImpl<ISD::OutputArg> &Outs,
     const SmallVectorImpl<SDValue> &OutVals,
     const SmallVectorImpl<ISD::InputArg> &Ins, SelectionDAG &DAG) const {
@@ -2798,7 +2811,7 @@ bool AArch64TargetLowering::isEligibleForTailCallOptimization(
   if (!IsTailCallConvention(CalleeCC) && CalleeCC != CallingConv::C)
     return false;
 
-  const MachineFunction &MF = DAG.getMachineFunction();
+  MachineFunction &MF = DAG.getMachineFunction();
   const Function *CallerF = MF.getFunction();
   CallingConv::ID CallerCC = CallerF->getCallingConv();
   bool CCMatch = CallerCC == CalleeCC;
@@ -2840,6 +2853,7 @@ bool AArch64TargetLowering::isEligibleForTailCallOptimization(
   assert((!isVarArg || CalleeCC == CallingConv::C) &&
          "Unexpected variadic calling convention");
 
+  LLVMContext &C = *DAG.getContext();
   if (isVarArg && !Outs.empty()) {
     // At least two cases here: if caller is fastcc then we can't have any
     // memory arguments (we'd be expected to clean up the stack afterwards). If
@@ -2848,8 +2862,7 @@ bool AArch64TargetLowering::isEligibleForTailCallOptimization(
     // FIXME: for now we take the most conservative of these in both cases:
     // disallow all variadic memory operands.
     SmallVector<CCValAssign, 16> ArgLocs;
-    CCState CCInfo(CalleeCC, isVarArg, DAG.getMachineFunction(), ArgLocs,
-                   *DAG.getContext());
+    CCState CCInfo(CalleeCC, isVarArg, MF, ArgLocs, C);
 
     CCInfo.AnalyzeCallOperands(Outs, CCAssignFnForCall(CalleeCC, true));
     for (const CCValAssign &ArgLoc : ArgLocs)
@@ -2857,34 +2870,17 @@ bool AArch64TargetLowering::isEligibleForTailCallOptimization(
         return false;
   }
 
-  // If the calling conventions do not match, then we'd better make sure the
-  // results are returned in the same way as what the caller expects.
+  // Check that the call results are passed in the same way.
+  if (!CCState::resultsCompatible(CalleeCC, CallerCC, MF, C, Ins,
+                                  CCAssignFnForCall(CalleeCC, isVarArg),
+                                  CCAssignFnForCall(CallerCC, isVarArg)))
+    return false;
+  // The callee has to preserve all registers the caller needs to preserve.
   if (!CCMatch) {
-    SmallVector<CCValAssign, 16> RVLocs1;
-    CCState CCInfo1(CalleeCC, false, DAG.getMachineFunction(), RVLocs1,
-                    *DAG.getContext());
-    CCInfo1.AnalyzeCallResult(Ins, CCAssignFnForCall(CalleeCC, isVarArg));
-
-    SmallVector<CCValAssign, 16> RVLocs2;
-    CCState CCInfo2(CallerCC, false, DAG.getMachineFunction(), RVLocs2,
-                    *DAG.getContext());
-    CCInfo2.AnalyzeCallResult(Ins, CCAssignFnForCall(CallerCC, isVarArg));
-
-    if (RVLocs1.size() != RVLocs2.size())
+    const AArch64RegisterInfo *TRI = Subtarget->getRegisterInfo();
+    if (!TRI->regmaskSubsetEqual(TRI->getCallPreservedMask(MF, CallerCC),
+                                 TRI->getCallPreservedMask(MF, CalleeCC)))
       return false;
-    for (unsigned i = 0, e = RVLocs1.size(); i != e; ++i) {
-      if (RVLocs1[i].isRegLoc() != RVLocs2[i].isRegLoc())
-        return false;
-      if (RVLocs1[i].getLocInfo() != RVLocs2[i].getLocInfo())
-        return false;
-      if (RVLocs1[i].isRegLoc()) {
-        if (RVLocs1[i].getLocReg() != RVLocs2[i].getLocReg())
-          return false;
-      } else {
-        if (RVLocs1[i].getLocMemOffset() != RVLocs2[i].getLocMemOffset())
-          return false;
-      }
-    }
   }
 
   // Nothing more to check if the callee is taking no arguments
@@ -2892,8 +2888,7 @@ bool AArch64TargetLowering::isEligibleForTailCallOptimization(
     return true;
 
   SmallVector<CCValAssign, 16> ArgLocs;
-  CCState CCInfo(CalleeCC, isVarArg, DAG.getMachineFunction(), ArgLocs,
-                 *DAG.getContext());
+  CCState CCInfo(CalleeCC, isVarArg, MF, ArgLocs, C);
 
   CCInfo.AnalyzeCallOperands(Outs, CCAssignFnForCall(CalleeCC, isVarArg));
 
@@ -2964,7 +2959,6 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
   bool IsVarArg = CLI.IsVarArg;
 
   MachineFunction &MF = DAG.getMachineFunction();
-  bool IsStructRet = (Outs.empty()) ? false : Outs[0].Flags.isSRet();
   bool IsThisReturn = false;
 
   AArch64FunctionInfo *FuncInfo = MF.getInfo<AArch64FunctionInfo>();
@@ -2974,8 +2968,7 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
   if (IsTailCall) {
     // Check if it's really possible to do a tail call.
     IsTailCall = isEligibleForTailCallOptimization(
-        Callee, CallConv, IsVarArg, IsStructRet,
-        MF.getFunction()->hasStructRetAttr(), Outs, OutVals, Ins, DAG);
+        Callee, CallConv, IsVarArg, Outs, OutVals, Ins, DAG);
     if (!IsTailCall && CLI.CS && CLI.CS->isMustTailCall())
       report_fatal_error("failed to perform tail call elimination on a call "
                          "site marked musttail");
@@ -4960,7 +4953,7 @@ SDValue AArch64TargetLowering::ReconstructShuffle(SDValue Op,
   SmallVector<ShuffleSourceInfo, 2> Sources;
   for (unsigned i = 0; i < NumElts; ++i) {
     SDValue V = Op.getOperand(i);
-    if (V.getOpcode() == ISD::UNDEF)
+    if (V.isUndef())
       continue;
     else if (V.getOpcode() != ISD::EXTRACT_VECTOR_ELT ||
              !isa<ConstantSDNode>(V.getOperand(1))) {
@@ -5084,7 +5077,7 @@ SDValue AArch64TargetLowering::ReconstructShuffle(SDValue Op,
   int BitsPerShuffleLane = ShuffleVT.getVectorElementType().getSizeInBits();
   for (unsigned i = 0; i < VT.getVectorNumElements(); ++i) {
     SDValue Entry = Op.getOperand(i);
-    if (Entry.getOpcode() == ISD::UNDEF)
+    if (Entry.isUndef())
       continue;
 
     auto Src = std::find(Sources.begin(), Sources.end(), Entry.getOperand(0));
@@ -5532,7 +5525,7 @@ static SDValue GenerateTBL(SDValue Op, ArrayRef<int> ShuffleMask,
   SDValue V2Cst = DAG.getNode(ISD::BITCAST, DL, IndexVT, V2);
 
   SDValue Shuffle;
-  if (V2.getNode()->getOpcode() == ISD::UNDEF) {
+  if (V2.getNode()->isUndef()) {
     if (IndexLen == 8)
       V1Cst = DAG.getNode(ISD::CONCAT_VECTORS, DL, MVT::v16i8, V1Cst, V1Cst);
     Shuffle = DAG.getNode(
@@ -5645,8 +5638,7 @@ SDValue AArch64TargetLowering::LowerVECTOR_SHUFFLE(SDValue Op,
     Imm *= getExtFactor(V1);
     return DAG.getNode(AArch64ISD::EXT, dl, V1.getValueType(), V1, V2,
                        DAG.getConstant(Imm, dl, MVT::i32));
-  } else if (V2->getOpcode() == ISD::UNDEF &&
-             isSingletonEXTMask(ShuffleMask, VT, Imm)) {
+  } else if (V2->isUndef() && isSingletonEXTMask(ShuffleMask, VT, Imm)) {
     Imm *= getExtFactor(V1);
     return DAG.getNode(AArch64ISD::EXT, dl, V1.getValueType(), V1, V1,
                        DAG.getConstant(Imm, dl, MVT::i32));
@@ -6314,7 +6306,7 @@ FailedModImm:
   SDValue ConstantValue;
   for (unsigned i = 0; i < NumElts; ++i) {
     SDValue V = Op.getOperand(i);
-    if (V.getOpcode() == ISD::UNDEF)
+    if (V.isUndef())
       continue;
     if (i > 0)
       isOnlyLowElement = false;
@@ -6425,7 +6417,7 @@ FailedModImm:
     //    value is already in an S or D register.
     // Do not do this for UNDEF/LOAD nodes because we have better patterns
     // for those avoiding the SCALAR_TO_VECTOR/BUILD_VECTOR.
-    if (Op0.getOpcode() != ISD::UNDEF && Op0.getOpcode() != ISD::LOAD &&
+    if (!Op0.isUndef() && Op0.getOpcode() != ISD::LOAD &&
         (ElemSize == 32 || ElemSize == 64)) {
       unsigned SubIdx = ElemSize == 32 ? AArch64::ssub : AArch64::dsub;
       MachineSDNode *N =
@@ -6436,7 +6428,7 @@ FailedModImm:
     }
     for (; i < NumElts; ++i) {
       SDValue V = Op.getOperand(i);
-      if (V.getOpcode() == ISD::UNDEF)
+      if (V.isUndef())
         continue;
       SDValue LaneIdx = DAG.getConstant(i, dl, MVT::i64);
       Vec = DAG.getNode(ISD::INSERT_VECTOR_ELT, dl, VT, Vec, V, LaneIdx);
@@ -7496,6 +7488,10 @@ SDValue
 AArch64TargetLowering::BuildSDIVPow2(SDNode *N, const APInt &Divisor,
                                      SelectionDAG &DAG,
                                      std::vector<SDNode *> *Created) const {
+  AttributeSet Attr = DAG.getMachineFunction().getFunction()->getAttributes();
+  if (isIntDivCheap(N->getValueType(0), Attr))
+    return SDValue(N,0); // Lower SDIV as SDIV
+
   // fold (sdiv X, pow2)
   EVT VT = N->getValueType(0);
   if ((VT != MVT::i32 && VT != MVT::i64) ||
@@ -10136,7 +10132,7 @@ Value *AArch64TargetLowering::emitLoadLinked(IRBuilder<> &Builder, Value *Addr,
                                              AtomicOrdering Ord) const {
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
   Type *ValTy = cast<PointerType>(Addr->getType())->getElementType();
-  bool IsAcquire = isAtLeastAcquire(Ord);
+  bool IsAcquire = isAcquireOrStronger(Ord);
 
   // Since i128 isn't legal and intrinsics don't get type-lowered, the ldrexd
   // intrinsic must return {i64, i64} and we have to recombine them into a
@@ -10178,7 +10174,7 @@ Value *AArch64TargetLowering::emitStoreConditional(IRBuilder<> &Builder,
                                                    Value *Val, Value *Addr,
                                                    AtomicOrdering Ord) const {
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
-  bool IsRelease = isAtLeastRelease(Ord);
+  bool IsRelease = isReleaseOrStronger(Ord);
 
   // Since the intrinsics must have legal type, the i128 intrinsics take two
   // parameters: "i64, i64". We must marshal Val into the appropriate form
@@ -10214,6 +10210,22 @@ bool AArch64TargetLowering::functionArgumentNeedsConsecutiveRegisters(
 bool AArch64TargetLowering::shouldNormalizeToSelectSequence(LLVMContext &,
                                                             EVT) const {
   return false;
+}
+
+Value *AArch64TargetLowering::getStackCookieLocation(IRBuilder<> &IRB) const {
+  if (!Subtarget->isTargetAndroid())
+    return TargetLowering::getStackCookieLocation(IRB);
+
+  // Android provides a fixed TLS slot for the stack cookie. See the definition
+  // of TLS_SLOT_STACK_GUARD in
+  // https://android.googlesource.com/platform/bionic/+/master/libc/private/bionic_tls.h
+  const unsigned TlsOffset = 0x28;
+  Module *M = IRB.GetInsertBlock()->getParent()->getParent();
+  Function *ThreadPointerFunc =
+      Intrinsic::getDeclaration(M, Intrinsic::aarch64_thread_pointer);
+  return IRB.CreatePointerCast(
+      IRB.CreateConstGEP1_32(IRB.CreateCall(ThreadPointerFunc), TlsOffset),
+      Type::getInt8PtrTy(IRB.getContext())->getPointerTo(0));
 }
 
 Value *AArch64TargetLowering::getSafeStackPointerLocation(IRBuilder<> &IRB) const {
@@ -10277,4 +10289,17 @@ void AArch64TargetLowering::insertCopiesSplitCSR(
               TII->get(TargetOpcode::COPY), *I)
           .addReg(NewVR);
   }
+}
+
+bool AArch64TargetLowering::isIntDivCheap(EVT VT, AttributeSet Attr) const {
+  // Integer division on AArch64 is expensive. However, when aggressively
+  // optimizing for code size, we prefer to use a div instruction, as it is
+  // usually smaller than the alternative sequence.
+  // The exception to this is vector division. Since AArch64 doesn't have vector
+  // integer division, leaving the division as-is is a loss even in terms of
+  // size, because it will have to be scalarized, while the alternative code
+  // sequence can be performed in vector form.
+  bool OptSize =
+      Attr.hasAttribute(AttributeSet::FunctionIndex, Attribute::MinSize);
+  return OptSize && !VT.isVector();
 }

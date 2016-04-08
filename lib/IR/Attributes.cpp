@@ -195,6 +195,10 @@ std::string Attribute::getAsString(bool InAttrGrp) const {
     return "byval";
   if (hasAttribute(Attribute::Convergent))
     return "convergent";
+  if (hasAttribute(Attribute::SwiftError))
+    return "swifterror";
+  if (hasAttribute(Attribute::SwiftSelf))
+    return "swiftself";
   if (hasAttribute(Attribute::InaccessibleMemOnly))
     return "inaccessiblememonly";
   if (hasAttribute(Attribute::InaccessibleMemOrArgMemOnly))
@@ -385,7 +389,11 @@ bool AttributeImpl::operator<(const AttributeImpl &AI) const {
 
   if (isIntAttribute()) {
     if (AI.isEnumAttribute()) return false;
-    if (AI.isIntAttribute()) return getValueAsInt() < AI.getValueAsInt();
+    if (AI.isIntAttribute()) {
+      if (getKindAsEnum() == AI.getKindAsEnum())
+        return getValueAsInt() < AI.getValueAsInt();
+      return getKindAsEnum() < AI.getKindAsEnum();
+    }
     if (AI.isStringAttribute()) return true;
   }
 
@@ -448,6 +456,8 @@ uint64_t AttributeImpl::getAttrMask(Attribute::AttrKind Val) {
   case Attribute::NoRecurse:       return 1ULL << 48;
   case Attribute::InaccessibleMemOnly:         return 1ULL << 49;
   case Attribute::InaccessibleMemOrArgMemOnly: return 1ULL << 50;
+  case Attribute::SwiftSelf:       return 1ULL << 51;
+  case Attribute::SwiftError:      return 1ULL << 52;
   case Attribute::Dereferenceable:
     llvm_unreachable("dereferenceable attribute not supported in raw format");
     break;
@@ -476,7 +486,7 @@ AttributeSetNode *AttributeSetNode::get(LLVMContext &C,
   FoldingSetNodeID ID;
 
   SmallVector<Attribute, 8> SortedAttrs(Attrs.begin(), Attrs.end());
-  array_pod_sort(SortedAttrs.begin(), SortedAttrs.end());
+  std::sort(SortedAttrs.begin(), SortedAttrs.end());
 
   for (Attribute Attr : SortedAttrs)
     Attr.Profile(ID);

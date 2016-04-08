@@ -14,6 +14,7 @@
 #ifndef LLVM_IR_DEBUGINFOMETADATA_H
 #define LLVM_IR_DEBUGINFOMETADATA_H
 
+#include "llvm/ADT/Optional.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/Support/Dwarf.h"
 
@@ -291,6 +292,7 @@ public:
 
   unsigned getTag() const { return SubclassData16; }
   StringRef getHeader() const { return getStringOperand(0); }
+  MDString *getRawHeader() const { return getOperandAs<MDString>(0); }
 
   op_iterator dwarf_op_begin() const { return op_begin() + 1; }
   op_iterator dwarf_op_end() const { return op_end(); }
@@ -924,7 +926,17 @@ public:
 class DICompileUnit : public DIScope {
   friend class LLVMContextImpl;
   friend class MDNode;
+public:
+  enum DebugEmissionKind : unsigned {
+    NoDebug = 0,
+    FullDebug,
+    LineTablesOnly,
+    LastEmissionKind = LineTablesOnly
+  };
+  static Optional<DebugEmissionKind> getEmissionKind(StringRef Str);
+  static const char *EmissionKindString(DebugEmissionKind EK);
 
+private:
   unsigned SourceLanguage;
   bool IsOptimized;
   unsigned RuntimeVersion;
@@ -964,10 +976,11 @@ class DICompileUnit : public DIScope {
   getImpl(LLVMContext &Context, unsigned SourceLanguage, Metadata *File,
           MDString *Producer, bool IsOptimized, MDString *Flags,
           unsigned RuntimeVersion, MDString *SplitDebugFilename,
-          unsigned EmissionKind, Metadata *EnumTypes, Metadata *RetainedTypes,
-          Metadata *Subprograms, Metadata *GlobalVariables,
-          Metadata *ImportedEntities, Metadata *Macros, uint64_t DWOId,
-          StorageType Storage, bool ShouldCreate = true);
+          unsigned EmissionKind, Metadata *EnumTypes,
+          Metadata *RetainedTypes, Metadata *Subprograms,
+          Metadata *GlobalVariables, Metadata *ImportedEntities,
+          Metadata *Macros, uint64_t DWOId, StorageType Storage,
+          bool ShouldCreate = true);
 
   TempDICompileUnit cloneImpl() const {
     return getTemporary(
@@ -985,7 +998,7 @@ public:
       DICompileUnit,
       (unsigned SourceLanguage, DIFile *File, StringRef Producer,
        bool IsOptimized, StringRef Flags, unsigned RuntimeVersion,
-       StringRef SplitDebugFilename, unsigned EmissionKind,
+       StringRef SplitDebugFilename, DebugEmissionKind EmissionKind,
        DICompositeTypeArray EnumTypes, DITypeArray RetainedTypes,
        DISubprogramArray Subprograms, DIGlobalVariableArray GlobalVariables,
        DIImportedEntityArray ImportedEntities, DIMacroNodeArray Macros,
@@ -1010,7 +1023,9 @@ public:
   unsigned getSourceLanguage() const { return SourceLanguage; }
   bool isOptimized() const { return IsOptimized; }
   unsigned getRuntimeVersion() const { return RuntimeVersion; }
-  unsigned getEmissionKind() const { return EmissionKind; }
+  DebugEmissionKind getEmissionKind() const {
+    return (DebugEmissionKind)EmissionKind;
+  }
   StringRef getProducer() const { return getStringOperand(1); }
   StringRef getFlags() const { return getStringOperand(2); }
   StringRef getSplitDebugFilename() const { return getStringOperand(3); }

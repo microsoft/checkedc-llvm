@@ -162,7 +162,7 @@
 ; OBJ:    InlineSite {
 ; OBJ:      PtrParent: 0x0
 ; OBJ:      PtrEnd: 0x0
-; OBJ:      Inlinee: will_be_inlined (0x1003)
+; OBJ:      Inlinee: will_be_inlined (0x1002)
 ; OBJ:      BinaryAnnotations [
 ; OBJ:        ChangeLineOffset: 1
 ; OBJ:        ChangeCodeOffset: 0x14
@@ -192,7 +192,7 @@
 ; OBJ:    InlineSite {
 ; OBJ:      PtrParent: 0x0
 ; OBJ:      PtrEnd: 0x0
-; OBJ:      Inlinee: will_be_inlined (0x1003)
+; OBJ:      Inlinee: will_be_inlined (0x1002)
 ; OBJ:      BinaryAnnotations [
 ; OBJ:        ChangeLineOffset: 1
 ; OBJ:        ChangeCodeOffset: 0x35
@@ -276,7 +276,7 @@ attributes #3 = { nounwind }
 !llvm.module.flags = !{!11, !12, !13}
 !llvm.ident = !{!14}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.9.0 ", isOptimized: false, runtimeVersion: 0, emissionKind: 1, enums: !2, subprograms: !3)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.9.0 ", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, subprograms: !3)
 !1 = !DIFile(filename: "t.cpp", directory: "D:\5Csrc\5Cllvm\5Cbuild")
 !2 = !{}
 !3 = !{!4, !8}

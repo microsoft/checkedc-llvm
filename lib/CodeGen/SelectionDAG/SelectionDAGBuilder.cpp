@@ -86,6 +86,19 @@ static cl::opt<bool>
 EnableFMFInDAG("enable-fmf-dag", cl::init(true), cl::Hidden,
                 cl::desc("Enable fast-math-flags for DAG nodes"));
 
+/// Minimum jump table density for normal functions.
+static cl::opt<unsigned>
+JumpTableDensity("jump-table-density", cl::init(10), cl::Hidden,
+                 cl::desc("Minimum density for building a jump table in "
+                          "a normal function"));
+
+/// Minimum jump table density for -Os or -Oz functions.
+static cl::opt<unsigned>
+OptsizeJumpTableDensity("optsize-jump-table-density", cl::init(40), cl::Hidden,
+                        cl::desc("Minimum density for building a jump table in "
+                                 "an optsize function"));
+
+
 // Limit the width of DAG chains. This is important in general to prevent
 // DAG-based analysis from blowing up. For example, alias analysis and
 // load clustering may not complete in reasonable time. It is difficult to
@@ -916,10 +929,48 @@ SDValue SelectionDAGBuilder::getControlRoot() {
   return Root;
 }
 
+/// Copy swift error to the final virtual register at end of a basic block, as
+/// specified by SwiftErrorWorklist, if necessary.
+static void copySwiftErrorsToFinalVRegs(SelectionDAGBuilder &SDB) {
+  const TargetLowering &TLI = SDB.DAG.getTargetLoweringInfo();
+  if (!TLI.supportSwiftError())
+    return;
+
+  if (!SDB.FuncInfo.SwiftErrorWorklist.count(SDB.FuncInfo.MBB))
+    return;
+
+  // Go through entries in SwiftErrorWorklist, and create copy as necessary.
+  FunctionLoweringInfo::SwiftErrorVRegs &WorklistEntry =
+      SDB.FuncInfo.SwiftErrorWorklist[SDB.FuncInfo.MBB];
+  FunctionLoweringInfo::SwiftErrorVRegs &MapEntry =
+      SDB.FuncInfo.SwiftErrorMap[SDB.FuncInfo.MBB];
+  for (unsigned I = 0, E = WorklistEntry.size(); I < E; I++) {
+    unsigned WorkReg = WorklistEntry[I];
+
+    // Find the swifterror virtual register for the value in SwiftErrorMap.
+    unsigned MapReg = MapEntry[I];
+    assert(TargetRegisterInfo::isVirtualRegister(MapReg) &&
+           "Entries in SwiftErrorMap should be virtual registers");
+
+    if (WorkReg == MapReg)
+      continue;
+
+    // Create copy from SwiftErrorMap to SwiftWorklist.
+    auto &DL = SDB.DAG.getDataLayout();
+    SDValue CopyNode = SDB.DAG.getCopyToReg(
+        SDB.getRoot(), SDB.getCurSDLoc(), WorkReg,
+        SDB.DAG.getRegister(MapReg, EVT(TLI.getPointerTy(DL))));
+    MapEntry[I] = WorkReg;
+    SDB.DAG.setRoot(CopyNode);
+  }
+}
+
 void SelectionDAGBuilder::visit(const Instruction &I) {
   // Set up outgoing PHI node register values before emitting the terminator.
-  if (isa<TerminatorInst>(&I))
+  if (isa<TerminatorInst>(&I)) {
+    copySwiftErrorsToFinalVRegs(*this);
     HandlePHINodesInSuccessorBlocks(I.getParent());
+  }
 
   ++SDNodeOrder;
 
@@ -1326,6 +1377,18 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
   SmallVector<ISD::OutputArg, 8> Outs;
   SmallVector<SDValue, 8> OutVals;
 
+  // Calls to @llvm.experimental.deoptimize don't generate a return value, so
+  // lower
+  //
+  //   %val = call <ty> @llvm.experimental.deoptimize()
+  //   ret <ty> %val
+  //
+  // differently.
+  if (I.getParent()->getTerminatingDeoptimizeCall()) {
+    LowerDeoptimizingReturn();
+    return;
+  }
+
   if (!FuncInfo.CanLowerReturn) {
     unsigned DemoteReg = FuncInfo.DemoteRegister;
     const Function *F = I.getParent()->getParent();
@@ -1419,6 +1482,23 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
         }
       }
     }
+  }
+
+  // Push in swifterror virtual register as the last element of Outs. This makes
+  // sure swifterror virtual register will be returned in the swifterror
+  // physical register.
+  const Function *F = I.getParent()->getParent();
+  if (TLI.supportSwiftError() &&
+      F->getAttributes().hasAttrSomewhere(Attribute::SwiftError)) {
+    ISD::ArgFlagsTy Flags = ISD::ArgFlagsTy();
+    Flags.setSwiftError();
+    Outs.push_back(ISD::OutputArg(Flags, EVT(TLI.getPointerTy(DL)) /*vt*/,
+                                  EVT(TLI.getPointerTy(DL)) /*argvt*/,
+                                  true /*isfixed*/, 1 /*origidx*/,
+                                  0 /*partOffs*/));
+    // Create SDNode for the swifterror virtual register.
+    OutVals.push_back(DAG.getRegister(FuncInfo.SwiftErrorMap[FuncInfo.MBB][0],
+                                      EVT(TLI.getPointerTy(DL))));
   }
 
   bool isVarArg = DAG.getMachineFunction().getFunction()->isVarArg();
@@ -2127,6 +2207,12 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
   MachineBasicBlock *Return = FuncInfo.MBBMap[I.getSuccessor(0)];
   const BasicBlock *EHPadBB = I.getSuccessor(1);
 
+  // Deopt bundles are lowered in LowerCallSiteWithDeoptBundle, and we don't
+  // have to do anything here to lower funclet bundles.
+  assert(!I.hasOperandBundlesOtherThan(
+             {LLVMContext::OB_deopt, LLVMContext::OB_funclet}) &&
+         "Cannot lower invokes with arbitrary operand bundles yet!");
+
   const Value *Callee(I.getCalledValue());
   const Function *Fn = dyn_cast<Function>(Callee);
   if (isa<InlineAsm>(Callee))
@@ -2146,8 +2232,15 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
       LowerStatepoint(ImmutableStatepoint(&I), EHPadBB);
       break;
     }
-  } else
+  } else if (I.countOperandBundlesOfType(LLVMContext::OB_deopt)) {
+    // Currently we do not lower any intrinsic calls with deopt operand bundles.
+    // Eventually we will support lowering the @llvm.experimental.deoptimize
+    // intrinsic, and right now there are no plans to support other intrinsics
+    // with deopt state.
+    LowerCallSiteWithDeoptBundle(&I, getValue(Callee), EHPadBB);
+  } else {
     LowerCallTo(&I, getValue(Callee), false, EHPadBB);
+  }
 
   // If the value of the invoke is used outside of its defining block, make it
   // available as a virtual register.
@@ -2901,8 +2994,8 @@ void SelectionDAGBuilder::visitShuffleVector(const User &I) {
 
     // Pad both vectors with undefs to make them the same length as the mask.
     unsigned NumConcat = MaskNumElts / SrcNumElts;
-    bool Src1U = Src1.getOpcode() == ISD::UNDEF;
-    bool Src2U = Src2.getOpcode() == ISD::UNDEF;
+    bool Src1U = Src1.isUndef();
+    bool Src2U = Src2.isUndef();
     SDValue UndefVal = DAG.getUNDEF(SrcVT);
 
     SmallVector<SDValue, 8> MOps1(NumConcat, UndefVal);
@@ -3282,7 +3375,22 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
   if (I.isAtomic())
     return visitAtomicLoad(I);
 
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   const Value *SV = I.getOperand(0);
+  if (TLI.supportSwiftError()) {
+    // Swifterror values can come from either a function parameter with
+    // swifterror attribute or an alloca with swifterror attribute.
+    if (const Argument *Arg = dyn_cast<Argument>(SV)) {
+      if (Arg->hasSwiftErrorAttr())
+        return visitLoadFromSwiftError(I);
+    }
+
+    if (const AllocaInst *Alloca = dyn_cast<AllocaInst>(SV)) {
+      if (Alloca->isSwiftError())
+        return visitLoadFromSwiftError(I);
+    }
+  }
+
   SDValue Ptr = getValue(SV);
 
   Type *Ty = I.getType();
@@ -3306,7 +3414,6 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
   I.getAAMetadata(AAInfo);
   const MDNode *Ranges = I.getMetadata(LLVMContext::MD_range);
 
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   SmallVector<EVT, 4> ValueVTs;
   SmallVector<uint64_t, 4> Offsets;
   ComputeValueVTs(TLI, DAG.getDataLayout(), Ty, ValueVTs, &Offsets);
@@ -3383,12 +3490,85 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
                            DAG.getVTList(ValueVTs), Values));
 }
 
+void SelectionDAGBuilder::visitStoreToSwiftError(const StoreInst &I) {
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+  assert(TLI.supportSwiftError() &&
+         "call visitStoreToSwiftError when backend supports swifterror");
+
+  SmallVector<EVT, 4> ValueVTs;
+  SmallVector<uint64_t, 4> Offsets;
+  const Value *SrcV = I.getOperand(0);
+  ComputeValueVTs(DAG.getTargetLoweringInfo(), DAG.getDataLayout(),
+                  SrcV->getType(), ValueVTs, &Offsets);
+  assert(ValueVTs.size() == 1 && Offsets[0] == 0 &&
+         "expect a single EVT for swifterror");
+
+  SDValue Src = getValue(SrcV);
+  // Create a virtual register, then update the virtual register.
+  auto &DL = DAG.getDataLayout();
+  const TargetRegisterClass *RC = TLI.getRegClassFor(TLI.getPointerTy(DL));
+  unsigned VReg = FuncInfo.MF->getRegInfo().createVirtualRegister(RC);
+  // Chain, DL, Reg, N or Chain, DL, Reg, N, Glue
+  // Chain can be getRoot or getControlRoot.
+  SDValue CopyNode = DAG.getCopyToReg(getRoot(), getCurSDLoc(), VReg,
+                                      SDValue(Src.getNode(), Src.getResNo()));
+  DAG.setRoot(CopyNode);
+  FuncInfo.setSwiftErrorVReg(FuncInfo.MBB, I.getOperand(1), VReg);
+}
+
+void SelectionDAGBuilder::visitLoadFromSwiftError(const LoadInst &I) {
+  assert(DAG.getTargetLoweringInfo().supportSwiftError() &&
+         "call visitLoadFromSwiftError when backend supports swifterror");
+
+  assert(!I.isVolatile() &&
+         I.getMetadata(LLVMContext::MD_nontemporal) == nullptr &&
+         I.getMetadata(LLVMContext::MD_invariant_load) == nullptr &&
+         "Support volatile, non temporal, invariant for load_from_swift_error");
+
+  const Value *SV = I.getOperand(0);
+  Type *Ty = I.getType();
+  AAMDNodes AAInfo;
+  I.getAAMetadata(AAInfo);
+  assert(!AA->pointsToConstantMemory(MemoryLocation(
+             SV, DAG.getDataLayout().getTypeStoreSize(Ty), AAInfo)) &&
+         "load_from_swift_error should not be constant memory");
+
+  SmallVector<EVT, 4> ValueVTs;
+  SmallVector<uint64_t, 4> Offsets;
+  ComputeValueVTs(DAG.getTargetLoweringInfo(), DAG.getDataLayout(), Ty,
+                  ValueVTs, &Offsets);
+  assert(ValueVTs.size() == 1 && Offsets[0] == 0 &&
+         "expect a single EVT for swifterror");
+
+  // Chain, DL, Reg, VT, Glue or Chain, DL, Reg, VT
+  SDValue L = DAG.getCopyFromReg(getRoot(), getCurSDLoc(),
+                                 FuncInfo.findSwiftErrorVReg(FuncInfo.MBB, SV),
+                                 ValueVTs[0]);
+
+  setValue(&I, L);
+}
+
 void SelectionDAGBuilder::visitStore(const StoreInst &I) {
   if (I.isAtomic())
     return visitAtomicStore(I);
 
   const Value *SrcV = I.getOperand(0);
   const Value *PtrV = I.getOperand(1);
+
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+  if (TLI.supportSwiftError()) {
+    // Swifterror values can come from either a function parameter with
+    // swifterror attribute or an alloca with swifterror attribute.
+    if (const Argument *Arg = dyn_cast<Argument>(PtrV)) {
+      if (Arg->hasSwiftErrorAttr())
+        return visitStoreToSwiftError(I);
+    }
+
+    if (const AllocaInst *Alloca = dyn_cast<AllocaInst>(PtrV)) {
+      if (Alloca->isSwiftError())
+        return visitStoreToSwiftError(I);
+    }
+  }
 
   SmallVector<EVT, 4> ValueVTs;
   SmallVector<uint64_t, 4> Offsets;
@@ -3723,7 +3903,7 @@ void SelectionDAGBuilder::visitFence(const FenceInst &I) {
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   SDValue Ops[3];
   Ops[0] = getRoot();
-  Ops[1] = DAG.getConstant(I.getOrdering(), dl,
+  Ops[1] = DAG.getConstant((unsigned)I.getOrdering(), dl,
                            TLI.getPointerTy(DAG.getDataLayout()));
   Ops[2] = DAG.getConstant(I.getSynchScope(), dl,
                            TLI.getPointerTy(DAG.getDataLayout()));
@@ -5364,7 +5544,7 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     return nullptr;
   }
   case Intrinsic::experimental_gc_statepoint: {
-    visitStatepoint(I);
+    LowerStatepoint(ImmutableStatepoint(&I));
     return nullptr;
   }
   case Intrinsic::experimental_gc_result: {
@@ -5447,6 +5627,10 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     setValue(&I, N);
     return nullptr;
   }
+
+  case Intrinsic::experimental_deoptimize:
+    LowerDeoptimizeCall(&I);
+    return nullptr;
   }
 }
 
@@ -5522,6 +5706,7 @@ SelectionDAGBuilder::lowerInvokable(TargetLowering::CallLoweringInfo &CLI,
 void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
                                       bool isTailCall,
                                       const BasicBlock *EHPadBB) {
+  auto &DL = DAG.getDataLayout();
   FunctionType *FTy = CS.getFunctionType();
   Type *RetTy = CS.getType();
 
@@ -5529,6 +5714,8 @@ void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
   TargetLowering::ArgListEntry Entry;
   Args.reserve(CS.arg_size());
 
+  const Value *SwiftErrorVal = nullptr;
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   for (ImmutableCallSite::arg_iterator i = CS.arg_begin(), e = CS.arg_end();
        i != e; ++i) {
     const Value *V = *i;
@@ -5542,6 +5729,17 @@ void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
 
     // Skip the first return-type Attribute to get to params.
     Entry.setAttributes(&CS, i - CS.arg_begin() + 1);
+
+    // Use swifterror virtual register as input to the call.
+    if (Entry.isSwiftError && TLI.supportSwiftError()) {
+      SwiftErrorVal = V;
+      // We find the virtual register for the actual swifterror argument.
+      // Instead of using the Value, we use the virtual register instead.
+      Entry.Node = DAG.getRegister(
+          FuncInfo.findSwiftErrorVReg(FuncInfo.MBB, V),
+          EVT(TLI.getPointerTy(DL)));
+    }
+
     Args.push_back(Entry);
 
     // If we have an explicit sret argument that is an Instruction, (i.e., it
@@ -5567,6 +5765,20 @@ void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
     const Instruction *Inst = CS.getInstruction();
     Result.first = lowerRangeToAssertZExt(DAG, *Inst, Result.first);
     setValue(Inst, Result.first);
+  }
+
+  // The last element of CLI.InVals has the SDValue for swifterror return.
+  // Here we copy it to a virtual register and update SwiftErrorMap for
+  // book-keeping.
+  if (SwiftErrorVal && TLI.supportSwiftError()) {
+    // Get the last element of InVals.
+    SDValue Src = CLI.InVals.back();
+    const TargetRegisterClass *RC = TLI.getRegClassFor(TLI.getPointerTy(DL));
+    unsigned VReg = FuncInfo.MF->getRegInfo().createVirtualRegister(RC);
+    SDValue CopyNode = CLI.DAG.getCopyToReg(Result.second, CLI.DL, VReg, Src);
+    // We update the virtual register for the actual swifterror argument.
+    FuncInfo.setSwiftErrorVReg(FuncInfo.MBB, SwiftErrorVal, VReg);
+    DAG.setRoot(CopyNode);
   }
 }
 
@@ -6100,9 +6312,19 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
         RenameFn,
         DAG.getTargetLoweringInfo().getPointerTy(DAG.getDataLayout()));
 
-  // Check if we can potentially perform a tail call. More detailed checking is
-  // be done within LowerCallTo, after more information about the call is known.
-  LowerCallTo(&I, Callee, I.isTailCall());
+  // Deopt bundles are lowered in LowerCallSiteWithDeoptBundle, and we don't
+  // have to do anything here to lower funclet bundles.
+  assert(!I.hasOperandBundlesOtherThan(
+             {LLVMContext::OB_deopt, LLVMContext::OB_funclet}) &&
+         "Cannot lower calls with arbitrary operand bundles!");
+
+  if (I.countOperandBundlesOfType(LLVMContext::OB_deopt))
+    LowerCallSiteWithDeoptBundle(&I, Callee, nullptr);
+  else
+    // Check if we can potentially perform a tail call. More detailed checking
+    // is be done within LowerCallTo, after more information about the call is
+    // known.
+    LowerCallTo(&I, Callee, I.isTailCall());
 }
 
 namespace {
@@ -6896,16 +7118,16 @@ SDValue SelectionDAGBuilder::lowerRangeToAssertZExt(SelectionDAG &DAG,
   return DAG.getMergeValues(Ops, SL);
 }
 
-/// \brief Lower an argument list according to the target calling convention.
-///
-/// \return A tuple of <return-value, token-chain>
+/// \brief Populate a CallLowerinInfo (into \p CLI) based on the properties of
+/// the call being lowered.
 ///
 /// This is a helper for lowering intrinsics that follow a target calling
 /// convention or require stack pointer adjustment. Only a subset of the
 /// intrinsic's operands need to participate in the calling convention.
-std::pair<SDValue, SDValue> SelectionDAGBuilder::lowerCallOperands(
-    ImmutableCallSite CS, unsigned ArgIdx, unsigned NumArgs, SDValue Callee,
-    Type *ReturnTy, const BasicBlock *EHPadBB, bool IsPatchPoint) {
+void SelectionDAGBuilder::populateCallLoweringInfo(
+    TargetLowering::CallLoweringInfo &CLI, ImmutableCallSite CS,
+    unsigned ArgIdx, unsigned NumArgs, SDValue Callee, Type *ReturnTy,
+    bool IsPatchPoint) {
   TargetLowering::ArgListTy Args;
   Args.reserve(NumArgs);
 
@@ -6924,12 +7146,12 @@ std::pair<SDValue, SDValue> SelectionDAGBuilder::lowerCallOperands(
     Args.push_back(Entry);
   }
 
-  TargetLowering::CallLoweringInfo CLI(DAG);
-  CLI.setDebugLoc(getCurSDLoc()).setChain(getRoot())
-    .setCallee(CS.getCallingConv(), ReturnTy, Callee, std::move(Args), NumArgs)
-    .setDiscardResult(CS->use_empty()).setIsPatchPoint(IsPatchPoint);
-
-  return lowerInvokable(CLI, EHPadBB);
+  CLI.setDebugLoc(getCurSDLoc())
+      .setChain(getRoot())
+      .setCallee(CS.getCallingConv(), ReturnTy, Callee, std::move(Args),
+                 NumArgs)
+      .setDiscardResult(CS->use_empty())
+      .setIsPatchPoint(IsPatchPoint);
 }
 
 /// \brief Add a stack map intrinsic call's live variable operands to a stackmap
@@ -7070,8 +7292,11 @@ void SelectionDAGBuilder::visitPatchpoint(ImmutableCallSite CS,
   unsigned NumCallArgs = IsAnyRegCC ? 0 : NumArgs;
   Type *ReturnTy =
     IsAnyRegCC ? Type::getVoidTy(*DAG.getContext()) : CS->getType();
-  std::pair<SDValue, SDValue> Result = lowerCallOperands(
-      CS, NumMetaOpers, NumCallArgs, Callee, ReturnTy, EHPadBB, true);
+
+  TargetLowering::CallLoweringInfo CLI(DAG);
+  populateCallLoweringInfo(CLI, CS, NumMetaOpers, NumCallArgs, Callee, ReturnTy,
+                           true);
+  std::pair<SDValue, SDValue> Result = lowerInvokable(CLI, EHPadBB);
 
   SDNode *CallEnd = Result.second.getNode();
   if (HasDef && (CallEnd->getOpcode() == ISD::CopyFromReg))
@@ -7238,6 +7463,8 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
     Entry.isNest = false;
     Entry.isByVal = false;
     Entry.isReturned = false;
+    Entry.isSwiftSelf = false;
+    Entry.isSwiftError = false;
     Entry.Alignment = Align;
     CLI.getArgs().insert(CLI.getArgs().begin(), Entry);
     CLI.RetTy = Type::getVoidTy(CLI.RetTy->getContext());
@@ -7266,10 +7493,23 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
     }
   }
 
+  // We push in swifterror return as the last element of CLI.Ins.
+  ArgListTy &Args = CLI.getArgs();
+  if (supportSwiftError()) {
+    for (unsigned i = 0, e = Args.size(); i != e; ++i) {
+      if (Args[i].isSwiftError) {
+        ISD::InputArg MyFlags;
+        MyFlags.VT = getPointerTy(DL);
+        MyFlags.ArgVT = EVT(getPointerTy(DL));
+        MyFlags.Flags.setSwiftError();
+        CLI.Ins.push_back(MyFlags);
+      }
+    }
+  }
+
   // Handle all of the outgoing arguments.
   CLI.Outs.clear();
   CLI.OutVals.clear();
-  ArgListTy &Args = CLI.getArgs();
   for (unsigned i = 0, e = Args.size(); i != e; ++i) {
     SmallVector<EVT, 4> ValueVTs;
     ComputeValueVTs(*this, DL, Args[i].Ty, ValueVTs);
@@ -7295,6 +7535,10 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
         Flags.setInReg();
       if (Args[i].isSRet)
         Flags.setSRet();
+      if (Args[i].isSwiftSelf)
+        Flags.setSwiftSelf();
+      if (Args[i].isSwiftError)
+        Flags.setSwiftError();
       if (Args[i].isByVal)
         Flags.setByVal();
       if (Args[i].isInAlloca) {
@@ -7383,6 +7627,9 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
   SmallVector<SDValue, 4> InVals;
   CLI.Chain = LowerCall(CLI, InVals);
 
+  // Update CLI.InVals to use outside of this function.
+  CLI.InVals = InVals;
+
   // Verify that the target's LowerCall behaved as expected.
   assert(CLI.Chain.getNode() && CLI.Chain.getValueType() == MVT::Other &&
          "LowerCall didn't return a valid chain!");
@@ -7400,12 +7647,13 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
     return std::make_pair(SDValue(), SDValue());
   }
 
-  DEBUG(for (unsigned i = 0, e = CLI.Ins.size(); i != e; ++i) {
-          assert(InVals[i].getNode() &&
-                 "LowerCall emitted a null value!");
-          assert(EVT(CLI.Ins[i].VT) == InVals[i].getValueType() &&
-                 "LowerCall emitted a value with the wrong type!");
-        });
+#ifndef NDEBUG
+  for (unsigned i = 0, e = CLI.Ins.size(); i != e; ++i) {
+    assert(InVals[i].getNode() && "LowerCall emitted a null value!");
+    assert(EVT(CLI.Ins[i].VT) == InVals[i].getValueType() &&
+           "LowerCall emitted a value with the wrong type!");
+  }
+#endif
 
   SmallVector<SDValue, 4> ReturnValues;
   if (!CanLowerReturn) {
@@ -7574,6 +7822,10 @@ void SelectionDAGISel::LowerArguments(const Function &F) {
         Flags.setInReg();
       if (F.getAttributes().hasAttribute(Idx, Attribute::StructRet))
         Flags.setSRet();
+      if (F.getAttributes().hasAttribute(Idx, Attribute::SwiftSelf))
+        Flags.setSwiftSelf();
+      if (F.getAttributes().hasAttribute(Idx, Attribute::SwiftError))
+        Flags.setSwiftError();
       if (F.getAttributes().hasAttribute(Idx, Attribute::ByVal))
         Flags.setByVal();
       if (F.getAttributes().hasAttribute(Idx, Attribute::InAlloca)) {
@@ -7739,6 +7991,14 @@ void SelectionDAGISel::LowerArguments(const Function &F) {
         FuncInfo->setArgumentFrameIndex(&*I, FI->getIndex());
     }
 
+    // Update SwiftErrorMap.
+    if (Res.getOpcode() == ISD::CopyFromReg && TLI->supportSwiftError() &&
+        F.getAttributes().hasAttribute(Idx, Attribute::SwiftError)) {
+      unsigned Reg = cast<RegisterSDNode>(Res.getOperand(1))->getReg();
+      if (TargetRegisterInfo::isVirtualRegister(Reg))
+        FuncInfo->SwiftErrorMap[FuncInfo->MBB][0] = Reg;
+    }
+
     // If this argument is live outside of the entry block, insert a copy from
     // wherever we got it to the vreg that other BB's will reference it as.
     if (!TM.Options.EnableFastISel && Res.getOpcode() == ISD::CopyFromReg) {
@@ -7888,7 +8148,8 @@ void SelectionDAGBuilder::updateDAGForMaybeTailCall(SDValue MaybeTC) {
 
 bool SelectionDAGBuilder::isDense(const CaseClusterVector &Clusters,
                                   unsigned *TotalCases, unsigned First,
-                                  unsigned Last) {
+                                  unsigned Last,
+                                  unsigned Density) {
   assert(Last >= First);
   assert(TotalCases[Last] >= TotalCases[First]);
 
@@ -7909,10 +8170,15 @@ bool SelectionDAGBuilder::isDense(const CaseClusterVector &Clusters,
   assert(NumCases < UINT64_MAX / 100);
   assert(Range >= NumCases);
 
-  return NumCases * 100 >= Range * MinJumpTableDensity;
+  return NumCases * 100 >= Range * Density;
 }
 
-static inline bool areJTsAllowed(const TargetLowering &TLI) {
+static inline bool areJTsAllowed(const TargetLowering &TLI,
+                                 const SwitchInst *SI) {
+  const Function *Fn = SI->getParent()->getParent();
+  if (Fn->getFnAttribute("no-jump-tables").getValueAsString() == "true")
+    return false;
+
   return TLI.isOperationLegalOrCustom(ISD::BR_JT, MVT::Other) ||
          TLI.isOperationLegalOrCustom(ISD::BRIND, MVT::Other);
 }
@@ -8006,7 +8272,7 @@ void SelectionDAGBuilder::findJumpTables(CaseClusterVector &Clusters,
 #endif
 
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-  if (!areJTsAllowed(TLI))
+  if (!areJTsAllowed(TLI, SI))
     return;
 
   const int64_t N = Clusters.size();
@@ -8023,7 +8289,11 @@ void SelectionDAGBuilder::findJumpTables(CaseClusterVector &Clusters,
       TotalCases[i] += TotalCases[i - 1];
   }
 
-  if (N >= MinJumpTableSize && isDense(Clusters, &TotalCases[0], 0, N - 1)) {
+  unsigned MinDensity = JumpTableDensity;
+  if (DefaultMBB->getParent()->getFunction()->optForSize())
+    MinDensity = OptsizeJumpTableDensity;
+  if (N >= MinJumpTableSize
+      && isDense(Clusters, &TotalCases[0], 0, N - 1, MinDensity)) {
     // Cheap case: the whole range might be suitable for jump table.
     CaseCluster JTCluster;
     if (buildJumpTable(Clusters, 0, N - 1, SI, DefaultMBB, JTCluster)) {
@@ -8068,7 +8338,7 @@ void SelectionDAGBuilder::findJumpTables(CaseClusterVector &Clusters,
     // Search for a solution that results in fewer partitions.
     for (int64_t j = N - 1; j > i; j--) {
       // Try building a partition from Clusters[i..j].
-      if (isDense(Clusters, &TotalCases[0], i, j)) {
+      if (isDense(Clusters, &TotalCases[0], i, j, MinDensity)) {
         unsigned NumPartitions = 1 + (j == N - 1 ? 0 : MinPartitions[j + 1]);
         bool IsTable = j - i + 1 >= MinJumpTableSize;
         unsigned Tables = IsTable + (j == N - 1 ? 0 : NumTables[j + 1]);

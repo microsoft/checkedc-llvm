@@ -1820,6 +1820,7 @@ unsigned SCEVExpander::replaceCongruentIVs(Loop *L, const DominatorTree *DT,
                                                    IsomorphicInc->getType());
       if (OrigInc != IsomorphicInc
           && TruncExpr == SE.getSCEV(IsomorphicInc)
+          && SE.LI.replacementPreservesLCSSAForm(IsomorphicInc, OrigInc)
           && ((isa<PHINode>(OrigInc) && isa<PHINode>(IsomorphicInc))
               || hoistIVInc(OrigInc, IsomorphicInc))) {
         DEBUG_WITH_TYPE(DebugType, dbgs()
@@ -2003,7 +2004,9 @@ Value *SCEVExpander::generateOverflowCheck(const SCEVAddRecExpr *AR,
   assert(AR->isAffine() && "Cannot generate RT check for "
                            "non-affine expression");
 
-  const SCEV *ExitCount = SE.getBackedgeTakenCount(AR->getLoop());
+  SCEVUnionPredicate Pred;
+  const SCEV *ExitCount =
+      SE.getPredicatedBackedgeTakenCount(AR->getLoop(), Pred);
   const SCEV *Step = AR->getStepRecurrence(SE);
   const SCEV *Start = AR->getStart();
 

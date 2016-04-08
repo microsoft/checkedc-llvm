@@ -136,9 +136,8 @@ AMDGPU::IsaVersion AMDGPUSubtarget::getIsaVersion() const {
   return AMDGPU::getIsaVersion(getFeatureBits());
 }
 
-bool AMDGPUSubtarget::isVGPRSpillingEnabled(
-                                       const SIMachineFunctionInfo *MFI) const {
-  return MFI->getShaderType() == ShaderType::COMPUTE || EnableVGPRSpilling;
+bool AMDGPUSubtarget::isVGPRSpillingEnabled(const Function& F) const {
+  return !AMDGPU::isShader(F.getCallingConv()) || EnableVGPRSpilling;
 }
 
 void AMDGPUSubtarget::overrideSchedPolicy(MachineSchedPolicy &Policy,
@@ -156,6 +155,10 @@ void AMDGPUSubtarget::overrideSchedPolicy(MachineSchedPolicy &Policy,
     // register spills than just using one of these approaches on its own.
     Policy.OnlyTopDown = false;
     Policy.OnlyBottomUp = false;
+
+    // Enabling ShouldTrackLaneMasks crashes the SI Machine Scheduler.
+    if (!enableSIScheduler())
+      Policy.ShouldTrackLaneMasks = true;
   }
 }
 

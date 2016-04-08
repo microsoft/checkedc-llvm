@@ -26,7 +26,6 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/Instructions.h"
@@ -391,8 +390,11 @@ DwarfDebug::constructDwarfCompileUnit(const DICompileUnit *DIUnit) {
   DwarfCompileUnit &NewCU = *OwnedUnit;
   DIE &Die = NewCU.getUnitDie();
   InfoHolder.addUnit(std::move(OwnedUnit));
-  if (useSplitDwarf())
+  if (useSplitDwarf()) {
     NewCU.setSkeleton(constructSkeletonCU(NewCU));
+    NewCU.addString(Die, dwarf::DW_AT_GNU_dwo_name,
+                    DIUnit->getSplitDebugFilename());
+  }
 
   // LTO with assembly output shares a single line table amongst multiple CUs.
   // To avoid the compilation directory being ambiguous, let the line table
@@ -1136,7 +1138,7 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
 
   // Under -gmlt, skip building the subprogram if there are no inlined
   // subroutines inside it.
-  if (TheCU.getCUNode()->getEmissionKind() == DIBuilder::LineTablesOnly &&
+  if (TheCU.getCUNode()->getEmissionKind() == DICompileUnit::LineTablesOnly &&
       LScopes.getAbstractScopesList().empty() && !IsDarwin) {
     assert(InfoHolder.getScopeVariables().empty());
     assert(DbgValues.empty());
@@ -1436,10 +1438,10 @@ static void emitDebugLocValue(const AsmPrinter &AP, const DIBasicType *BT,
         DwarfExpr.AddMachineRegExpression(Expr, Loc.getReg(),
                                           PieceOffsetInBits);
     }
+  } else if (Value.isConstantFP()) {
+    APInt RawBytes = Value.getConstantFP()->getValueAPF().bitcastToAPInt();
+    DwarfExpr.AddUnsignedConstant(RawBytes);
   }
-  // else ... ignore constant fp. There is not any good way to
-  // to represent them here in dwarf.
-  // FIXME: ^
 }
 
 void DebugLocEntry::finalize(const AsmPrinter &AP,

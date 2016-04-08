@@ -54,6 +54,25 @@ static cl::opt<unsigned>
 
 void MachineFunctionInitializer::anchor() {}
 
+void MachineFunctionProperties::print(raw_ostream &ROS) const {
+  // Leave this function even in NDEBUG as an out-of-line anchor.
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  for (BitVector::size_type i = 0; i < Properties.size(); ++i) {
+    bool HasProperty = Properties[i];
+    switch(static_cast<Property>(i)) {
+      case Property::IsSSA:
+        ROS << (HasProperty ? "SSA, " : "Post SSA, ");
+        break;
+      case Property::AllVRegsAllocated:
+        ROS << (HasProperty ? "AllVRegsAllocated" : "HasVRegs");
+        break;
+      default:
+        break;
+    }
+  }
+#endif
+}
+
 //===----------------------------------------------------------------------===//
 // MachineFunction implementation
 //===----------------------------------------------------------------------===//
@@ -69,6 +88,8 @@ MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
                                  unsigned FunctionNum, MachineModuleInfo &mmi)
     : Fn(F), Target(TM), STI(TM.getSubtargetImpl(*F)), Ctx(mmi.getContext()),
       MMI(mmi) {
+  // Assume the function starts in SSA form.
+  Properties.set(MachineFunctionProperties::Property::IsSSA);
   if (STI->getRegisterInfo())
     RegInfo = new (Allocator) MachineRegisterInfo(this);
   else
@@ -370,10 +391,12 @@ StringRef MachineFunction::getName() const {
 
 void MachineFunction::print(raw_ostream &OS, SlotIndexes *Indexes) const {
   OS << "# Machine code for function " << getName() << ": ";
+  OS << "Properties: <";
+  getProperties().print(OS);
+  OS << "> : ";
   if (RegInfo) {
-    OS << (RegInfo->isSSA() ? "SSA" : "Post SSA");
     if (!RegInfo->tracksLiveness())
-      OS << ", not tracking liveness";
+      OS << "not tracking liveness";
   }
   OS << '\n';
 

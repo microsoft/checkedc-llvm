@@ -36,10 +36,16 @@ class ConstantRange;
 class DataLayout;
 class LLVMContext;
 
-enum AtomicOrdering {
+/// C++ defines ordering as a lattice. LLVM supplements this with NotAtomic and
+/// Unordered, which are both below the C++ orders. See docs/Atomics.rst for
+/// details.
+///
+/// not_atomic-->unordered-->relaxed-->release--------------->acq_rel-->seq_cst
+///                                   \-->consume-->acquire--/
+enum class AtomicOrdering {
   NotAtomic = 0,
   Unordered = 1,
-  Monotonic = 2,
+  Monotonic = 2, // Equivalent to C++'s relaxed.
   // Consume = 3,  // Not specified yet.
   Acquire = 4,
   Release = 5,
@@ -47,26 +53,73 @@ enum AtomicOrdering {
   SequentiallyConsistent = 7
 };
 
+bool operator<(AtomicOrdering, AtomicOrdering) = delete;
+bool operator>(AtomicOrdering, AtomicOrdering) = delete;
+bool operator<=(AtomicOrdering, AtomicOrdering) = delete;
+bool operator>=(AtomicOrdering, AtomicOrdering) = delete;
+
+/// String used by LLVM IR to represent atomic ordering.
+static inline const char *toIRString(AtomicOrdering ao) {
+  static const char *names[8] = {"not_atomic", "unordered", "monotonic",
+                                 "consume",    "acquire",   "release",
+                                 "acq_rel",    "seq_cst"};
+  return names[(size_t)ao];
+}
+
+/// Returns true if ao is stronger than other as defined by the AtomicOrdering
+/// lattice, which is based on C++'s definition.
+static inline bool isStrongerThan(AtomicOrdering ao, AtomicOrdering other) {
+  static const bool lookup[8][8] = {
+      //               NA UN RX CO AC RE AR SC
+      /* NotAtomic */ {0, 0, 0, 0, 0, 0, 0, 0},
+      /* Unordered */ {1, 0, 0, 0, 0, 0, 0, 0},
+      /* relaxed   */ {1, 1, 0, 0, 0, 0, 0, 0},
+      /* consume   */ {1, 1, 1, 0, 0, 0, 0, 0},
+      /* acquire   */ {1, 1, 1, 1, 0, 0, 0, 0},
+      /* release   */ {1, 1, 1, 0, 0, 0, 0, 0},
+      /* acq_rel   */ {1, 1, 1, 1, 1, 1, 0, 0},
+      /* seq_cst   */ {1, 1, 1, 1, 1, 1, 1, 0},
+  };
+  return lookup[(size_t)ao][(size_t)other];
+}
+
+static inline bool isAtLeastOrStrongerThan(AtomicOrdering ao,
+                                           AtomicOrdering other) {
+  static const bool lookup[8][8] = {
+      //               NA UN RX CO AC RE AR SC
+      /* NotAtomic */ {1, 0, 0, 0, 0, 0, 0, 0},
+      /* Unordered */ {1, 1, 0, 0, 0, 0, 0, 0},
+      /* relaxed   */ {1, 1, 1, 0, 0, 0, 0, 0},
+      /* consume   */ {1, 1, 1, 1, 0, 0, 0, 0},
+      /* acquire   */ {1, 1, 1, 1, 1, 0, 0, 0},
+      /* release   */ {1, 1, 1, 0, 0, 1, 0, 0},
+      /* acq_rel   */ {1, 1, 1, 1, 1, 1, 1, 0},
+      /* seq_cst   */ {1, 1, 1, 1, 1, 1, 1, 1},
+  };
+  return lookup[(size_t)ao][(size_t)other];
+}
+
+static inline bool isStrongerThanUnordered(AtomicOrdering Ord) {
+  return isStrongerThan(Ord, AtomicOrdering::Unordered);
+}
+
+static inline bool isStrongerThanMonotonic(AtomicOrdering Ord) {
+  return isStrongerThan(Ord, AtomicOrdering::Monotonic);
+}
+
+static inline bool isAcquireOrStronger(AtomicOrdering Ord) {
+  return isAtLeastOrStrongerThan(Ord, AtomicOrdering::Acquire);
+}
+
+static inline bool isReleaseOrStronger(AtomicOrdering Ord) {
+  return isAtLeastOrStrongerThan(Ord, AtomicOrdering::Release);
+}
+
 enum SynchronizationScope {
   SingleThread = 0,
   CrossThread = 1
 };
 
-/// Returns true if the ordering is at least as strong as acquire
-/// (i.e. acquire, acq_rel or seq_cst)
-inline bool isAtLeastAcquire(AtomicOrdering Ord) {
-   return (Ord == Acquire ||
-    Ord == AcquireRelease ||
-    Ord == SequentiallyConsistent);
-}
-
-/// Returns true if the ordering is at least as strong as release
-/// (i.e. release, acq_rel or seq_cst)
-inline bool isAtLeastRelease(AtomicOrdering Ord) {
-return (Ord == Release ||
-    Ord == AcquireRelease ||
-    Ord == SequentiallyConsistent);
-}
 
 //===----------------------------------------------------------------------===//
 //                                AllocaInst Class
@@ -150,6 +203,18 @@ public:
   void setUsedWithInAlloca(bool V) {
     setInstructionSubclassData((getSubclassDataFromInstruction() & ~32) |
                                (V ? 32 : 0));
+  }
+
+  /// \brief Return true if this alloca is used as a swifterror argument to a
+  /// call.
+  bool isSwiftError() const {
+    return getSubclassDataFromInstruction() & 64;
+  }
+
+  /// \brief Specify whether this alloca is used to represent a swifterror.
+  void setSwiftError(bool V) {
+    setInstructionSubclassData((getSubclassDataFromInstruction() & ~64) |
+                               (V ? 64 : 0));
   }
 
   // Methods for support type inquiry through isa, cast, and dyn_cast:
@@ -257,7 +322,7 @@ public:
   /// AcquireRelease.
   void setOrdering(AtomicOrdering Ordering) {
     setInstructionSubclassData((getSubclassDataFromInstruction() & ~(7 << 7)) |
-                               (Ordering << 7));
+                               ((unsigned)Ordering << 7));
   }
 
   SynchronizationScope getSynchScope() const {
@@ -280,7 +345,9 @@ public:
 
   bool isSimple() const { return !isAtomic() && !isVolatile(); }
   bool isUnordered() const {
-    return getOrdering() <= Unordered && !isVolatile();
+    return (getOrdering() == AtomicOrdering::NotAtomic ||
+            getOrdering() == AtomicOrdering::Unordered) &&
+           !isVolatile();
   }
 
   Value *getPointerOperand() { return getOperand(0); }
@@ -378,7 +445,7 @@ public:
   /// AcquireRelease.
   void setOrdering(AtomicOrdering Ordering) {
     setInstructionSubclassData((getSubclassDataFromInstruction() & ~(7 << 7)) |
-                               (Ordering << 7));
+                               ((unsigned)Ordering << 7));
   }
 
   SynchronizationScope getSynchScope() const {
@@ -401,7 +468,9 @@ public:
 
   bool isSimple() const { return !isAtomic() && !isVolatile(); }
   bool isUnordered() const {
-    return getOrdering() <= Unordered && !isVolatile();
+    return (getOrdering() == AtomicOrdering::NotAtomic ||
+            getOrdering() == AtomicOrdering::Unordered) &&
+           !isVolatile();
   }
 
   Value *getValueOperand() { return getOperand(0); }
@@ -477,7 +546,7 @@ public:
   /// AcquireRelease, or SequentiallyConsistent.
   void setOrdering(AtomicOrdering Ordering) {
     setInstructionSubclassData((getSubclassDataFromInstruction() & 1) |
-                               (Ordering << 1));
+                               ((unsigned)Ordering << 1));
   }
 
   SynchronizationScope getSynchScope() const {
@@ -572,17 +641,17 @@ public:
 
   /// Set the ordering constraint on this cmpxchg.
   void setSuccessOrdering(AtomicOrdering Ordering) {
-    assert(Ordering != NotAtomic &&
+    assert(Ordering != AtomicOrdering::NotAtomic &&
            "CmpXchg instructions can only be atomic.");
     setInstructionSubclassData((getSubclassDataFromInstruction() & ~0x1c) |
-                               (Ordering << 2));
+                               ((unsigned)Ordering << 2));
   }
 
   void setFailureOrdering(AtomicOrdering Ordering) {
-    assert(Ordering != NotAtomic &&
+    assert(Ordering != AtomicOrdering::NotAtomic &&
            "CmpXchg instructions can only be atomic.");
     setInstructionSubclassData((getSubclassDataFromInstruction() & ~0xe0) |
-                               (Ordering << 5));
+                               ((unsigned)Ordering << 5));
   }
 
   /// Specify whether this cmpxchg is atomic and orders other operations with
@@ -634,15 +703,16 @@ public:
   static AtomicOrdering
   getStrongestFailureOrdering(AtomicOrdering SuccessOrdering) {
     switch (SuccessOrdering) {
-    default: llvm_unreachable("invalid cmpxchg success ordering");
-    case Release:
-    case Monotonic:
-      return Monotonic;
-    case AcquireRelease:
-    case Acquire:
-      return Acquire;
-    case SequentiallyConsistent:
-      return SequentiallyConsistent;
+    default:
+      llvm_unreachable("invalid cmpxchg success ordering");
+    case AtomicOrdering::Release:
+    case AtomicOrdering::Monotonic:
+      return AtomicOrdering::Monotonic;
+    case AtomicOrdering::AcquireRelease:
+    case AtomicOrdering::Acquire:
+      return AtomicOrdering::Acquire;
+    case AtomicOrdering::SequentiallyConsistent:
+      return AtomicOrdering::SequentiallyConsistent;
     }
   }
 
@@ -758,10 +828,10 @@ public:
 
   /// Set the ordering constraint on this RMW.
   void setOrdering(AtomicOrdering Ordering) {
-    assert(Ordering != NotAtomic &&
+    assert(Ordering != AtomicOrdering::NotAtomic &&
            "atomicrmw instructions can only be atomic.");
     setInstructionSubclassData((getSubclassDataFromInstruction() & ~(7 << 2)) |
-                               (Ordering << 2));
+                               ((unsigned)Ordering << 2));
   }
 
   /// Specify whether this RMW orders other operations with respect to all

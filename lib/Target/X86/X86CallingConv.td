@@ -192,6 +192,24 @@ def RetCC_X86_64_WebKit_JS : CallingConv<[
   CCIfType<[i64], CCAssignToReg<[RAX]>>
 ]>;
 
+def RetCC_X86_64_Swift : CallingConv<[
+  // For integers, ECX, R8D can be used as extra return registers.
+  CCIfType<[i1],  CCPromoteToType<i8>>,
+  CCIfType<[i8] , CCAssignToReg<[AL, DL, CL, R8B]>>,
+  CCIfType<[i16], CCAssignToReg<[AX, DX, CX, R8W]>>,
+  CCIfType<[i32], CCAssignToReg<[EAX, EDX, ECX, R8D]>>,
+  CCIfType<[i64], CCAssignToReg<[RAX, RDX, RCX, R8]>>,
+
+  // XMM0, XMM1, XMM2 and XMM3 can be used to return FP values.
+  CCIfType<[f32], CCAssignToReg<[XMM0, XMM1, XMM2, XMM3]>>,
+  CCIfType<[f64], CCAssignToReg<[XMM0, XMM1, XMM2, XMM3]>>,
+  CCIfType<[f128], CCAssignToReg<[XMM0, XMM1, XMM2, XMM3]>>,
+
+  // MMX vector types are returned in XMM0, XMM1, XMM2 and XMM3.
+  CCIfType<[x86mmx], CCAssignToReg<[XMM0, XMM1, XMM2, XMM3]>>,
+  CCDelegateTo<RetCC_X86Common>
+]>;
+
 // X86-64 AnyReg return-value convention. No explicit register is specified for
 // the return-value. The register allocator is allowed and expected to choose
 // any free register.
@@ -234,6 +252,9 @@ def RetCC_X86_64 : CallingConv<[
   CCIfCC<"CallingConv::WebKit_JS", CCDelegateTo<RetCC_X86_64_WebKit_JS>>,
   CCIfCC<"CallingConv::AnyReg", CCDelegateTo<RetCC_X86_64_AnyReg>>,
 
+  // Handle Swift calls.
+  CCIfCC<"CallingConv::Swift", CCDelegateTo<RetCC_X86_64_Swift>>,
+
   // Handle explicit CC selection
   CCIfCC<"CallingConv::X86_64_Win64", CCDelegateTo<RetCC_X86_Win64_C>>,
   CCIfCC<"CallingConv::X86_64_SysV", CCDelegateTo<RetCC_X86_64_C>>,
@@ -272,6 +293,9 @@ def CC_X86_64_C : CallingConv<[
   // The 'nest' parameter, if any, is passed in R10.
   CCIfNest<CCIfSubtarget<"isTarget64BitILP32()", CCAssignToReg<[R10D]>>>,
   CCIfNest<CCAssignToReg<[R10]>>,
+
+  // A SwiftSelf is passed in R10.
+  CCIfSwiftSelf<CCIfType<[i64], CCAssignToReg<[R10]>>>,
 
   // The first 6 integer arguments are passed in integer registers.
   CCIfType<[i32], CCAssignToReg<[EDI, ESI, EDX, ECX, R8D, R9D]>>,

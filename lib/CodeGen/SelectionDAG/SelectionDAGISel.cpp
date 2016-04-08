@@ -469,11 +469,10 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
   MF->setHasInlineAsm(false);
 
   FuncInfo->SplitCSR = false;
-  SmallVector<MachineBasicBlock*, 4> Returns;
 
   // We split CSR if the target supports it for the given function
   // and the function has only return exits.
-  if (TLI->supportSplitCSR(MF)) {
+  if (OptLevel != CodeGenOpt::None && TLI->supportSplitCSR(MF)) {
     FuncInfo->SplitCSR = true;
 
     // Collect all the return blocks.
@@ -482,12 +481,8 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
         continue;
 
       const TerminatorInst *Term = BB.getTerminator();
-      if (isa<UnreachableInst>(Term))
+      if (isa<UnreachableInst>(Term) || isa<ReturnInst>(Term))
         continue;
-      if (isa<ReturnInst>(Term)) {
-        Returns.push_back(FuncInfo->MBBMap[&BB]);
-        continue;
-      }
 
       // Bail out if the exit block is not Return nor Unreachable.
       FuncInfo->SplitCSR = false;
@@ -509,8 +504,21 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
   RegInfo->EmitLiveInCopies(EntryMBB, TRI, *TII);
 
   // Insert copies in the entry block and the return blocks.
-  if (FuncInfo->SplitCSR)
+  if (FuncInfo->SplitCSR) {
+    SmallVector<MachineBasicBlock*, 4> Returns;
+    // Collect all the return blocks.
+    for (MachineBasicBlock &MBB : mf) {
+      if (!MBB.succ_empty())
+        continue;
+
+      MachineBasicBlock::iterator Term = MBB.getFirstTerminator();
+      if (Term != MBB.end() && Term->isReturn()) {
+        Returns.push_back(&MBB);
+        continue;
+      }
+    }
     TLI->insertCopiesSplitCSR(EntryMBB, Returns);
+  }
 
   DenseMap<unsigned, unsigned> LiveInMap;
   if (!FuncInfo->ArgDbgValues.empty())
@@ -1151,11 +1159,131 @@ static void collectFailStats(const Instruction *I) {
 }
 #endif // NDEBUG
 
+/// Set up SwiftErrorVals by going through the function. If the function has
+/// swifterror argument, it will be the first entry.
+static void setupSwiftErrorVals(const Function &Fn, const TargetLowering *TLI,
+                                FunctionLoweringInfo *FuncInfo) {
+  if (!TLI->supportSwiftError())
+    return;
+
+  FuncInfo->SwiftErrorVals.clear();
+  FuncInfo->SwiftErrorMap.clear();
+  FuncInfo->SwiftErrorWorklist.clear();
+
+  // Check if function has a swifterror argument.
+  for (Function::const_arg_iterator AI = Fn.arg_begin(), AE = Fn.arg_end();
+       AI != AE; ++AI)
+    if (AI->hasSwiftErrorAttr())
+      FuncInfo->SwiftErrorVals.push_back(&*AI);
+
+  for (const auto &LLVMBB : Fn)
+    for (const auto &Inst : LLVMBB) {
+      if (const AllocaInst *Alloca = dyn_cast<AllocaInst>(&Inst))
+        if (Alloca->isSwiftError())
+          FuncInfo->SwiftErrorVals.push_back(Alloca);
+    }
+}
+
+/// For each basic block, merge incoming swifterror values or simply propagate
+/// them. The merged results will be saved in SwiftErrorMap. For predecessors
+/// that are not yet visited, we create virtual registers to hold the swifterror
+/// values and save them in SwiftErrorWorklist.
+static void mergeIncomingSwiftErrors(FunctionLoweringInfo *FuncInfo,
+                            const TargetLowering *TLI,
+                            const TargetInstrInfo *TII,
+                            const BasicBlock *LLVMBB,
+                            SelectionDAGBuilder *SDB) {
+  if (!TLI->supportSwiftError())
+    return;
+
+  // We should only do this when we have swifterror parameter or swifterror
+  // alloc.
+  if (FuncInfo->SwiftErrorVals.empty())
+    return;
+
+  // At beginning of a basic block, insert PHI nodes or get the virtual
+  // register from the only predecessor, and update SwiftErrorMap; if one
+  // of the predecessors is not visited, update SwiftErrorWorklist.
+  // At end of a basic block, if a block is in SwiftErrorWorklist, insert copy
+  // to sync up the virtual register assignment.
+
+  // Always create a virtual register for each swifterror value in entry block.
+  auto &DL = SDB->DAG.getDataLayout();
+  const TargetRegisterClass *RC = TLI->getRegClassFor(TLI->getPointerTy(DL));
+  if (pred_begin(LLVMBB) == pred_end(LLVMBB)) {
+    for (unsigned I = 0, E = FuncInfo->SwiftErrorVals.size(); I < E; I++) {
+      unsigned VReg = FuncInfo->MF->getRegInfo().createVirtualRegister(RC);
+      // Assign Undef to Vreg. We construct MI directly to make sure it works
+      // with FastISel.
+      BuildMI(*FuncInfo->MBB, FuncInfo->InsertPt, SDB->getCurDebugLoc(),
+          TII->get(TargetOpcode::IMPLICIT_DEF), VReg);
+      FuncInfo->SwiftErrorMap[FuncInfo->MBB].push_back(VReg);
+    }
+    return;
+  }
+
+  if (auto *UniquePred = LLVMBB->getUniquePredecessor()) {
+    auto *UniquePredMBB = FuncInfo->MBBMap[UniquePred];
+    if (!FuncInfo->SwiftErrorMap.count(UniquePredMBB)) {
+      // Update SwiftErrorWorklist with a new virtual register.
+      for (unsigned I = 0, E = FuncInfo->SwiftErrorVals.size(); I < E; I++) {
+        unsigned VReg = FuncInfo->MF->getRegInfo().createVirtualRegister(RC);
+        FuncInfo->SwiftErrorWorklist[UniquePredMBB].push_back(VReg);
+        // Propagate the information from the single predecessor.
+        FuncInfo->SwiftErrorMap[FuncInfo->MBB].push_back(VReg);
+      }
+      return;
+    }
+    // Propagate the information from the single predecessor.
+    FuncInfo->SwiftErrorMap[FuncInfo->MBB] =
+      FuncInfo->SwiftErrorMap[UniquePredMBB];
+    return;
+  }
+
+  // For the case of multiple predecessors, update SwiftErrorWorklist.
+  // Handle the case where we have two or more predecessors being the same.
+  for (const_pred_iterator PI = pred_begin(LLVMBB), PE = pred_end(LLVMBB);
+       PI != PE; ++PI) {
+    auto *PredMBB = FuncInfo->MBBMap[*PI];
+    if (!FuncInfo->SwiftErrorMap.count(PredMBB) &&
+        !FuncInfo->SwiftErrorWorklist.count(PredMBB)) {
+      for (unsigned I = 0, E = FuncInfo->SwiftErrorVals.size(); I < E; I++) {
+        unsigned VReg = FuncInfo->MF->getRegInfo().createVirtualRegister(RC);
+        // When we actually visit the basic block PredMBB, we will materialize
+        // the virtual register assignment in copySwiftErrorsToFinalVRegs.
+        FuncInfo->SwiftErrorWorklist[PredMBB].push_back(VReg);
+      }
+    }
+  }
+
+  // For the case of multiple predecessors, create a virtual register for
+  // each swifterror value and generate Phi node.
+  for (unsigned I = 0, E = FuncInfo->SwiftErrorVals.size(); I < E; I++) {
+    unsigned VReg = FuncInfo->MF->getRegInfo().createVirtualRegister(RC);
+    FuncInfo->SwiftErrorMap[FuncInfo->MBB].push_back(VReg);
+
+    MachineInstrBuilder SwiftErrorPHI = BuildMI(*FuncInfo->MBB,
+        FuncInfo->MBB->begin(), SDB->getCurDebugLoc(),
+        TII->get(TargetOpcode::PHI), VReg);
+    for (const_pred_iterator PI = pred_begin(LLVMBB), PE = pred_end(LLVMBB);
+         PI != PE; ++PI) {
+      auto *PredMBB = FuncInfo->MBBMap[*PI];
+      unsigned SwiftErrorReg = FuncInfo->SwiftErrorMap.count(PredMBB) ?
+        FuncInfo->SwiftErrorMap[PredMBB][I] :
+        FuncInfo->SwiftErrorWorklist[PredMBB][I];
+      SwiftErrorPHI.addReg(SwiftErrorReg)
+                   .addMBB(PredMBB);
+    }
+  }
+}
+
 void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
   // Initialize the Fast-ISel state, if needed.
   FastISel *FastIS = nullptr;
   if (TM.Options.EnableFastISel)
     FastIS = TLI->createFastISel(*FuncInfo, LibInfo);
+
+  setupSwiftErrorVals(Fn, TLI, FuncInfo);
 
   // Iterate over all basic blocks in the function.
   ReversePostOrderTraversal<const Function*> RPOT(&Fn);
@@ -1195,6 +1323,7 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
     if (!FuncInfo->MBB)
       continue; // Some blocks like catchpads have no code or MBB.
     FuncInfo->InsertPt = FuncInfo->MBB->getFirstNonPHI();
+    mergeIncomingSwiftErrors(FuncInfo, TLI, TII, LLVMBB, SDB);
 
     // Setup an EH landing-pad block.
     FuncInfo->ExceptionPointerVirtReg = 0;

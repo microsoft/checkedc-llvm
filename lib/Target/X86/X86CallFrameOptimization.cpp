@@ -169,7 +169,7 @@ bool X86CallFrameOptimization::isLegal(MachineFunction &MF) {
   return true;
 }
 
-// Check whether this trasnformation is profitable for a particular
+// Check whether this transformation is profitable for a particular
 // function - in terms of code size.
 bool X86CallFrameOptimization::isProfitable(MachineFunction &MF, 
   ContextVector &CallSeqVector) {
@@ -179,10 +179,6 @@ bool X86CallFrameOptimization::isProfitable(MachineFunction &MF,
   bool CannotReserveFrame = MF.getFrameInfo()->hasVarSizedObjects();
   if (CannotReserveFrame)
     return true;
-
-  // Don't do this when not optimizing for size.
-  if (!MF.getFunction()->optForSize())
-    return false;
 
   unsigned StackAlign = TFL->getStackAlignment();
 
@@ -233,11 +229,11 @@ bool X86CallFrameOptimization::runOnMachineFunction(MachineFunction &MF) {
 
   ContextVector CallSeqVector;
 
-  for (MachineFunction::iterator BB = MF.begin(), E = MF.end(); BB != E; ++BB)
-    for (MachineBasicBlock::iterator I = BB->begin(); I != BB->end(); ++I)
-      if (I->getOpcode() == FrameSetupOpcode) {
+  for (auto &MBB : MF)
+    for (auto &MI : MBB)
+      if (MI.getOpcode() == FrameSetupOpcode) {
         CallContext Context;
-        collectCallInfo(MF, *BB, I, Context);
+        collectCallInfo(MF, MBB, MI, Context);
         CallSeqVector.push_back(Context);
       }
 

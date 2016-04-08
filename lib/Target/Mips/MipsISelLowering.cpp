@@ -396,7 +396,6 @@ MipsTargetLowering::MipsTargetLowering(const MipsTargetMachine &TM,
     setOperationAction(ISD::ATOMIC_STORE,    MVT::i64,   Expand);
   }
 
-  setInsertFencesForAtomic(true);
 
   if (!Subtarget.hasMips32r2()) {
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i8,  Expand);
@@ -1064,6 +1063,8 @@ MipsTargetLowering::emitAtomicBinary(MachineInstr *MI, MachineBasicBlock *BB,
   DebugLoc DL = MI->getDebugLoc();
   unsigned LL, SC, AND, NOR, ZERO, BEQ;
 
+  // FIXME: The below code should check for the ISA to emit the correct 64bit
+  // operations when the size is 4.
   if (Size == 4) {
     if (isMicroMips) {
       LL = Mips::LL_MM;

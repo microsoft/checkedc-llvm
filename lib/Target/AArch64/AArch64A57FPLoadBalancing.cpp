@@ -125,6 +125,11 @@ public:
 
   bool runOnMachineFunction(MachineFunction &F) override;
 
+  MachineFunctionProperties getRequiredProperties() const override {
+    return MachineFunctionProperties().set(
+        MachineFunctionProperties::Property::AllVRegsAllocated);
+  }
+
   const char *getPassName() const override {
     return "A57 FP Anti-dependency breaker";
   }
@@ -492,7 +497,7 @@ bool AArch64A57FPLoadBalancing::colorChainSet(std::vector<Chain*> GV,
 int AArch64A57FPLoadBalancing::scavengeRegister(Chain *G, Color C,
                                                 MachineBasicBlock &MBB) {
   RegScavenger RS;
-  RS.enterBasicBlock(&MBB);
+  RS.enterBasicBlock(MBB);
   RS.forward(MachineBasicBlock::iterator(G->getStart()));
 
   // Can we find an appropriate register that is available throughout the life

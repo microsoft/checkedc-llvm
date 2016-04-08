@@ -251,6 +251,7 @@ namespace {
     void verifyStackFrame();
 
     void verifySlotIndexes() const;
+    void verifyProperties(const MachineFunction &MF);
   };
 
   struct MachineVerifierPass : public MachineFunctionPass {
@@ -307,6 +308,19 @@ void MachineVerifier::verifySlotIndexes() const {
   }
 }
 
+void MachineVerifier::verifyProperties(const MachineFunction &MF) {
+  // If a pass has introduced virtual registers without clearing the
+  // AllVRegsAllocated property (or set it without allocating the vregs)
+  // then report an error.
+  if (MF.getProperties().hasProperty(
+          MachineFunctionProperties::Property::AllVRegsAllocated) &&
+      MRI->getNumVirtRegs()) {
+    report(
+        "Function has AllVRegsAllocated property but there are VReg operands",
+        &MF);
+  }
+}
+
 unsigned MachineVerifier::verify(MachineFunction &MF) {
   foundErrors = 0;
 
@@ -330,6 +344,8 @@ unsigned MachineVerifier::verify(MachineFunction &MF) {
   }
 
   verifySlotIndexes();
+
+  verifyProperties(MF);
 
   visitMachineFunctionBefore();
   for (MachineFunction::const_iterator MFI = MF.begin(), MFE = MF.end();
@@ -1727,18 +1743,33 @@ void MachineVerifier::verifyLiveRangeSegment(const LiveRange &LR,
     // use, or a dead flag on a def.
     bool hasRead = false;
     bool hasSubRegDef = false;
+    bool hasDeadDef = false;
     for (ConstMIBundleOperands MOI(*MI); MOI.isValid(); ++MOI) {
       if (!MOI->isReg() || MOI->getReg() != Reg)
         continue;
       if (LaneMask != 0 &&
           (LaneMask & TRI->getSubRegIndexLaneMask(MOI->getSubReg())) == 0)
         continue;
-      if (MOI->isDef() && MOI->getSubReg() != 0)
-        hasSubRegDef = true;
+      if (MOI->isDef()) {
+        if (MOI->getSubReg() != 0)
+          hasSubRegDef = true;
+        if (MOI->isDead())
+          hasDeadDef = true;
+      }
       if (MOI->readsReg())
         hasRead = true;
     }
-    if (!S.end.isDead()) {
+    if (S.end.isDead()) {
+      // Make sure that the corresponding machine operand for a "dead" live
+      // range has the dead flag. We cannot perform this check for subregister
+      // liveranges as partially dead values are allowed.
+      if (LaneMask == 0 && !hasDeadDef) {
+        report("Instruction ending live segment on dead slot has no dead flag",
+               MI);
+        report_context(LR, Reg, LaneMask);
+        report_context(S);
+      }
+    } else {
       if (!hasRead) {
         // When tracking subregister liveness, the main range must start new
         // values on partial register writes, even if there is no read.

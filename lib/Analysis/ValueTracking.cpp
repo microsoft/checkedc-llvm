@@ -1450,7 +1450,7 @@ void computeKnownBits(Value *V, APInt &KnownZero, APInt &KnownOne,
   // A weak GlobalAlias is totally unknown. A non-weak GlobalAlias has
   // the bits of its aliasee.
   if (GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
-    if (!GA->mayBeOverridden())
+    if (!GA->isInterposable())
       computeKnownBits(GA->getAliasee(), KnownZero, KnownOne, Depth + 1, Q);
     return;
   }
@@ -2640,7 +2640,7 @@ Value *llvm::GetPointerBaseWithConstantOffset(Value *Ptr, int64_t &Offset,
                Operator::getOpcode(Ptr) == Instruction::AddrSpaceCast) {
       Ptr = cast<Operator>(Ptr)->getOperand(0);
     } else if (GlobalAlias *GA = dyn_cast<GlobalAlias>(Ptr)) {
-      if (GA->mayBeOverridden())
+      if (GA->isInterposable())
         break;
       Ptr = GA->getAliasee();
     } else {
@@ -2836,7 +2836,7 @@ Value *llvm::GetUnderlyingObject(Value *V, const DataLayout &DL,
                Operator::getOpcode(V) == Instruction::AddrSpaceCast) {
       V = cast<Operator>(V)->getOperand(0);
     } else if (GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
-      if (GA->mayBeOverridden())
+      if (GA->isInterposable())
         return V;
       V = GA->getAliasee();
     } else {
@@ -2989,17 +2989,29 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
       case Intrinsic::umul_with_overflow:
       case Intrinsic::usub_with_overflow:
         return true;
-      // Sqrt should be OK, since the llvm sqrt intrinsic isn't defined to set
-      // errno like libm sqrt would.
+      // These intrinsics are defined to have the same behavior as libm
+      // functions except for setting errno.
       case Intrinsic::sqrt:
       case Intrinsic::fma:
       case Intrinsic::fmuladd:
+        return true;
+      // These intrinsics are defined to have the same behavior as libm
+      // functions, and the corresponding libm functions never set errno.
+      case Intrinsic::trunc:
+      case Intrinsic::copysign:
       case Intrinsic::fabs:
       case Intrinsic::minnum:
       case Intrinsic::maxnum:
         return true;
-      // TODO: some fp intrinsics are marked as having the same error handling
-      // as libm. They're safe to speculate when they won't error.
+      // These intrinsics are defined to have the same behavior as libm
+      // functions, which never overflow when operating on the IEEE754 types
+      // that we support, and never set errno otherwise.
+      case Intrinsic::ceil:
+      case Intrinsic::floor:
+      case Intrinsic::nearbyint:
+      case Intrinsic::rint:
+      case Intrinsic::round:
+        return true;
       // TODO: are convert_{from,to}_fp16 safe?
       // TODO: can we list target-specific intrinsics here?
       default: break;
@@ -3549,10 +3561,11 @@ static SelectPatternResult matchSelectPattern(CmpInst::Predicate Pred,
         return {(CmpLHS == FalseVal) ? SPF_ABS : SPF_NABS, SPNB_NA, false};
       }
     }
-    
+
     // Y >s C ? ~Y : ~C == ~Y <s ~C ? ~Y : ~C = SMIN(~Y, ~C)
     if (const auto *C2 = dyn_cast<ConstantInt>(FalseVal)) {
-      if (C1->getType() == C2->getType() && ~C1->getValue() == C2->getValue() &&
+      if (Pred == ICmpInst::ICMP_SGT && C1->getType() == C2->getType() &&
+          ~C1->getValue() == C2->getValue() &&
           (match(TrueVal, m_Not(m_Specific(CmpLHS))) ||
            match(CmpLHS, m_Not(m_Specific(TrueVal))))) {
         LHS = TrueVal;

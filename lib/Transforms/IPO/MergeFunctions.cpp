@@ -401,6 +401,7 @@ private:
   int cmpTypes(Type *TyL, Type *TyR) const;
 
   int cmpNumbers(uint64_t L, uint64_t R) const;
+  int cmpOrderings(AtomicOrdering L, AtomicOrdering R) const;
   int cmpAPInts(const APInt &L, const APInt &R) const;
   int cmpAPFloats(const APFloat &L, const APFloat &R) const;
   int cmpInlineAsm(const InlineAsm *L, const InlineAsm *R) const;
@@ -474,6 +475,12 @@ public:
 int FunctionComparator::cmpNumbers(uint64_t L, uint64_t R) const {
   if (L < R) return -1;
   if (L > R) return 1;
+  return 0;
+}
+
+int FunctionComparator::cmpOrderings(AtomicOrdering L, AtomicOrdering R) const {
+  if ((int)L < (int)R) return -1;
+  if ((int)L > (int)R) return 1;
   return 0;
 }
 
@@ -939,7 +946,7 @@ int FunctionComparator::cmpOperations(const Instruction *L,
             cmpNumbers(LI->getAlignment(), cast<LoadInst>(R)->getAlignment()))
       return Res;
     if (int Res =
-            cmpNumbers(LI->getOrdering(), cast<LoadInst>(R)->getOrdering()))
+            cmpOrderings(LI->getOrdering(), cast<LoadInst>(R)->getOrdering()))
       return Res;
     if (int Res =
             cmpNumbers(LI->getSynchScope(), cast<LoadInst>(R)->getSynchScope()))
@@ -955,7 +962,7 @@ int FunctionComparator::cmpOperations(const Instruction *L,
             cmpNumbers(SI->getAlignment(), cast<StoreInst>(R)->getAlignment()))
       return Res;
     if (int Res =
-            cmpNumbers(SI->getOrdering(), cast<StoreInst>(R)->getOrdering()))
+            cmpOrderings(SI->getOrdering(), cast<StoreInst>(R)->getOrdering()))
       return Res;
     return cmpNumbers(SI->getSynchScope(), cast<StoreInst>(R)->getSynchScope());
   }
@@ -1009,7 +1016,7 @@ int FunctionComparator::cmpOperations(const Instruction *L,
   }
   if (const FenceInst *FI = dyn_cast<FenceInst>(L)) {
     if (int Res =
-            cmpNumbers(FI->getOrdering(), cast<FenceInst>(R)->getOrdering()))
+            cmpOrderings(FI->getOrdering(), cast<FenceInst>(R)->getOrdering()))
       return Res;
     return cmpNumbers(FI->getSynchScope(), cast<FenceInst>(R)->getSynchScope());
   }
@@ -1021,11 +1028,13 @@ int FunctionComparator::cmpOperations(const Instruction *L,
     if (int Res = cmpNumbers(CXI->isWeak(),
                              cast<AtomicCmpXchgInst>(R)->isWeak()))
       return Res;
-    if (int Res = cmpNumbers(CXI->getSuccessOrdering(),
-                             cast<AtomicCmpXchgInst>(R)->getSuccessOrdering()))
+    if (int Res =
+            cmpOrderings(CXI->getSuccessOrdering(),
+                         cast<AtomicCmpXchgInst>(R)->getSuccessOrdering()))
       return Res;
-    if (int Res = cmpNumbers(CXI->getFailureOrdering(),
-                             cast<AtomicCmpXchgInst>(R)->getFailureOrdering()))
+    if (int Res =
+            cmpOrderings(CXI->getFailureOrdering(),
+                         cast<AtomicCmpXchgInst>(R)->getFailureOrdering()))
       return Res;
     return cmpNumbers(CXI->getSynchScope(),
                       cast<AtomicCmpXchgInst>(R)->getSynchScope());
@@ -1037,7 +1046,7 @@ int FunctionComparator::cmpOperations(const Instruction *L,
     if (int Res = cmpNumbers(RMWI->isVolatile(),
                              cast<AtomicRMWInst>(R)->isVolatile()))
       return Res;
-    if (int Res = cmpNumbers(RMWI->getOrdering(),
+    if (int Res = cmpOrderings(RMWI->getOrdering(),
                              cast<AtomicRMWInst>(R)->getOrdering()))
       return Res;
     return cmpNumbers(RMWI->getSynchScope(),
@@ -1563,7 +1572,7 @@ bool MergeFunctions::runOnModule(Module &M) {
       if (!*I) continue;
       Function *F = cast<Function>(*I);
       if (!F->isDeclaration() && !F->hasAvailableExternallyLinkage() &&
-          !F->mayBeOverridden()) {
+          !F->isInterposable()) {
         Changed |= insert(F);
       }
     }
@@ -1577,7 +1586,7 @@ bool MergeFunctions::runOnModule(Module &M) {
       if (!*I) continue;
       Function *F = cast<Function>(*I);
       if (!F->isDeclaration() && !F->hasAvailableExternallyLinkage() &&
-          F->mayBeOverridden()) {
+          F->isInterposable()) {
         Changed |= insert(F);
       }
     }
@@ -1674,7 +1683,7 @@ static Value *createCast(IRBuilder<> &Builder, Value *V, Type *DestTy) {
 // Replace G with a simple tail call to bitcast(F). Also replace direct uses
 // of G with bitcast(F). Deletes G.
 void MergeFunctions::writeThunk(Function *F, Function *G) {
-  if (!G->mayBeOverridden()) {
+  if (!G->isInterposable()) {
     // Redirect direct callers of G to F.
     replaceDirectCallers(G, F);
   }
@@ -1735,8 +1744,8 @@ void MergeFunctions::writeAlias(Function *F, Function *G) {
 
 // Merge two equivalent functions. Upon completion, Function G is deleted.
 void MergeFunctions::mergeTwoFunctions(Function *F, Function *G) {
-  if (F->mayBeOverridden()) {
-    assert(G->mayBeOverridden());
+  if (F->isInterposable()) {
+    assert(G->isInterposable());
 
     // Make them both thunks to the same internal function.
     Function *H = Function::Create(F->getFunctionType(), F->getLinkage(), "",
@@ -1819,8 +1828,8 @@ bool MergeFunctions::insert(Function *NewFunction) {
   //
   // When one function is weak and the other is strong there is an order imposed
   // already. We process strong functions before weak functions.
-  if ((OldF.getFunc()->mayBeOverridden() && NewFunction->mayBeOverridden()) ||
-      (!OldF.getFunc()->mayBeOverridden() && !NewFunction->mayBeOverridden()))
+  if ((OldF.getFunc()->isInterposable() && NewFunction->isInterposable()) ||
+      (!OldF.getFunc()->isInterposable() && !NewFunction->isInterposable()))
     if (OldF.getFunc()->getName() > NewFunction->getName()) {
       // Swap the two functions.
       Function *F = OldF.getFunc();
@@ -1830,7 +1839,7 @@ bool MergeFunctions::insert(Function *NewFunction) {
     }
 
   // Never thunk a strong function to a weak function.
-  assert(!OldF.getFunc()->mayBeOverridden() || NewFunction->mayBeOverridden());
+  assert(!OldF.getFunc()->isInterposable() || NewFunction->isInterposable());
 
   DEBUG(dbgs() << "  " << OldF.getFunc()->getName()
                << " == " << NewFunction->getName() << '\n');

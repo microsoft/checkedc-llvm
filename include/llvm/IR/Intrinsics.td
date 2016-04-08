@@ -593,6 +593,14 @@ def int_trap : Intrinsic<[], [], [IntrNoReturn]>,
 def int_debugtrap : Intrinsic<[]>,
                     GCCBuiltin<"__builtin_debugtrap">;
 
+// Support for dynamic deoptimization (or de-specialization)
+def int_experimental_deoptimize : Intrinsic<[llvm_any_ty], [llvm_vararg_ty],
+                                            [Throws]>;
+
+// Support for speculative runtime guards
+def int_experimental_guard : Intrinsic<[], [llvm_i1_ty, llvm_vararg_ty],
+                                       [Throws]>;
+
 // NOP: calls/invokes to this intrinsic are removed by codegen
 def int_donothing : Intrinsic<[], [], [IntrNoMem]>;
 
@@ -632,14 +640,13 @@ def int_clear_cache : Intrinsic<[], [llvm_ptr_ty, llvm_ptr_ty],
 
 //===-------------------------- Masked Intrinsics -------------------------===//
 //
-def int_masked_store : Intrinsic<[], [llvm_anyvector_ty,
-                                      LLVMAnyPointerType<LLVMMatchType<0>>,
+def int_masked_store : Intrinsic<[], [llvm_anyvector_ty, LLVMPointerTo<0>,
                                       llvm_i32_ty,
                                       LLVMVectorSameWidth<0, llvm_i1_ty>],
                                  [IntrReadWriteArgMem]>;
 
 def int_masked_load  : Intrinsic<[llvm_anyvector_ty],
-                                 [LLVMAnyPointerType<LLVMMatchType<0>>, llvm_i32_ty,
+                                 [LLVMPointerTo<0>, llvm_i32_ty,
                                   LLVMVectorSameWidth<0, llvm_i1_ty>, LLVMMatchType<0>],
                                  [IntrReadArgMem]>;
 

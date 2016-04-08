@@ -59,7 +59,7 @@ namespace llvm {
 void initializeWasmPEIPass(PassRegistry&);
 }
 namespace {
-class WasmPEI : public MachineFunctionPass {
+class WasmPEI final : public MachineFunctionPass {
 public:
   static char ID;
   WasmPEI() : MachineFunctionPass(ID) {
@@ -867,7 +867,7 @@ void WasmPEI::replaceFrameIndices(MachineBasicBlock *BB, MachineFunction &Fn,
   unsigned FrameSetupOpcode = TII.getCallFrameSetupOpcode();
   unsigned FrameDestroyOpcode = TII.getCallFrameDestroyOpcode();
 
-  if (RS && !FrameIndexVirtualScavenging) RS->enterBasicBlock(BB);
+  if (RS && !FrameIndexVirtualScavenging) RS->enterBasicBlock(*BB);
 
   bool InsideCallSequence = false;
 
@@ -877,16 +877,7 @@ void WasmPEI::replaceFrameIndices(MachineBasicBlock *BB, MachineFunction &Fn,
         I->getOpcode() == FrameDestroyOpcode) {
       InsideCallSequence = (I->getOpcode() == FrameSetupOpcode);
       SPAdj += TII.getSPAdjust(I);
-
-      MachineBasicBlock::iterator PrevI = BB->end();
-      if (I != BB->begin()) PrevI = std::prev(I);
-      TFI->eliminateCallFramePseudoInstr(Fn, *BB, I);
-
-      // Visit the instructions created by eliminateCallFramePseudoInstr().
-      if (PrevI == BB->end())
-        I = BB->begin();     // The replaced instr was the first in the block.
-      else
-        I = std::next(PrevI);
+      I = TFI->eliminateCallFramePseudoInstr(Fn, *BB, I);
       continue;
     }
 
@@ -986,7 +977,7 @@ WasmPEI::scavengeFrameVirtualRegs(MachineFunction &Fn) {
   // Run through the instructions and find any virtual registers.
   for (MachineFunction::iterator BB = Fn.begin(),
        E = Fn.end(); BB != E; ++BB) {
-    RS->enterBasicBlock(&*BB);
+    RS->enterBasicBlock(*BB);
 
     int SPAdj = 0;
 

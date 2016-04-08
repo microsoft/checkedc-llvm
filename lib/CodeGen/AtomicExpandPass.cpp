@@ -86,9 +86,10 @@ bool AtomicExpand::runOnFunction(Function &F) {
 
   // Changing control-flow while iterating through it is a bad idea, so gather a
   // list of all atomic instructions before we start.
-  for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
-    if (I->isAtomic())
-      AtomicInsts.push_back(&*I);
+  for (inst_iterator II = inst_begin(F), E = inst_end(F); II != E; ++II) {
+    Instruction *I = &*II;
+    if (I->isAtomic() && !isa<FenceInst>(I))
+      AtomicInsts.push_back(I);
   }
 
   bool MadeChange = false;
@@ -97,41 +98,40 @@ bool AtomicExpand::runOnFunction(Function &F) {
     auto SI = dyn_cast<StoreInst>(I);
     auto RMWI = dyn_cast<AtomicRMWInst>(I);
     auto CASI = dyn_cast<AtomicCmpXchgInst>(I);
-    assert((LI || SI || RMWI || CASI || isa<FenceInst>(I)) &&
-           "Unknown atomic instruction");
+    assert((LI || SI || RMWI || CASI) && "Unknown atomic instruction");
 
-    if (TLI->getInsertFencesForAtomic()) {
-      auto FenceOrdering = Monotonic;
+    if (TLI->shouldInsertFencesForAtomic(I)) {
+      auto FenceOrdering = AtomicOrdering::Monotonic;
       bool IsStore, IsLoad;
-      if (LI && isAtLeastAcquire(LI->getOrdering())) {
+      if (LI && isAcquireOrStronger(LI->getOrdering())) {
         FenceOrdering = LI->getOrdering();
-        LI->setOrdering(Monotonic);
+        LI->setOrdering(AtomicOrdering::Monotonic);
         IsStore = false;
         IsLoad = true;
-      } else if (SI && isAtLeastRelease(SI->getOrdering())) {
+      } else if (SI && isReleaseOrStronger(SI->getOrdering())) {
         FenceOrdering = SI->getOrdering();
-        SI->setOrdering(Monotonic);
+        SI->setOrdering(AtomicOrdering::Monotonic);
         IsStore = true;
         IsLoad = false;
-      } else if (RMWI && (isAtLeastRelease(RMWI->getOrdering()) ||
-                          isAtLeastAcquire(RMWI->getOrdering()))) {
+      } else if (RMWI && (isReleaseOrStronger(RMWI->getOrdering()) ||
+                          isAcquireOrStronger(RMWI->getOrdering()))) {
         FenceOrdering = RMWI->getOrdering();
-        RMWI->setOrdering(Monotonic);
+        RMWI->setOrdering(AtomicOrdering::Monotonic);
         IsStore = IsLoad = true;
       } else if (CASI && !TLI->shouldExpandAtomicCmpXchgInIR(CASI) &&
-                 (isAtLeastRelease(CASI->getSuccessOrdering()) ||
-                  isAtLeastAcquire(CASI->getSuccessOrdering()))) {
+                 (isReleaseOrStronger(CASI->getSuccessOrdering()) ||
+                  isAcquireOrStronger(CASI->getSuccessOrdering()))) {
         // If a compare and swap is lowered to LL/SC, we can do smarter fence
         // insertion, with a stronger one on the success path than on the
         // failure path. As a result, fence insertion is directly done by
         // expandAtomicCmpXchg in that case.
         FenceOrdering = CASI->getSuccessOrdering();
-        CASI->setSuccessOrdering(Monotonic);
-        CASI->setFailureOrdering(Monotonic);
+        CASI->setSuccessOrdering(AtomicOrdering::Monotonic);
+        CASI->setFailureOrdering(AtomicOrdering::Monotonic);
         IsStore = IsLoad = true;
       }
 
-      if (FenceOrdering != Monotonic) {
+      if (FenceOrdering != AtomicOrdering::Monotonic) {
         MadeChange |= bracketInstWithFences(I, FenceOrdering, IsStore, IsLoad);
       }
     }
@@ -514,12 +514,13 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   BasicBlock *BB = CI->getParent();
   Function *F = BB->getParent();
   LLVMContext &Ctx = F->getContext();
-  // If getInsertFencesForAtomic() returns true, then the target does not want
-  // to deal with memory orders, and emitLeading/TrailingFence should take care
-  // of everything. Otherwise, emitLeading/TrailingFence are no-op and we
+  // If shouldInsertFencesForAtomic() returns true, then the target does not
+  // want to deal with memory orders, and emitLeading/TrailingFence should take
+  // care of everything. Otherwise, emitLeading/TrailingFence are no-op and we
   // should preserve the ordering.
+  bool ShouldInsertFencesForAtomic = TLI->shouldInsertFencesForAtomic(CI);
   AtomicOrdering MemOpOrder =
-      TLI->getInsertFencesForAtomic() ? Monotonic : SuccessOrder;
+      ShouldInsertFencesForAtomic ? AtomicOrdering::Monotonic : SuccessOrder;
 
   // In implementations which use a barrier to achieve release semantics, we can
   // delay emitting this barrier until we know a store is actually going to be
@@ -530,9 +531,10 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   // since in other cases the extra blocks naturally collapse down to the
   // minimal loop. Unfortunately, this puts too much stress on later
   // optimisations so we avoid emitting the extra logic in those cases too.
-  bool HasReleasedLoadBB = !CI->isWeak() && TLI->getInsertFencesForAtomic() &&
-                           SuccessOrder != Monotonic &&
-                           SuccessOrder != Acquire && !F->optForMinSize();
+  bool HasReleasedLoadBB = !CI->isWeak() && ShouldInsertFencesForAtomic &&
+                           SuccessOrder != AtomicOrdering::Monotonic &&
+                           SuccessOrder != AtomicOrdering::Acquire &&
+                           !F->optForMinSize();
 
   // There's no overhead for sinking the release barrier in a weak cmpxchg, so
   // do it even on minsize.
@@ -601,7 +603,7 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   // the branch entirely.
   std::prev(BB->end())->eraseFromParent();
   Builder.SetInsertPoint(BB);
-  if (UseUnconditionalReleaseBarrier)
+  if (ShouldInsertFencesForAtomic && UseUnconditionalReleaseBarrier)
     TLI->emitLeadingFence(Builder, SuccessOrder, /*IsStore=*/true,
                           /*IsLoad=*/true);
   Builder.CreateBr(StartBB);
@@ -617,7 +619,7 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   Builder.CreateCondBr(ShouldStore, ReleasingStoreBB, NoStoreBB);
 
   Builder.SetInsertPoint(ReleasingStoreBB);
-  if (!UseUnconditionalReleaseBarrier)
+  if (ShouldInsertFencesForAtomic && !UseUnconditionalReleaseBarrier)
     TLI->emitLeadingFence(Builder, SuccessOrder, /*IsStore=*/true,
                           /*IsLoad=*/true);
   Builder.CreateBr(TryStoreBB);
@@ -647,8 +649,9 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   // Make sure later instructions don't get reordered with a fence if
   // necessary.
   Builder.SetInsertPoint(SuccessBB);
-  TLI->emitTrailingFence(Builder, SuccessOrder, /*IsStore=*/true,
-                         /*IsLoad=*/true);
+  if (ShouldInsertFencesForAtomic)
+    TLI->emitTrailingFence(Builder, SuccessOrder, /*IsStore=*/true,
+                           /*IsLoad=*/true);
   Builder.CreateBr(ExitBB);
 
   Builder.SetInsertPoint(NoStoreBB);
@@ -659,8 +662,9 @@ bool AtomicExpand::expandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   Builder.CreateBr(FailureBB);
 
   Builder.SetInsertPoint(FailureBB);
-  TLI->emitTrailingFence(Builder, FailureOrder, /*IsStore=*/true,
-                         /*IsLoad=*/true);
+  if (ShouldInsertFencesForAtomic)
+    TLI->emitTrailingFence(Builder, FailureOrder, /*IsStore=*/true,
+                           /*IsLoad=*/true);
   Builder.CreateBr(ExitBB);
 
   // Finally, we have control-flow based knowledge of whether the cmpxchg
@@ -764,8 +768,9 @@ bool llvm::expandAtomicRMWToCmpXchg(AtomicRMWInst *AI,
                                     CreateCmpXchgInstFun CreateCmpXchg) {
   assert(AI);
 
-  AtomicOrdering MemOpOrder =
-      AI->getOrdering() == Unordered ? Monotonic : AI->getOrdering();
+  AtomicOrdering MemOpOrder = AI->getOrdering() == AtomicOrdering::Unordered
+                                  ? AtomicOrdering::Monotonic
+                                  : AI->getOrdering();
   Value *Addr = AI->getPointerOperand();
   BasicBlock *BB = AI->getParent();
   Function *F = BB->getParent();

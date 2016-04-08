@@ -28,9 +28,12 @@ class AssemblyAnnotationWriter;
 class BasicBlock;
 class Constant;
 class ConstantData;
+class ConstantAggregate;
 class DataLayout;
 class Function;
 class GlobalAlias;
+class GlobalIFunc;
+class GlobalIndirectSymbol;
 class GlobalObject;
 class GlobalValue;
 class GlobalVariable;
@@ -700,6 +703,13 @@ template <> struct isa_impl<ConstantData, Value> {
   }
 };
 
+template <> struct isa_impl<ConstantAggregate, Value> {
+  static inline bool doit(const Value &Val) {
+    return Val.getValueID() >= Value::ConstantAggregateFirstVal &&
+           Val.getValueID() <= Value::ConstantAggregateLastVal;
+  }
+};
+
 template <> struct isa_impl<Argument, Value> {
   static inline bool doit (const Value &Val) {
     return Val.getValueID() == Value::ArgumentVal;
@@ -742,9 +752,21 @@ template <> struct isa_impl<GlobalAlias, Value> {
   }
 };
 
+template <> struct isa_impl<GlobalIFunc, Value> {
+  static inline bool doit(const Value &Val) {
+    return Val.getValueID() == Value::GlobalIFuncVal;
+  }
+};
+
+template <> struct isa_impl<GlobalIndirectSymbol, Value> {
+  static inline bool doit(const Value &Val) {
+    return isa<GlobalAlias>(Val) || isa<GlobalIFunc>(Val);
+  }
+};
+
 template <> struct isa_impl<GlobalValue, Value> {
   static inline bool doit(const Value &Val) {
-    return isa<GlobalObject>(Val) || isa<GlobalAlias>(Val);
+    return isa<GlobalObject>(Val) || isa<GlobalIndirectSymbol>(Val);
   }
 };
 

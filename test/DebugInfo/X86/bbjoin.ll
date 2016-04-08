@@ -14,7 +14,7 @@
 ; CHECK:   DBG_VALUE 23, 0, ![[X]],
 ; CHECK:   DBG_VALUE debug-use %rdi, debug-use _, ![[X]]
 ; CHECK: bb.1.if.then:
-; CHECK:   DBG_VALUE debug-use %rdi, debug-use _, ![[X]],
+; CHECK:   DBG_VALUE 43, 0, ![[X]],
 ; CHECK: bb.2.if.end:
 ; CHECK-NOT:  DBG_VALUE 23, 0, ![[X]],
 ; CHECK:   RETQ %eax
@@ -69,7 +69,7 @@ attributes #4 = { nounwind }
 !llvm.module.flags = !{!10, !11, !12}
 !llvm.ident = !{!13}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.8.0 (trunk 255890) (llvm/trunk 255919)", isOptimized: true, runtimeVersion: 0, emissionKind: 1, enums: !2, subprograms: !3)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.8.0 (trunk 255890) (llvm/trunk 255919)", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, subprograms: !3)
 !1 = !DIFile(filename: "constant.c", directory: "")
 !2 = !{}
 !3 = !{!4}

@@ -98,6 +98,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/LoopVersioning.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include <algorithm>
@@ -449,6 +450,24 @@ protected:
   /// Emit bypass checks to check any memory assumptions we may have made.
   void emitMemRuntimeChecks(Loop *L, BasicBlock *Bypass);
 
+  /// Add additional metadata to \p To that was not present on \p Orig.
+  ///
+  /// Currently this is used to add the noalias annotations based on the
+  /// inserted memchecks.  Use this for instructions that are *cloned* into the
+  /// vector loop.
+  void addNewMetadata(Instruction *To, const Instruction *Orig);
+
+  /// Add metadata from one instruction to another.
+  ///
+  /// This includes both the original MDs from \p From and additional ones (\see
+  /// addNewMetadata).  Use this for *newly created* instructions in the vector
+  /// loop.
+  void addMetadata(Instruction *To, const Instruction *From);
+
+  /// \brief Similar to the previous function but it adds the metadata to a
+  /// vector of instructions.
+  void addMetadata(SmallVectorImpl<Value *> &To, const Instruction *From);
+
   /// This is a helper class that holds the vectorizer state. It maps scalar
   /// instructions to vector instructions. When the code is 'unrolled' then
   /// then a single scalar value is mapped to multiple vector parts. The parts
@@ -505,6 +524,13 @@ protected:
   const TargetLibraryInfo *TLI;
   /// Target Transform Info.
   const TargetTransformInfo *TTI;
+
+  /// \brief LoopVersioning.  It's only set up (non-null) if memchecks were
+  /// used.
+  ///
+  /// This is currently only used to add no-alias metadata based on the
+  /// memchecks.  The actually versioning is performed manually.
+  std::unique_ptr<LoopVersioning> LVer;
 
   /// The vectorization SIMD factor to use. Each vector will have this many
   /// vector elements.
@@ -646,12 +672,25 @@ static void propagateMetadata(Instruction *To, const Instruction *From) {
   }
 }
 
-/// \brief Propagate known metadata from one instruction to a vector of others.
-static void propagateMetadata(SmallVectorImpl<Value *> &To,
-                              const Instruction *From) {
+void InnerLoopVectorizer::addNewMetadata(Instruction *To,
+                                         const Instruction *Orig) {
+  // If the loop was versioned with memchecks, add the corresponding no-alias
+  // metadata.
+  if (LVer && (isa<LoadInst>(Orig) || isa<StoreInst>(Orig)))
+    LVer->annotateInstWithNoAlias(To, Orig);
+}
+
+void InnerLoopVectorizer::addMetadata(Instruction *To,
+                                      const Instruction *From) {
+  propagateMetadata(To, From);
+  addNewMetadata(To, From);
+}
+
+void InnerLoopVectorizer::addMetadata(SmallVectorImpl<Value *> &To,
+                                      const Instruction *From) {
   for (Value *V : To)
     if (Instruction *I = dyn_cast<Instruction>(V))
-      propagateMetadata(I, From);
+      addMetadata(I, From);
 }
 
 /// \brief The group of interleaved loads/stores sharing the same stride and
@@ -1493,15 +1532,26 @@ public:
   calculateRegisterUsage(const SmallVector<unsigned, 8> &VFs);
 
 private:
+  /// The vectorization cost is a combination of the cost itself and a boolean
+  /// indicating whether any of the contributing operations will actually operate on
+  /// vector values after type legalization in the backend. If this latter value is
+  /// false, then all operations will be scalarized (i.e. no vectorization has
+  /// actually taken place).
+  typedef std::pair<unsigned, bool> VectorizationCostTy;
+
   /// Returns the expected execution cost. The unit of the cost does
   /// not matter because we use the 'cost' units to compare different
   /// vector widths. The cost that is returned is *not* normalized by
   /// the factor width.
-  unsigned expectedCost(unsigned VF);
+  VectorizationCostTy expectedCost(unsigned VF);
 
   /// Returns the execution time cost of an instruction for a given vector
   /// width. Vector width of one means scalar.
-  unsigned getInstructionCost(Instruction *I, unsigned VF);
+  VectorizationCostTy getInstructionCost(Instruction *I, unsigned VF);
+
+  /// The cost-computation logic from getInstructionCost which provides
+  /// the vector type as an output parameter.
+  unsigned getInstructionCost(Instruction *I, unsigned VF, Type *&VectorTy);
 
   /// Returns whether the instruction is a load or store and will be a emitted
   /// as a vector operation.
@@ -2335,7 +2385,7 @@ void InnerLoopVectorizer::vectorizeInterleaveGroup(Instruction *Instr) {
             Group->isReverse() ? reverseVector(StridedVec) : StridedVec;
       }
 
-      propagateMetadata(NewLoadInstr, Instr);
+      addMetadata(NewLoadInstr, Instr);
     }
     return;
   }
@@ -2374,7 +2424,7 @@ void InnerLoopVectorizer::vectorizeInterleaveGroup(Instruction *Instr) {
 
     Instruction *NewStoreInstr =
         Builder.CreateAlignedStore(IVec, NewPtrs[Part], Group->getAlignment());
-    propagateMetadata(NewStoreInstr, Instr);
+    addMetadata(NewStoreInstr, Instr);
   }
 }
 
@@ -2553,7 +2603,7 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(Instruction *Instr) {
           NewSI = Builder.CreateAlignedStore(StoredVal[Part], VecPtr,
                                              Alignment);
       }
-      propagateMetadata(NewSI, SI);
+      addMetadata(NewSI, SI);
     }
     return;
   }
@@ -2591,7 +2641,7 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(Instruction *Instr) {
         NewLI = Builder.CreateAlignedLoad(VecPtr, Alignment, "wide.load");
       Entry[Part] = Reverse ? reverseVector(NewLI) :  NewLI;
     }
-    propagateMetadata(NewLI, LI);
+    addMetadata(NewLI, LI);
   }
 }
 
@@ -2673,6 +2723,7 @@ void InnerLoopVectorizer::scalarizeInstruction(Instruction *Instr,
           Op = Builder.CreateExtractElement(Op, Builder.getInt32(Width));
         Cloned->setOperand(op, Op);
       }
+      addNewMetadata(Cloned, Instr);
 
       // Place the cloned scalar in the new loop.
       Builder.Insert(Cloned);
@@ -2727,7 +2778,7 @@ Value *InnerLoopVectorizer::getOrCreateTripCount(Loop *L) {
   IRBuilder<> Builder(L->getLoopPreheader()->getTerminator());
   // Find the loop boundaries.
   ScalarEvolution *SE = PSE.getSE();
-  const SCEV *BackedgeTakenCount = SE->getBackedgeTakenCount(OrigLoop);
+  const SCEV *BackedgeTakenCount = PSE.getBackedgeTakenCount();
   assert(BackedgeTakenCount != SE->getCouldNotCompute() &&
          "Invalid loop count");
 
@@ -2893,6 +2944,12 @@ void InnerLoopVectorizer::emitMemRuntimeChecks(Loop *L,
                       BranchInst::Create(Bypass, NewBB, MemRuntimeCheck));
   LoopBypassBlocks.push_back(BB);
   AddedSafetyChecks = true;
+
+  // We currently don't use LoopVersioning for the actual loop cloning but we
+  // still use it to add the noalias metadata.
+  LVer = llvm::make_unique<LoopVersioning>(*Legal->getLAI(), OrigLoop, LI, DT,
+                                           PSE.getSE());
+  LVer->prepareNoAliasMetadata();
 }
 
 
@@ -3628,7 +3685,7 @@ void InnerLoopVectorizer::vectorizeLoop() {
     BasicBlock::iterator I(KV.first);
     auto *BB = SplitBlock(I->getParent(), &*std::next(I), DT, LI);
     auto *T = SplitBlockAndInsertIfThen(KV.second, &*I, /*Unreachable=*/false,
-                                        /*BranchWeights=*/nullptr, DT);
+                                        /*BranchWeights=*/nullptr, DT, LI);
     I->moveBefore(T);
     I->getParent()->setName("pred.store.if");
     BB->setName("pred.store.continue");
@@ -4030,7 +4087,7 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
         Entry[Part] = V;
       }
 
-      propagateMetadata(Entry, &*it);
+      addMetadata(Entry, &*it);
       break;
     }
     case Instruction::Select: {
@@ -4060,7 +4117,7 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
           Op1[Part]);
       }
 
-      propagateMetadata(Entry, &*it);
+      addMetadata(Entry, &*it);
       break;
     }
 
@@ -4083,7 +4140,7 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
         Entry[Part] = C;
       }
 
-      propagateMetadata(Entry, &*it);
+      addMetadata(Entry, &*it);
       break;
     }
 
@@ -4120,7 +4177,7 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
             CI->getType(), II.getStepValue()->getSExtValue());
         for (unsigned Part = 0; Part < UF; ++Part)
           Entry[Part] = getStepVector(Broadcasted, VF * Part, Step);
-        propagateMetadata(Entry, &*it);
+        addMetadata(Entry, &*it);
         break;
       }
       /// Vectorize casts.
@@ -4130,7 +4187,7 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
       VectorParts &A = getVectorValue(it->getOperand(0));
       for (unsigned Part = 0; Part < UF; ++Part)
         Entry[Part] = Builder.CreateCast(CI->getOpcode(), A[Part], DestTy);
-      propagateMetadata(Entry, &*it);
+      addMetadata(Entry, &*it);
       break;
     }
 
@@ -4206,7 +4263,7 @@ void InnerLoopVectorizer::vectorizeBlockInLoop(BasicBlock *BB, PhiVector *PV) {
         Entry[Part] = Builder.CreateCall(VectorF, Args);
       }
 
-      propagateMetadata(Entry, &*it);
+      addMetadata(Entry, &*it);
       break;
     }
 
@@ -4368,7 +4425,7 @@ bool LoopVectorizationLegality::canVectorize() {
   }
 
   // ScalarEvolution needs to be able to find the exit count.
-  const SCEV *ExitCount = PSE.getSE()->getBackedgeTakenCount(TheLoop);
+  const SCEV *ExitCount = PSE.getBackedgeTakenCount();
   if (ExitCount == PSE.getSE()->getCouldNotCompute()) {
     emitAnalysis(VectorizationReport()
                  << "could not determine number of loop iterations");
@@ -4470,9 +4527,8 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
   // Look for the attribute signaling the absence of NaNs.
   Function &F = *Header->getParent();
   const DataLayout &DL = F.getParent()->getDataLayout();
-  if (F.hasFnAttribute("no-nans-fp-math"))
-    HasFunNoNaNAttr =
-        F.getFnAttribute("no-nans-fp-math").getValueAsString() == "true";
+  HasFunNoNaNAttr =
+      F.getFnAttribute("no-nans-fp-math").getValueAsString() == "true";
 
   // For each block in the loop.
   for (Loop::block_iterator bb = TheLoop->block_begin(),
@@ -5100,7 +5156,7 @@ LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize) {
     return Factor;
   }
 
-  float Cost = expectedCost(1);
+  float Cost = expectedCost(1).first;
 #ifndef NDEBUG
   const float ScalarCost = Cost;
 #endif /* NDEBUG */
@@ -5111,16 +5167,22 @@ LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize) {
   // Ignore scalar width, because the user explicitly wants vectorization.
   if (ForceVectorization && VF > 1) {
     Width = 2;
-    Cost = expectedCost(Width) / (float)Width;
+    Cost = expectedCost(Width).first / (float)Width;
   }
 
   for (unsigned i=2; i <= VF; i*=2) {
     // Notice that the vector loop needs to be executed less times, so
     // we need to divide the cost of the vector loops by the width of
     // the vector elements.
-    float VectorCost = expectedCost(i) / (float)i;
+    VectorizationCostTy C = expectedCost(i);
+    float VectorCost = C.first / (float)i;
     DEBUG(dbgs() << "LV: Vector loop of width " << i << " costs: " <<
           (int)VectorCost << ".\n");
+    if (!C.second && !ForceVectorization) {
+      DEBUG(dbgs() << "LV: Not considering vector loop of width " << i <<
+            " because it will not generate any vector instructions.\n");
+      continue;
+    }
     if (VectorCost < Cost) {
       Cost = VectorCost;
       Width = i;
@@ -5268,7 +5330,7 @@ unsigned LoopVectorizationCostModel::selectInterleaveCount(bool OptForSize,
   // If we did not calculate the cost for VF (because the user selected the VF)
   // then we calculate the cost of VF here.
   if (LoopCost == 0)
-    LoopCost = expectedCost(VF);
+    LoopCost = expectedCost(VF).first;
 
   // Clamp the calculated IC to be between the 1 and the max interleave count
   // that the target allows.
@@ -5495,13 +5557,14 @@ LoopVectorizationCostModel::calculateRegisterUsage(
   return RUs;
 }
 
-unsigned LoopVectorizationCostModel::expectedCost(unsigned VF) {
-  unsigned Cost = 0;
+LoopVectorizationCostModel::VectorizationCostTy
+LoopVectorizationCostModel::expectedCost(unsigned VF) {
+  VectorizationCostTy Cost;
 
   // For each block.
   for (Loop::block_iterator bb = TheLoop->block_begin(),
        be = TheLoop->block_end(); bb != be; ++bb) {
-    unsigned BlockCost = 0;
+    VectorizationCostTy BlockCost;
     BasicBlock *BB = *bb;
 
     // For each instruction in the old loop.
@@ -5514,24 +5577,26 @@ unsigned LoopVectorizationCostModel::expectedCost(unsigned VF) {
       if (ValuesToIgnore.count(&*it))
         continue;
 
-      unsigned C = getInstructionCost(&*it, VF);
+      VectorizationCostTy C = getInstructionCost(&*it, VF);
 
       // Check if we should override the cost.
       if (ForceTargetInstructionCost.getNumOccurrences() > 0)
-        C = ForceTargetInstructionCost;
+        C.first = ForceTargetInstructionCost;
 
-      BlockCost += C;
-      DEBUG(dbgs() << "LV: Found an estimated cost of " << C << " for VF " <<
-            VF << " For instruction: " << *it << '\n');
+      BlockCost.first += C.first;
+      BlockCost.second |= C.second;
+      DEBUG(dbgs() << "LV: Found an estimated cost of " << C.first <<
+            " for VF " << VF << " For instruction: " << *it << '\n');
     }
 
     // We assume that if-converted blocks have a 50% chance of being executed.
     // When the code is scalar then some of the blocks are avoided due to CF.
     // When the code is vectorized we execute all code paths.
     if (VF == 1 && Legal->blockNeedsPredication(*bb))
-      BlockCost /= 2;
+      BlockCost.first /= 2;
 
-    Cost += BlockCost;
+    Cost.first += BlockCost.first;
+    Cost.second |= BlockCost.second;
   }
 
   return Cost;
@@ -5608,17 +5673,28 @@ static bool isStrideMul(Instruction *I, LoopVectorizationLegality *Legal) {
          Legal->hasStride(I->getOperand(1));
 }
 
-unsigned
+LoopVectorizationCostModel::VectorizationCostTy
 LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
   // If we know that this instruction will remain uniform, check the cost of
   // the scalar version.
   if (Legal->isUniformAfterVectorization(I))
     VF = 1;
 
+  Type *VectorTy;
+  unsigned C = getInstructionCost(I, VF, VectorTy);
+
+  bool TypeNotScalarized = VF > 1 && !VectorTy->isVoidTy() &&
+                           TTI.getNumberOfParts(VectorTy) < VF;
+  return VectorizationCostTy(C, TypeNotScalarized);
+}
+
+unsigned
+LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF,
+                                               Type *&VectorTy) {
   Type *RetTy = I->getType();
   if (VF > 1 && MinBWs.count(I))
     RetTy = IntegerType::get(RetTy->getContext(), MinBWs[I]);
-  Type *VectorTy = ToVectorTy(RetTy, VF);
+  VectorTy = ToVectorTy(RetTy, VF);
 
   // TODO: We need to estimate the cost of intrinsic calls.
   switch (I->getOpcode()) {

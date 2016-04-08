@@ -135,6 +135,7 @@ class SimplifyCFGOpt {
   const DataLayout &DL;
   unsigned BonusInstThreshold;
   AssumptionCache *AC;
+  SmallPtrSetImpl<BasicBlock *> *LoopHeaders;
   Value *isValueEqualityComparison(TerminatorInst *TI);
   BasicBlock *GetValueEqualityComparisonCases(TerminatorInst *TI,
                                std::vector<ValueEqualityComparisonCase> &Cases);
@@ -157,8 +158,10 @@ class SimplifyCFGOpt {
 
 public:
   SimplifyCFGOpt(const TargetTransformInfo &TTI, const DataLayout &DL,
-                 unsigned BonusInstThreshold, AssumptionCache *AC)
-      : TTI(TTI), DL(DL), BonusInstThreshold(BonusInstThreshold), AC(AC) {}
+                 unsigned BonusInstThreshold, AssumptionCache *AC,
+                 SmallPtrSetImpl<BasicBlock *> *LoopHeaders)
+      : TTI(TTI), DL(DL), BonusInstThreshold(BonusInstThreshold), AC(AC),
+        LoopHeaders(LoopHeaders) {}
   bool run(BasicBlock *BB);
 };
 }
@@ -175,10 +178,9 @@ static bool SafeToMergeTerminators(TerminatorInst *SI1, TerminatorInst *SI2) {
   BasicBlock *SI2BB = SI2->getParent();
   SmallPtrSet<BasicBlock*, 16> SI1Succs(succ_begin(SI1BB), succ_end(SI1BB));
 
-  for (succ_iterator I = succ_begin(SI2BB), E = succ_end(SI2BB); I != E; ++I)
-    if (SI1Succs.count(*I))
-      for (BasicBlock::iterator BBI = (*I)->begin();
-           isa<PHINode>(BBI); ++BBI) {
+  for (BasicBlock *Succ : successors(SI2BB))
+    if (SI1Succs.count(Succ))
+      for (BasicBlock::iterator BBI = Succ->begin(); isa<PHINode>(BBI); ++BBI) {
         PHINode *PN = cast<PHINode>(BBI);
         if (PN->getIncomingValueForBlock(SI1BB) !=
             PN->getIncomingValueForBlock(SI2BB))
@@ -214,10 +216,9 @@ static bool isProfitableToFoldUnconditional(BranchInst *SI1,
   BasicBlock *SI1BB = SI1->getParent();
   BasicBlock *SI2BB = SI2->getParent();
   SmallPtrSet<BasicBlock*, 16> SI1Succs(succ_begin(SI1BB), succ_end(SI1BB));
-  for (succ_iterator I = succ_begin(SI2BB), E = succ_end(SI2BB); I != E; ++I)
-    if (SI1Succs.count(*I))
-      for (BasicBlock::iterator BBI = (*I)->begin();
-           isa<PHINode>(BBI); ++BBI) {
+  for (BasicBlock *Succ : successors(SI2BB))
+    if (SI1Succs.count(Succ))
+      for (BasicBlock::iterator BBI = Succ->begin(); isa<PHINode>(BBI); ++BBI) {
         PHINode *PN = cast<PHINode>(BBI);
         if (PN->getIncomingValueForBlock(SI1BB) != Cond ||
             !isa<ConstantInt>(PN->getIncomingValueForBlock(SI2BB)))
@@ -236,8 +237,7 @@ static void AddPredecessorToBlock(BasicBlock *Succ, BasicBlock *NewPred,
   if (!isa<PHINode>(Succ->begin())) return; // Quick exit if nothing to do
 
   PHINode *PN;
-  for (BasicBlock::iterator I = Succ->begin();
-       (PN = dyn_cast<PHINode>(I)); ++I)
+  for (BasicBlock::iterator I = Succ->begin(); (PN = dyn_cast<PHINode>(I)); ++I)
     PN->addIncoming(PN->getIncomingValueForBlock(ExistPred), NewPred);
 }
 
@@ -407,7 +407,7 @@ private:
   /// Try to set the current value used for the comparison, it succeeds only if
   /// it wasn't set before or if the new value is the same as the old one
   bool setValueOnce(Value *NewVal) {
-    if(CompValue && CompValue != NewVal) return false;
+    if (CompValue && CompValue != NewVal) return false;
     CompValue = NewVal;
     return (CompValue != nullptr);
   }
@@ -779,9 +779,9 @@ SimplifyEqualityComparisonWithOnlyPredecessor(TerminatorInst *TI,
 
   // Remove PHI node entries for dead edges.
   BasicBlock *CheckEdge = TheRealDest;
-  for (succ_iterator SI = succ_begin(TIBB), e = succ_end(TIBB); SI != e; ++SI)
-    if (*SI != CheckEdge)
-      (*SI)->removePredecessor(TIBB);
+  for (BasicBlock *Succ : successors(TIBB))
+    if (Succ != CheckEdge)
+      Succ->removePredecessor(TIBB);
     else
       CheckEdge = nullptr;
 
@@ -1073,9 +1073,9 @@ bool SimplifyCFGOpt::FoldValueComparisonIntoPredecessors(TerminatorInst *TI,
 // can't hoist the invoke, as there is nowhere to put the select in this case.
 static bool isSafeToHoistInvoke(BasicBlock *BB1, BasicBlock *BB2,
                                 Instruction *I1, Instruction *I2) {
-  for (succ_iterator SI = succ_begin(BB1), E = succ_end(BB1); SI != E; ++SI) {
+  for (BasicBlock *Succ : successors(BB1)) {
     PHINode *PN;
-    for (BasicBlock::iterator BBI = SI->begin();
+    for (BasicBlock::iterator BBI = Succ->begin();
          (PN = dyn_cast<PHINode>(BBI)); ++BBI) {
       Value *BB1V = PN->getIncomingValueForBlock(BB1);
       Value *BB2V = PN->getIncomingValueForBlock(BB2);
@@ -1168,9 +1168,9 @@ HoistTerminator:
   if (isa<InvokeInst>(I1) && !isSafeToHoistInvoke(BB1, BB2, I1, I2))
     return Changed;
 
-  for (succ_iterator SI = succ_begin(BB1), E = succ_end(BB1); SI != E; ++SI) {
+  for (BasicBlock *Succ : successors(BB1)) {
     PHINode *PN;
-    for (BasicBlock::iterator BBI = SI->begin();
+    for (BasicBlock::iterator BBI = Succ->begin();
          (PN = dyn_cast<PHINode>(BBI)); ++BBI) {
       Value *BB1V = PN->getIncomingValueForBlock(BB1);
       Value *BB2V = PN->getIncomingValueForBlock(BB2);
@@ -1205,9 +1205,9 @@ HoistTerminator:
   // them.  If they do, all PHI entries for BB1/BB2 must agree for all PHI
   // nodes, so we insert select instruction to compute the final result.
   std::map<std::pair<Value*,Value*>, SelectInst*> InsertedSelects;
-  for (succ_iterator SI = succ_begin(BB1), E = succ_end(BB1); SI != E; ++SI) {
+  for (BasicBlock *Succ : successors(BB1)) {
     PHINode *PN;
-    for (BasicBlock::iterator BBI = SI->begin();
+    for (BasicBlock::iterator BBI = Succ->begin();
          (PN = dyn_cast<PHINode>(BBI)); ++BBI) {
       Value *BB1V = PN->getIncomingValueForBlock(BB1);
       Value *BB2V = PN->getIncomingValueForBlock(BB2);
@@ -1219,7 +1219,7 @@ HoistTerminator:
       if (!SI)
         SI = cast<SelectInst>
           (Builder.CreateSelect(BI->getCondition(), BB1V, BB2V,
-                                BB1V->getName()+"."+BB2V->getName()));
+                                BB1V->getName() + "." + BB2V->getName()));
 
       // Make the PHI node use the select for all incoming values for BB1/BB2
       for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i)
@@ -1229,8 +1229,8 @@ HoistTerminator:
   }
 
   // Update any PHI nodes in our new successors.
-  for (succ_iterator SI = succ_begin(BB1), E = succ_end(BB1); SI != E; ++SI)
-    AddPredecessorToBlock(*SI, BIParent, BB1);
+  for (BasicBlock *Succ : successors(BB1))
+    AddPredecessorToBlock(Succ, BIParent, BB1);
 
   EraseTerminatorInstAndDCECond(BI);
   return true;
@@ -1645,8 +1645,8 @@ static bool SpeculativelyExecuteBB(BranchInst *BI, BasicBlock *ThenBB,
     Value *FalseV = SpeculatedStoreValue;
     if (Invert)
       std::swap(TrueV, FalseV);
-    Value *S = Builder.CreateSelect(BrCond, TrueV, FalseV, TrueV->getName() +
-                                    "." + FalseV->getName());
+    Value *S = Builder.CreateSelect(
+        BrCond, TrueV, FalseV, TrueV->getName() + "." + FalseV->getName(), BI);
     SpeculatedStore->setOperand(0, S);
   }
 
@@ -1881,10 +1881,10 @@ static bool FoldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
        isa<BinaryOperator>(IfCond)))
     return false;
 
-  // If we all PHI nodes are promotable, check to make sure that all
-  // instructions in the predecessor blocks can be promoted as well.  If
-  // not, we won't be able to get rid of the control flow, so it's not
-  // worth promoting to select instructions.
+  // If all PHI nodes are promotable, check to make sure that all instructions
+  // in the predecessor blocks can be promoted as well. If not, we won't be able
+  // to get rid of the control flow, so it's not worth promoting to select
+  // instructions.
   BasicBlock *DomBlock = nullptr;
   BasicBlock *IfBlock1 = PN->getIncomingBlock(0);
   BasicBlock *IfBlock2 = PN->getIncomingBlock(1);
@@ -1895,8 +1895,8 @@ static bool FoldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
     for (BasicBlock::iterator I = IfBlock1->begin();!isa<TerminatorInst>(I);++I)
       if (!AggressiveInsts.count(&*I) && !isa<DbgInfoIntrinsic>(I)) {
         // This is not an aggressive instruction that we can promote.
-        // Because of this, we won't be able to get rid of the control
-        // flow, so the xform is not worth it.
+        // Because of this, we won't be able to get rid of the control flow, so
+        // the xform is not worth it.
         return false;
       }
   }
@@ -1908,8 +1908,8 @@ static bool FoldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
     for (BasicBlock::iterator I = IfBlock2->begin();!isa<TerminatorInst>(I);++I)
       if (!AggressiveInsts.count(&*I) && !isa<DbgInfoIntrinsic>(I)) {
         // This is not an aggressive instruction that we can promote.
-        // Because of this, we won't be able to get rid of the control
-        // flow, so the xform is not worth it.
+        // Because of this, we won't be able to get rid of the control flow, so
+        // the xform is not worth it.
         return false;
       }
   }
@@ -1938,10 +1938,9 @@ static bool FoldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
     Value *TrueVal  = PN->getIncomingValue(PN->getIncomingBlock(0) == IfFalse);
     Value *FalseVal = PN->getIncomingValue(PN->getIncomingBlock(0) == IfTrue);
 
-    SelectInst *NV =
-      cast<SelectInst>(Builder.CreateSelect(IfCond, TrueVal, FalseVal, ""));
-    PN->replaceAllUsesWith(NV);
-    NV->takeName(PN);
+    Value *Sel = Builder.CreateSelect(IfCond, TrueVal, FalseVal, "", InsertPt);
+    PN->replaceAllUsesWith(Sel);
+    Sel->takeName(PN);
     PN->eraseFromParent();
   }
 
@@ -2117,7 +2116,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, unsigned BonusInstThreshold) {
 
   if (!Cond || (!isa<CmpInst>(Cond) && !isa<BinaryOperator>(Cond)) ||
       Cond->getParent() != BB || !Cond->hasOneUse())
-  return false;
+    return false;
 
   // Make sure the instruction after the condition is the cond branch.
   BasicBlock::iterator CondIt = ++Cond->getIterator();
@@ -2237,7 +2236,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, unsigned BonusInstThreshold) {
         continue;
       Instruction *NewBonusInst = BonusInst->clone();
       RemapInstruction(NewBonusInst, VMap,
-                       RF_NoModuleLevelChanges | RF_IgnoreMissingEntries);
+                       RF_NoModuleLevelChanges | RF_IgnoreMissingLocals);
       VMap[&*BonusInst] = NewBonusInst;
 
       // If we moved a load, we cannot any longer claim any knowledge about
@@ -2256,7 +2255,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, unsigned BonusInstThreshold) {
     // two conditions together.
     Instruction *New = Cond->clone();
     RemapInstruction(New, VMap,
-                     RF_NoModuleLevelChanges | RF_IgnoreMissingEntries);
+                     RF_NoModuleLevelChanges | RF_IgnoreMissingLocals);
     PredBlock->getInstList().insert(PBI->getIterator(), New);
     New->takeName(Cond);
     Cond->setName(New->getName() + ".old");
@@ -2889,7 +2888,7 @@ static bool SimplifyCondBranchToCondBranch(BranchInst *PBI, BranchInst *BI,
     if (BIV != PBIV) {
       // Insert a select in PBI to pick the right value.
       Value *NV = cast<SelectInst>
-        (Builder.CreateSelect(PBICond, PBIV, BIV, PBIV->getName()+".mux"));
+        (Builder.CreateSelect(PBICond, PBIV, BIV, PBIV->getName() + ".mux"));
       PN->setIncomingValue(PBBIdx, NV);
     }
   }
@@ -3366,6 +3365,7 @@ bool SimplifyCFGOpt::SimplifySingleResume(ResumeInst *RI) {
 
   // The landingpad is now unreachable.  Zap it.
   BB->eraseFromParent();
+  if (LoopHeaders) LoopHeaders->erase(BB);
   return true;
 }
 
@@ -3564,9 +3564,11 @@ bool SimplifyCFGOpt::SimplifyReturn(ReturnInst *RI, IRBuilder<> &Builder) {
     }
 
     // If we eliminated all predecessors of the block, delete the block now.
-    if (pred_empty(BB))
+    if (pred_empty(BB)) {
       // We know there are no successors, so just nuke the block.
       BB->eraseFromParent();
+      if (LoopHeaders) LoopHeaders->erase(BB);
+    }
 
     return true;
   }
@@ -3723,6 +3725,7 @@ bool SimplifyCFGOpt::SimplifyUnreachable(UnreachableInst *UI) {
       BB != &BB->getParent()->getEntryBlock()) {
     // We know there are no successors, so just nuke the block.
     BB->eraseFromParent();
+    if (LoopHeaders) LoopHeaders->erase(BB);
     return true;
   }
 
@@ -5066,8 +5069,14 @@ bool SimplifyCFGOpt::SimplifyUncondBranch(BranchInst *BI, IRBuilder<> &Builder){
     return true;
 
   // If the Terminator is the only non-phi instruction, simplify the block.
+  // if LoopHeader is provided, check if the block is a loop header
+  // (This is for early invocations before loop simplify and vectorization
+  // to keep canonical loop forms for nested loops.
+  // These blocks can be eliminated when the pass is invoked later
+  // in the back-end.)
   BasicBlock::iterator I = BB->getFirstNonPHIOrDbg()->getIterator();
   if (I->isTerminator() && BB != &BB->getParent()->getEntryBlock() &&
+      (!LoopHeaders || (LoopHeaders && !LoopHeaders->count(BB))) &&
       TryToSimplifyUncondBranchFromEmptyBlock(BB))
     return true;
 
@@ -5347,7 +5356,8 @@ bool SimplifyCFGOpt::run(BasicBlock *BB) {
 /// of the CFG.  It returns true if a modification was made.
 ///
 bool llvm::SimplifyCFG(BasicBlock *BB, const TargetTransformInfo &TTI,
-                       unsigned BonusInstThreshold, AssumptionCache *AC) {
+                       unsigned BonusInstThreshold, AssumptionCache *AC,
+                       SmallPtrSetImpl<BasicBlock *> *LoopHeaders) {
   return SimplifyCFGOpt(TTI, BB->getModule()->getDataLayout(),
-                        BonusInstThreshold, AC).run(BB);
+                        BonusInstThreshold, AC, LoopHeaders).run(BB);
 }

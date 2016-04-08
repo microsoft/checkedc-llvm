@@ -48,7 +48,7 @@ class SCD_R6_ENC : SPECIAL3_LL_SC_FM<OPCODE6_SCD>;
 
 class AHI_ATI_DESC_BASE<string instr_asm, RegisterOperand GPROpnd, InstrItinClass itin> {
   dag OutOperandList = (outs GPROpnd:$rs);
-  dag InOperandList = (ins GPROpnd:$rt, simm16:$imm);
+  dag InOperandList = (ins GPROpnd:$rt, simm16_relaxed:$imm);
   string AsmString = !strconcat(instr_asm, "\t$rt, $imm");
   string Constraints = "$rs = $rt";
   InstrItinClass Itinerary = itin;
@@ -75,6 +75,18 @@ class LLD_R6_DESC   : LL_R6_DESC_BASE<"lld", GPR64Opnd, II_LLD>;
 class SCD_R6_DESC   : SC_R6_DESC_BASE<"scd", GPR64Opnd, II_SCD>;
 class SELEQZ64_DESC : SELEQNE_Z_DESC_BASE<"seleqz", GPR64Opnd>;
 class SELNEZ64_DESC : SELEQNE_Z_DESC_BASE<"selnez", GPR64Opnd>;
+
+class JIALC64_DESC : JMP_IDX_COMPACT_DESC_BASE<"jialc", calloffset16,
+                                             GPR64Opnd> {
+  bit isCall = 1;
+  list<Register> Defs = [RA];
+}
+
+class JIC64_DESC : JMP_IDX_COMPACT_DESC_BASE<"jic", jmpoffset16, GPR64Opnd> {
+  bit isBarrier = 1;
+  bit isTerminator = 1;
+  list<Register> Defs = [AT];
+}
 
 //===----------------------------------------------------------------------===//
 //
@@ -107,7 +119,10 @@ let DecoderNamespace = "Mips32r6_64r6_GP64" in {
   def SELEQZ64 : SELEQZ_ENC, SELEQZ64_DESC, ISA_MIPS32R6, GPR_64;
   def SELNEZ64 : SELNEZ_ENC, SELNEZ64_DESC, ISA_MIPS32R6, GPR_64;
 }
-
+let isCodeGenOnly = 1 in {
+def JIALC64 : JIALC_ENC, JIALC64_DESC, ISA_MIPS64R6;
+def JIC64 : JIC_ENC, JIC64_DESC, ISA_MIPS64R6;
+}
 //===----------------------------------------------------------------------===//
 //
 // Instruction Aliases

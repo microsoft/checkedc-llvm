@@ -1,10 +1,10 @@
 ; Do setup work for all below tests: generate bitcode and combined index
-; RUN: llvm-as -function-summary %s -o %t.bc
-; RUN: llvm-as -function-summary %p/Inputs/thinlto_funcimport_debug.ll -o %t2.bc
+; RUN: llvm-as -module-summary %s -o %t.bc
+; RUN: llvm-as -module-summary %p/Inputs/thinlto_funcimport_debug.ll -o %t2.bc
 ; RUN: llvm-lto -thinlto -o %t3 %t.bc %t2.bc
 
 ; If we import func1 and not func2 we should only link DISubprogram for func1
-; RUN: llvm-link %t2.bc -functionindex=%t3.thinlto.bc -import=func1:%t.bc -S | FileCheck %s
+; RUN: llvm-link %t2.bc -summary-index=%t3.thinlto.bc -import=func1:%t.bc -S | FileCheck %s
 
 ; CHECK: declare i32 @func2
 ; CHECK: define available_externally i32 @func1
@@ -54,7 +54,7 @@ attributes #1 = { nounwind readnone }
 !llvm.module.flags = !{!14, !15}
 !llvm.ident = !{!16}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.8.0 (trunk 251407) (llvm/trunk 251401)", isOptimized: true, runtimeVersion: 0, emissionKind: 1, enums: !2, subprograms: !3)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.8.0 (trunk 251407) (llvm/trunk 251401)", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, subprograms: !3)
 !1 = !DIFile(filename: "dbg.c", directory: ".")
 !2 = !{}
 !3 = !{!4, !11, !27, !30}

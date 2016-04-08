@@ -583,26 +583,26 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
     printDashes = "----------------";
     switch (AddressRadix) {
     case Radix::o:
-      printFormat = "%016" PRIo64;
+      printFormat = OutputFormat == posix ? "%" PRIo64 : "%016" PRIo64;
       break;
     case Radix::x:
-      printFormat = "%016" PRIx64;
+      printFormat = OutputFormat == posix ? "%" PRIx64 : "%016" PRIx64;
       break;
     default:
-      printFormat = "%016" PRId64;
+      printFormat = OutputFormat == posix ? "%" PRId64 : "%016" PRId64;
     }
   } else {
     printBlanks = "        ";
     printDashes = "--------";
     switch (AddressRadix) {
     case Radix::o:
-      printFormat = "%08" PRIo64;
+      printFormat = OutputFormat == posix ? "%" PRIo64 : "%08" PRIo64;
       break;
     case Radix::x:
-      printFormat = "%08" PRIx64;
+      printFormat = OutputFormat == posix ? "%" PRIx64 : "%08" PRIx64;
       break;
     default:
-      printFormat = "%08" PRId64;
+      printFormat = OutputFormat == posix ? "%" PRId64 : "%08" PRId64;
     }
   }
 
@@ -617,9 +617,13 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
     if (PrintFileName) {
       if (!ArchitectureName.empty())
         outs() << "(for architecture " << ArchitectureName << "):";
-      if (!ArchiveName.empty())
-        outs() << ArchiveName << ":";
-      outs() << CurrentFilename << ": ";
+      if (OutputFormat == posix && !ArchiveName.empty())
+        outs() << ArchiveName << "[" << CurrentFilename << "]: ";
+      else {
+        if (!ArchiveName.empty())
+          outs() << ArchiveName << ":";
+        outs() << CurrentFilename << ": ";
+      }
     }
     if ((JustSymbolName || (UndefinedOnly && isa<MachOObjectFile>(Obj) &&
                             OutputFormat != darwin)) && OutputFormat != posix) {
@@ -630,8 +634,13 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
     char SymbolAddrStr[18] = "";
     char SymbolSizeStr[18] = "";
 
-    if (OutputFormat == sysv || I->TypeChar == 'U')
-      strcpy(SymbolAddrStr, printBlanks);
+    if (OutputFormat == sysv || I->TypeChar == 'U') {
+      if (OutputFormat == posix)
+        format(printFormat, I->Address)
+          .print(SymbolAddrStr, sizeof(SymbolAddrStr));
+      else
+        strcpy(SymbolAddrStr, printBlanks);
+    }
     if (OutputFormat == sysv)
       strcpy(SymbolSizeStr, printBlanks);
 
@@ -656,9 +665,9 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
     } else if (OutputFormat == posix) {
       outs() << I->Name << " " << I->TypeChar << " ";
       if (MachO)
-        outs() << I->Address << " " << "0" /* SymbolSizeStr */ << "\n";
+        outs() << SymbolAddrStr << " " << "0" /* SymbolSizeStr */ << "\n";
       else
-        outs() << SymbolAddrStr << SymbolSizeStr << "\n";
+        outs() << SymbolAddrStr << " " << SymbolSizeStr << "\n";
     } else if (OutputFormat == bsd || (OutputFormat == darwin && !MachO)) {
       if (PrintAddress)
         outs() << SymbolAddrStr << ' ';
@@ -1012,10 +1021,12 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
     return;
 
   LLVMContext &Context = getGlobalContext();
-  ErrorOr<std::unique_ptr<Binary>> BinaryOrErr = createBinary(
+  Expected<std::unique_ptr<Binary>> BinaryOrErr = createBinary(
       BufferOrErr.get()->getMemBufferRef(), NoLLVMBitcode ? nullptr : &Context);
-  if (error(BinaryOrErr.getError(), Filename))
+  if (!BinaryOrErr) {
+    error(errorToErrorCode(BinaryOrErr.takeError()), Filename);
     return;
+  }
   Binary &Bin = *BinaryOrErr.get();
 
   if (Archive *A = dyn_cast<Archive>(&Bin)) {

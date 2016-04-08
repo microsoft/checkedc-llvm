@@ -289,6 +289,11 @@ class FlatLoadPat <FLAT inst, SDPatternOperator node, ValueType vt> : Pat <
   (inst $addr, 0, 0, 0)
 >;
 
+class FlatLoadAtomicPat <FLAT inst, SDPatternOperator node, ValueType vt> : Pat <
+  (vt (node i64:$addr)),
+  (inst $addr, 1, 0, 0)
+>;
+
 def : FlatLoadPat <FLAT_LOAD_UBYTE, flat_az_extloadi8, i32>;
 def : FlatLoadPat <FLAT_LOAD_SBYTE, flat_sextloadi8, i32>;
 def : FlatLoadPat <FLAT_LOAD_USHORT, flat_az_extloadi16, i32>;
@@ -297,9 +302,19 @@ def : FlatLoadPat <FLAT_LOAD_DWORD, flat_load, i32>;
 def : FlatLoadPat <FLAT_LOAD_DWORDX2, flat_load, v2i32>;
 def : FlatLoadPat <FLAT_LOAD_DWORDX4, flat_load, v4i32>;
 
+def : FlatLoadAtomicPat <FLAT_LOAD_DWORD, atomic_flat_load, i32>;
+def : FlatLoadAtomicPat <FLAT_LOAD_DWORDX2, atomic_flat_load, i64>;
+
+
 class FlatStorePat <FLAT inst, SDPatternOperator node, ValueType vt> : Pat <
   (node vt:$data, i64:$addr),
   (inst $addr, $data, 0, 0, 0)
+>;
+
+class FlatStoreAtomicPat <FLAT inst, SDPatternOperator node, ValueType vt> : Pat <
+  // atomic store follows aotmic binop convenction so the address comes first
+  (node i64:$addr, vt:$data),
+  (inst $addr, $data, 1, 0, 0)
 >;
 
 def : FlatStorePat <FLAT_STORE_BYTE, flat_truncstorei8, i32>;
@@ -308,8 +323,12 @@ def : FlatStorePat <FLAT_STORE_DWORD, flat_store, i32>;
 def : FlatStorePat <FLAT_STORE_DWORDX2, flat_store, v2i32>;
 def : FlatStorePat <FLAT_STORE_DWORDX4, flat_store, v4i32>;
 
-class FlatAtomicPat <FLAT inst, SDPatternOperator node, ValueType vt> : Pat <
-  (vt (node i64:$addr, vt:$data)),
+def : FlatStoreAtomicPat <FLAT_STORE_DWORD, atomic_flat_store, i32>;
+def : FlatStoreAtomicPat <FLAT_STORE_DWORDX2, atomic_flat_store, i64>;
+
+class FlatAtomicPat <FLAT inst, SDPatternOperator node, ValueType vt,
+                     ValueType data_vt = vt> : Pat <
+  (vt (node i64:$addr, data_vt:$data)),
   (inst $addr, $data, 0, 0)
 >;
 
@@ -322,6 +341,9 @@ def : FlatAtomicPat <FLAT_ATOMIC_SMIN_RTN, atomic_min_global, i32>;
 def : FlatAtomicPat <FLAT_ATOMIC_UMIN_RTN, atomic_umin_global, i32>;
 def : FlatAtomicPat <FLAT_ATOMIC_OR_RTN, atomic_or_global, i32>;
 def : FlatAtomicPat <FLAT_ATOMIC_SWAP_RTN, atomic_swap_global, i32>;
+def : FlatAtomicPat <FLAT_ATOMIC_CMPSWAP_RTN, atomic_cmp_swap_global, i32, v2i32>;
 def : FlatAtomicPat <FLAT_ATOMIC_XOR_RTN, atomic_xor_global, i32>;
+
+def : FlatAtomicPat <FLAT_ATOMIC_CMPSWAP_X2_RTN, atomic_cmp_swap_global, i64, v2i64>;
 
 } // End Predicates = [isCIVI]

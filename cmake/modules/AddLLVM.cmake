@@ -8,9 +8,9 @@ function(llvm_update_compile_flags name)
     set(update_src_props ON)
   endif()
 
-  # LLVM_REQUIRES_EH is an internal flag that individual
-  # targets can use to force EH
-  if((LLVM_REQUIRES_EH OR LLVM_ENABLE_EH) AND NOT CLANG_CL)
+  # LLVM_REQUIRES_EH is an internal flag that individual targets can use to
+  # force EH
+  if(LLVM_REQUIRES_EH OR LLVM_ENABLE_EH)
     if(NOT (LLVM_REQUIRES_RTTI OR LLVM_ENABLE_RTTI))
       message(AUTHOR_WARNING "Exception handling requires RTTI. Enabling RTTI for ${name}")
       set(LLVM_REQUIRES_RTTI ON)
@@ -1185,6 +1185,10 @@ function(llvm_externalize_debuginfo name)
     return()
   endif()
 
+  if(NOT LLVM_EXTERNALIZE_DEBUGINFO_SKIP_STRIP)
+    set(strip_command COMMAND xcrun strip -Sxl $<TARGET_FILE:${name}>)
+  endif()
+
   if(APPLE)
     if(CMAKE_CXX_FLAGS MATCHES "-flto"
       OR CMAKE_CXX_FLAGS_${uppercase_CMAKE_BUILD_TYPE} MATCHES "-flto")
@@ -1195,7 +1199,8 @@ function(llvm_externalize_debuginfo name)
     endif()
     add_custom_command(TARGET ${name} POST_BUILD
       COMMAND xcrun dsymutil $<TARGET_FILE:${name}>
-      COMMAND xcrun strip -Sxl $<TARGET_FILE:${name}>)
+      ${strip_command}
+      )
   else()
     message(FATAL_ERROR "LLVM_EXTERNALIZE_DEBUGINFO isn't implemented for non-darwin platforms!")
   endif()

@@ -358,6 +358,10 @@ public:
   TargetLoweringBase::LegalizeTypeAction
   getPreferredVectorAction(EVT VT) const override;
 
+  /// If the target has a standard location for the stack protector cookie,
+  /// returns the address of that location. Otherwise, returns nullptr.
+  Value *getStackCookieLocation(IRBuilder<> &IRB) const override;
+
   /// If the target has a standard location for the unsafe stack pointer,
   /// returns the address of that location. Otherwise, returns nullptr.
   Value *getSafeStackPointerLocation(IRBuilder<> &IRB) const override;
@@ -377,6 +381,8 @@ public:
     // FIXME: This is a guess. Has this been defined yet?
     return AArch64::X1;
   }
+
+  bool isIntDivCheap(EVT VT, AttributeSet Attr) const override;
 
   bool isCheapToSpeculateCttz() const override {
     return true;
@@ -424,7 +430,6 @@ private:
 
   bool isEligibleForTailCallOptimization(
       SDValue Callee, CallingConv::ID CalleeCC, bool isVarArg,
-      bool isCalleeStructRet, bool isCallerStructRet,
       const SmallVectorImpl<ISD::OutputArg> &Outs,
       const SmallVectorImpl<SDValue> &OutVals,
       const SmallVectorImpl<ISD::InputArg> &Ins, SelectionDAG &DAG) const;

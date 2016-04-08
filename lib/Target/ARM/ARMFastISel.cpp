@@ -1847,6 +1847,7 @@ CCAssignFn *ARMFastISel::CCAssignFnForCall(CallingConv::ID CC,
     }
     // Fallthrough
   case CallingConv::C:
+  case CallingConv::CXX_FAST_TLS:
     // Use target triple & subtarget features to do actual dispatch.
     if (Subtarget->isAAPCS_ABI()) {
       if (Subtarget->hasVFP2() &&
@@ -1858,6 +1859,7 @@ CCAssignFn *ARMFastISel::CCAssignFnForCall(CallingConv::ID CC,
       return (Return ? RetCC_ARM_APCS: CC_ARM_APCS);
     }
   case CallingConv::ARM_AAPCS_VFP:
+  case CallingConv::Swift:
     if (!isVarArg)
       return (Return ? RetCC_ARM_AAPCS_VFP: CC_ARM_AAPCS_VFP);
     // Fall through to soft float variant, variadic functions don't
@@ -2344,6 +2346,7 @@ bool ARMFastISel::SelectCall(const Instruction *I,
     // FIXME: Only handle *easy* calls for now.
     if (CS.paramHasAttr(AttrInd, Attribute::InReg) ||
         CS.paramHasAttr(AttrInd, Attribute::StructRet) ||
+        CS.paramHasAttr(AttrInd, Attribute::SwiftSelf) ||
         CS.paramHasAttr(AttrInd, Attribute::Nest) ||
         CS.paramHasAttr(AttrInd, Attribute::ByVal))
       return false;
@@ -3005,6 +3008,7 @@ bool ARMFastISel::fastLowerArguments() {
   case CallingConv::ARM_AAPCS_VFP:
   case CallingConv::ARM_AAPCS:
   case CallingConv::ARM_APCS:
+  case CallingConv::Swift:
     break;
   }
 
@@ -3018,6 +3022,7 @@ bool ARMFastISel::fastLowerArguments() {
 
     if (F->getAttributes().hasAttribute(Idx, Attribute::InReg) ||
         F->getAttributes().hasAttribute(Idx, Attribute::StructRet) ||
+        F->getAttributes().hasAttribute(Idx, Attribute::SwiftSelf) ||
         F->getAttributes().hasAttribute(Idx, Attribute::ByVal))
       return false;
 

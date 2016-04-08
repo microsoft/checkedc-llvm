@@ -749,15 +749,15 @@ TailDuplicatePass::duplicateSimpleBB(MachineBasicBlock *TailBB,
 
     TII->RemoveBranch(*PredBB);
 
-    if (PredTBB)
-      TII->InsertBranch(*PredBB, PredTBB, PredFBB, PredCond, DebugLoc());
-
     if (!PredBB->isSuccessor(NewTarget))
       PredBB->replaceSuccessor(TailBB, NewTarget);
     else {
       PredBB->removeSuccessor(TailBB, true);
       assert(PredBB->succ_size() <= 1);
     }
+
+    if (PredTBB)
+      TII->InsertBranch(*PredBB, PredTBB, PredFBB, PredCond, DebugLoc());
 
     TDBBs.push_back(PredBB);
   }
@@ -816,7 +816,7 @@ TailDuplicatePass::TailDuplicate(MachineBasicBlock *TailBB,
 
     if (RS && !TailBB->livein_empty()) {
       // Update PredBB livein.
-      RS->enterBasicBlock(PredBB);
+      RS->enterBasicBlock(*PredBB);
       if (!PredBB->empty())
         RS->forward(std::prev(PredBB->end()));
       for (const auto &LI : TailBB->liveins()) {

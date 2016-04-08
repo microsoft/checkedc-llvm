@@ -494,20 +494,6 @@ TEST_F(MDNodeTest, isTemporary) {
   EXPECT_TRUE(T->isTemporary());
 }
 
-#if defined(GTEST_HAS_DEATH_TEST) && !defined(NDEBUG)
-
-TEST_F(MDNodeTest, deathOnNoReplaceTemporaryRAUW) {
-  auto Temp = MDNode::getTemporary(Context, None);
-  Temp->setCanReplace(false);
-  EXPECT_DEATH(Temp->replaceAllUsesWith(nullptr),
-               "Attempted to replace Metadata marked for no replacement");
-  Temp->setCanReplace(true);
-  // Remove the references to Temp; required for teardown.
-  Temp->replaceAllUsesWith(nullptr);
-}
-
-#endif
-
 TEST_F(MDNodeTest, getDistinctWithUnresolvedOperands) {
   // temporary !{}
   auto Temp = MDTuple::getTemporary(Context, None);
@@ -1319,7 +1305,7 @@ TEST_F(DICompileUnitTest, get) {
   StringRef Flags = "flag after flag";
   unsigned RuntimeVersion = 2;
   StringRef SplitDebugFilename = "another/file";
-  unsigned EmissionKind = 3;
+  auto EmissionKind = DICompileUnit::FullDebug;
   MDTuple *EnumTypes = getTuple();
   MDTuple *RetainedTypes = getTuple();
   MDTuple *Subprograms = getTuple();
@@ -1382,7 +1368,7 @@ TEST_F(DICompileUnitTest, replaceArrays) {
   StringRef Flags = "flag after flag";
   unsigned RuntimeVersion = 2;
   StringRef SplitDebugFilename = "another/file";
-  unsigned EmissionKind = 3;
+  auto EmissionKind = DICompileUnit::FullDebug;
   MDTuple *EnumTypes = MDTuple::getDistinct(Context, None);
   MDTuple *RetainedTypes = MDTuple::getDistinct(Context, None);
   MDTuple *ImportedEntities = MDTuple::getDistinct(Context, None);

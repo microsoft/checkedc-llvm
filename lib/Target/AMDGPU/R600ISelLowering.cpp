@@ -1759,7 +1759,7 @@ SDValue R600TargetLowering::LowerFormalArguments(
       MemVT = MemVT.getVectorElementType();
     }
 
-    if (MFI->getShaderType() != ShaderType::COMPUTE) {
+    if (AMDGPU::isShader(CallConv)) {
       unsigned Reg = MF.addLiveIn(VA.getLocReg(), &AMDGPU::R600_Reg128RegClass);
       SDValue Register = DAG.getCopyFromReg(Chain, DL, Reg, VT);
       InVals.push_back(Register);
@@ -1847,7 +1847,7 @@ static SDValue CompactSwizzlableVector(
   };
 
   for (unsigned i = 0; i < 4; i++) {
-    if (NewBldVec[i].getOpcode() == ISD::UNDEF)
+    if (NewBldVec[i].isUndef())
       // We mask write here to teach later passes that the ith element of this
       // vector is undef. Thus we can use it to reduce 128 bits reg usage,
       // break false dependencies and additionnaly make assembly easier to read.
@@ -1862,7 +1862,7 @@ static SDValue CompactSwizzlableVector(
       }
     }
 
-    if (NewBldVec[i].getOpcode() == ISD::UNDEF)
+    if (NewBldVec[i].isUndef())
       continue;
     for (unsigned j = 0; j < i; j++) {
       if (NewBldVec[i] == NewBldVec[j]) {
@@ -2001,7 +2001,7 @@ SDValue R600TargetLowering::PerformDAGCombine(SDNode *N,
     SDLoc dl(N);
 
     // If the inserted element is an UNDEF, just use the input vector.
-    if (InVal.getOpcode() == ISD::UNDEF)
+    if (InVal.isUndef())
       return InVec;
 
     EVT VT = InVec.getValueType();
@@ -2022,7 +2022,7 @@ SDValue R600TargetLowering::PerformDAGCombine(SDNode *N,
     if (InVec.getOpcode() == ISD::BUILD_VECTOR) {
       Ops.append(InVec.getNode()->op_begin(),
                  InVec.getNode()->op_end());
-    } else if (InVec.getOpcode() == ISD::UNDEF) {
+    } else if (InVec.isUndef()) {
       unsigned NElts = VT.getVectorNumElements();
       Ops.append(NElts, DAG.getUNDEF(InVal.getValueType()));
     } else {

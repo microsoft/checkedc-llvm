@@ -5,9 +5,9 @@ RUN: llvm-objdump -private-headers %p/Inputs/macho-invalid-zero-ncmds -macho \
 RUN:      | FileCheck -check-prefix ZERO-NCMDS %s
 ZERO-NCMDS: MH_MAGIC_64 0 0 0x00 OBJECT 0 0 0x00000000
 
-RUN: not llvm-objdump -private-headers %p/Inputs/macho64-invalid-incomplete-load-command 2>&1 \
+RUN: not llvm-objdump -macho -private-headers %p/Inputs/macho64-invalid-incomplete-load-command 2>&1 \
 RUN:      | FileCheck -check-prefix INCOMPLETE-LOADC %s
-INCOMPLETE-LOADC: Invalid data was encountered while parsing the file.
+INCOMPLETE-LOADC: truncated or malformed object (load command 0 extends past the end all load commands in the file)
 
 RUN: not llvm-objdump -private-headers %p/Inputs/macho-invalid-too-small-load-command 2>&1 \
 RUN:      | FileCheck -check-prefix SMALL-LOADC-SIZE %s
@@ -54,6 +54,9 @@ INVALID-SECTION-IDX-SYMBOL-SEC-m: 0000000100000000 (?,?) [referenced dynamically
 RUN: llvm-nm -pax %p/Inputs/macho-invalid-section-index-getSectionRawName 2>&1 \
 RUN:      | FileCheck -check-prefix INVALID-SECTION-IDX-SYMBOL-SEC-pax %s
 INVALID-SECTION-IDX-SYMBOL-SEC-pax: 0000000100000000 0f 42 0010 00000065 __mh_execute_header
+RUN: not llvm-objdump -t %p/Inputs/macho-invalid-section-index-getSectionRawName 2>&1 \
+RUN:      | FileCheck -check-prefix INVALID-SECTION-IDX-SYMBOL-SEC-objdump %s
+INVALID-SECTION-IDX-SYMBOL-SEC-objdump: Invalid data was encountered while parsing the file.
 
 RUN: not llvm-objdump -private-headers %p/Inputs/macho-invalid-header 2>&1 | FileCheck -check-prefix INVALID-HEADER %s
 INVALID-HEADER: The file was not recognized as a valid object file.

@@ -191,6 +191,12 @@ static cl::opt<bool> ClCheckConstantShadow("msan-check-constant-shadow",
        cl::desc("Insert checks for constant shadow values"),
        cl::Hidden, cl::init(false));
 
+// This is off by default because of a bug in gold:
+// https://sourceware.org/bugzilla/show_bug.cgi?id=19002
+static cl::opt<bool> ClWithComdat("msan-with-comdat",
+       cl::desc("Place MSan constructors in comdat sections"),
+       cl::Hidden, cl::init(false));
+
 static const char *const kMsanModuleCtorName = "msan.module_ctor";
 static const char *const kMsanInitName = "__msan_init";
 
@@ -540,10 +546,14 @@ bool MemorySanitizer::doInitialization(Module &M) {
       createSanitizerCtorAndInitFunctions(M, kMsanModuleCtorName, kMsanInitName,
                                           /*InitArgTypes=*/{},
                                           /*InitArgs=*/{});
-  Comdat *MsanCtorComdat = M.getOrInsertComdat(kMsanModuleCtorName);
-  MsanCtorFunction->setComdat(MsanCtorComdat);
+  if (ClWithComdat) {
+    Comdat *MsanCtorComdat = M.getOrInsertComdat(kMsanModuleCtorName);
+    MsanCtorFunction->setComdat(MsanCtorComdat);
+    appendToGlobalCtors(M, MsanCtorFunction, 0, MsanCtorFunction);
+  } else {
+    appendToGlobalCtors(M, MsanCtorFunction, 0);
+  }
 
-  appendToGlobalCtors(M, MsanCtorFunction, 0, MsanCtorFunction);
 
   if (TrackOrigins)
     new GlobalVariable(M, IRB.getInt32Ty(), true, GlobalValue::WeakODRLinkage,
@@ -1212,34 +1222,34 @@ struct MemorySanitizerVisitor : public InstVisitor<MemorySanitizerVisitor> {
 
   AtomicOrdering addReleaseOrdering(AtomicOrdering a) {
     switch (a) {
-      case NotAtomic:
-        return NotAtomic;
-      case Unordered:
-      case Monotonic:
-      case Release:
-        return Release;
-      case Acquire:
-      case AcquireRelease:
-        return AcquireRelease;
-      case SequentiallyConsistent:
-        return SequentiallyConsistent;
+      case AtomicOrdering::NotAtomic:
+        return AtomicOrdering::NotAtomic;
+      case AtomicOrdering::Unordered:
+      case AtomicOrdering::Monotonic:
+      case AtomicOrdering::Release:
+        return AtomicOrdering::Release;
+      case AtomicOrdering::Acquire:
+      case AtomicOrdering::AcquireRelease:
+        return AtomicOrdering::AcquireRelease;
+      case AtomicOrdering::SequentiallyConsistent:
+        return AtomicOrdering::SequentiallyConsistent;
     }
     llvm_unreachable("Unknown ordering");
   }
 
   AtomicOrdering addAcquireOrdering(AtomicOrdering a) {
     switch (a) {
-      case NotAtomic:
-        return NotAtomic;
-      case Unordered:
-      case Monotonic:
-      case Acquire:
-        return Acquire;
-      case Release:
-      case AcquireRelease:
-        return AcquireRelease;
-      case SequentiallyConsistent:
-        return SequentiallyConsistent;
+      case AtomicOrdering::NotAtomic:
+        return AtomicOrdering::NotAtomic;
+      case AtomicOrdering::Unordered:
+      case AtomicOrdering::Monotonic:
+      case AtomicOrdering::Acquire:
+        return AtomicOrdering::Acquire;
+      case AtomicOrdering::Release:
+      case AtomicOrdering::AcquireRelease:
+        return AtomicOrdering::AcquireRelease;
+      case AtomicOrdering::SequentiallyConsistent:
+        return AtomicOrdering::SequentiallyConsistent;
     }
     llvm_unreachable("Unknown ordering");
   }

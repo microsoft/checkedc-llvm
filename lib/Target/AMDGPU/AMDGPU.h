@@ -44,6 +44,7 @@ FunctionPass *createSIFoldOperandsPass();
 FunctionPass *createSILowerI1CopiesPass();
 FunctionPass *createSIShrinkInstructionsPass();
 FunctionPass *createSILoadStoreOptimizerPass(TargetMachine &tm);
+FunctionPass *createSIWholeQuadModePass();
 FunctionPass *createSILowerControlFlowPass();
 FunctionPass *createSIFixControlFlowLiveIntervalsPass();
 FunctionPass *createSIFixSGPRCopiesPass();
@@ -69,6 +70,9 @@ extern char &SILowerI1CopiesID;
 
 void initializeSILoadStoreOptimizerPass(PassRegistry &);
 extern char &SILoadStoreOptimizerID;
+
+void initializeSIWholeQuadModePass(PassRegistry &);
+extern char &SIWholeQuadModeID;
 
 void initializeSILowerControlFlowPass(PassRegistry &);
 extern char &SILowerControlFlowPassID;
@@ -118,15 +122,6 @@ enum TargetIndex {
 }
 
 } // End namespace llvm
-
-namespace ShaderType {
-  enum Type {
-    PIXEL = 0,
-    VERTEX = 1,
-    GEOMETRY = 2,
-    COMPUTE = 3
-  };
-}
 
 /// OpenCL uses address spaces to differentiate between
 /// various memory regions on the hardware. On the CPU

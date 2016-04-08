@@ -1060,6 +1060,52 @@ void AsmPrinter::emitGlobalGOTEquivs() {
     EmitGlobalVariable(GV);
 }
 
+void AsmPrinter::emitGlobalIndirectSymbol(Module &M,
+                                          const GlobalIndirectSymbol& GIS) {
+  MCSymbol *Name = getSymbol(&GIS);
+
+  if (GIS.hasExternalLinkage() || !MAI->getWeakRefDirective())
+    OutStreamer->EmitSymbolAttribute(Name, MCSA_Global);
+  else if (GIS.hasWeakLinkage() || GIS.hasLinkOnceLinkage())
+    OutStreamer->EmitSymbolAttribute(Name, MCSA_WeakReference);
+  else
+    assert(GIS.hasLocalLinkage() && "Invalid alias or ifunc linkage");
+
+  // Set the symbol type to function if the alias has a function type.
+  // This affects codegen when the aliasee is not a function.
+  if (GIS.getType()->getPointerElementType()->isFunctionTy()) {
+    OutStreamer->EmitSymbolAttribute(Name, MCSA_ELF_TypeFunction);
+    if (isa<GlobalIFunc>(GIS))
+      OutStreamer->EmitSymbolAttribute(Name, MCSA_ELF_TypeIndFunction);
+  }
+
+  EmitVisibility(Name, GIS.getVisibility());
+
+  const MCExpr *Expr = lowerConstant(GIS.getIndirectSymbol());
+
+  if (isa<GlobalAlias>(&GIS) && MAI->hasAltEntry() && isa<MCBinaryExpr>(Expr))
+    OutStreamer->EmitSymbolAttribute(Name, MCSA_AltEntry);
+
+  // Emit the directives as assignments aka .set:
+  OutStreamer->EmitAssignment(Name, Expr);
+
+  if (auto *GA = dyn_cast<GlobalAlias>(&GIS)) {
+    // If the aliasee does not correspond to a symbol in the output, i.e. the
+    // alias is not of an object or the aliased object is private, then set the
+    // size of the alias symbol from the type of the alias. We don't do this in
+    // other situations as the alias and aliasee having differing types but same
+    // size may be intentional.
+    const GlobalObject *BaseObject = GA->getBaseObject();
+    if (MAI->hasDotTypeDotSizeDirective() && GA->getValueType()->isSized() &&
+        (!BaseObject || BaseObject->hasPrivateLinkage())) {
+      const DataLayout &DL = M.getDataLayout();
+      uint64_t Size = DL.getTypeAllocSize(GA->getValueType());
+      OutStreamer->emitELFSize(cast<MCSymbolELF>(Name),
+                               MCConstantExpr::create(Size, OutContext));
+    }
+  }
+}
+
 bool AsmPrinter::doFinalization(Module &M) {
   // Set the MachineFunction to nullptr so that we can catch attempted
   // accesses to MF specific features at the module level and so that
@@ -1148,40 +1194,26 @@ bool AsmPrinter::doFinalization(Module &M) {
   }
 
   OutStreamer->AddBlankLine();
+
+  // Print aliases in topological order, that is, for each alias a = b,
+  // b must be printed before a.
+  // This is because on some targets (e.g. PowerPC) linker expects aliases in
+  // such an order to generate correct TOC information.
+  SmallVector<const GlobalAlias *, 16> AliasStack;
+  SmallPtrSet<const GlobalAlias *, 16> AliasVisited;
   for (const auto &Alias : M.aliases()) {
-    MCSymbol *Name = getSymbol(&Alias);
-
-    if (Alias.hasExternalLinkage() || !MAI->getWeakRefDirective())
-      OutStreamer->EmitSymbolAttribute(Name, MCSA_Global);
-    else if (Alias.hasWeakLinkage() || Alias.hasLinkOnceLinkage())
-      OutStreamer->EmitSymbolAttribute(Name, MCSA_WeakReference);
-    else
-      assert(Alias.hasLocalLinkage() && "Invalid alias linkage");
-
-    // Set the symbol type to function if the alias has a function type.
-    // This affects codegen when the aliasee is not a function.
-    if (Alias.getType()->getPointerElementType()->isFunctionTy())
-      OutStreamer->EmitSymbolAttribute(Name, MCSA_ELF_TypeFunction);
-
-    EmitVisibility(Name, Alias.getVisibility());
-
-    // Emit the directives as assignments aka .set:
-    OutStreamer->EmitAssignment(Name, lowerConstant(Alias.getAliasee()));
-
-    // If the aliasee does not correspond to a symbol in the output, i.e. the
-    // alias is not of an object or the aliased object is private, then set the
-    // size of the alias symbol from the type of the alias. We don't do this in
-    // other situations as the alias and aliasee having differing types but same
-    // size may be intentional.
-    const GlobalObject *BaseObject = Alias.getBaseObject();
-    if (MAI->hasDotTypeDotSizeDirective() && Alias.getValueType()->isSized() &&
-        (!BaseObject || BaseObject->hasPrivateLinkage())) {
-      const DataLayout &DL = M.getDataLayout();
-      uint64_t Size = DL.getTypeAllocSize(Alias.getValueType());
-      OutStreamer->emitELFSize(cast<MCSymbolELF>(Name),
-                               MCConstantExpr::create(Size, OutContext));
+    for (const GlobalAlias *Cur = &Alias; Cur;
+         Cur = dyn_cast<GlobalAlias>(Cur->getAliasee())) {
+      if (!AliasVisited.insert(Cur).second)
+        break;
+      AliasStack.push_back(Cur);
     }
+    for (const GlobalAlias *AncestorAlias : reverse(AliasStack))
+      emitGlobalIndirectSymbol(M, *AncestorAlias);
+    AliasStack.clear();
   }
+  for (const auto &IFunc : M.ifuncs())
+    emitGlobalIndirectSymbol(M, IFunc);
 
   GCModuleInfo *MI = getAnalysisIfAvailable<GCModuleInfo>();
   assert(MI && "AsmPrinter didn't require GCModuleInfo?");

@@ -359,6 +359,11 @@ public:
         TLI->isZExtFree(SrcLT.second, DstLT.second))
       return 0;
 
+    if (Opcode == Instruction::AddrSpaceCast &&
+        TLI->isNoopAddrSpaceCast(Src->getPointerAddressSpace(),
+                                 Dst->getPointerAddressSpace()))
+      return 0;
+
     // If the cast is marked as legal (or promote) then assume low cost.
     if (SrcLT.first == DstLT.first &&
         TLI->isOperationLegalOrPromote(ISD, DstLT.second))
@@ -616,6 +621,7 @@ public:
   unsigned getIntrinsicInstrCost(Intrinsic::ID IID, Type *RetTy,
                                  ArrayRef<Type *> Tys) {
     unsigned ISD = 0;
+    unsigned SingleCallCost = 10; // Library call cost. Make it expensive.
     switch (IID) {
     default: {
       // Assume that we need to scalarize this intrinsic.
@@ -720,12 +726,24 @@ public:
     case Intrinsic::masked_load:
       return static_cast<T *>(this)
           ->getMaskedMemoryOpCost(Instruction::Load, RetTy, 0, 0);
+    case Intrinsic::ctpop:
+      ISD = ISD::CTPOP;
+      // In case of legalization use TCC_Expensive. This is cheaper than a
+      // library call but still not a cheap instruction.
+      SingleCallCost = TargetTransformInfo::TCC_Expensive;
+      break;
+    // FIXME: ctlz, cttz, ...
     }
 
     const TargetLoweringBase *TLI = getTLI();
     std::pair<unsigned, MVT> LT = TLI->getTypeLegalizationCost(DL, RetTy);
 
     if (TLI->isOperationLegalOrPromote(ISD, LT.second)) {
+      if (IID == Intrinsic::fabs &&
+          TLI->isFAbsFree(LT.second)) {
+        return 0;
+      }
+
       // The operation is legal. Assume it costs 1.
       // If the type is split to multiple registers, assume that there is some
       // overhead to this.
@@ -775,7 +793,7 @@ public:
     }
 
     // This is going to be turned into a library call, make it expensive.
-    return 10;
+    return SingleCallCost;
   }
 
   /// \brief Compute a cost of the given call instruction.

@@ -19,6 +19,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerUnion.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ilist_node.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/IR/Constant.h"
@@ -283,19 +284,13 @@ private:
   LLVMContext &Context;
   uint64_t NextIndex;
   SmallDenseMap<void *, std::pair<OwnerTy, uint64_t>, 4> UseMap;
-  /// Flag that can be set to false if this metadata should not be
-  /// RAUW'ed, e.g. if it is used as the key of a map.
-  bool CanReplace;
 
 public:
   ReplaceableMetadataImpl(LLVMContext &Context)
-      : Context(Context), NextIndex(0), CanReplace(true) {}
+      : Context(Context), NextIndex(0) {}
   ~ReplaceableMetadataImpl() {
     assert(UseMap.empty() && "Cannot destroy in-use replaceable metadata");
   }
-
-  /// Set the CanReplace flag to the given value.
-  void setCanReplace(bool Replaceable) { CanReplace = Replaceable; }
 
   LLVMContext &getContext() const { return Context; }
 
@@ -316,7 +311,19 @@ private:
   void dropRef(void *Ref);
   void moveRef(void *Ref, void *New, const Metadata &MD);
 
-  static ReplaceableMetadataImpl *get(Metadata &MD);
+  /// Lazily construct RAUW support on MD.
+  ///
+  /// If this is an unresolved MDNode, RAUW support will be created on-demand.
+  /// ValueAsMetadata always has RAUW support.
+  static ReplaceableMetadataImpl *getOrCreate(Metadata &MD);
+
+  /// Get RAUW support on MD, if it exists.
+  static ReplaceableMetadataImpl *getIfExists(Metadata &MD);
+
+  /// Check whether this node will support RAUW.
+  ///
+  /// Returns \c true unless getOrCreate() would return null.
+  static bool isReplaceable(const Metadata &MD);
 };
 
 /// \brief Value wrapper in the Metadata hierarchy.
@@ -592,7 +599,6 @@ class MDString : public Metadata {
 
   StringMapEntry<MDString> *Entry;
   MDString() : Metadata(MDStringKind, Uniqued), Entry(nullptr) {}
-  MDString(MDString &&) : Metadata(MDStringKind, Uniqued) {}
 
 public:
   static MDString *get(LLVMContext &Context, StringRef Str);
@@ -767,6 +773,13 @@ public:
     return nullptr;
   }
 
+  /// Ensure that this has RAUW support, and then return it.
+  ReplaceableMetadataImpl *getOrCreateReplaceableUses() {
+    if (!hasReplaceableUses())
+      makeReplaceable(llvm::make_unique<ReplaceableMetadataImpl>(getContext()));
+    return getReplaceableUses();
+  }
+
   /// \brief Assign RAUW support to this.
   ///
   /// Make this replaceable, taking ownership of \c ReplaceableUses (which must
@@ -828,9 +841,9 @@ class MDNode : public Metadata {
   unsigned NumOperands;
   unsigned NumUnresolved;
 
-protected:
   ContextAndReplaceableUses Context;
 
+protected:
   void *operator new(size_t Size, unsigned NumOps);
   void operator delete(void *Mem);
 
@@ -892,7 +905,7 @@ public:
   /// As forward declarations are resolved, their containers should get
   /// resolved automatically.  However, if this (or one of its operands) is
   /// involved in a cycle, \a resolveCycles() needs to be called explicitly.
-  bool isResolved() const { return !Context.hasReplaceableUses(); }
+  bool isResolved() const { return !isTemporary() && !NumUnresolved; }
 
   bool isUniqued() const { return Storage == Uniqued; }
   bool isDistinct() const { return Storage == Distinct; }
@@ -903,33 +916,17 @@ public:
   /// \pre \a isTemporary() must be \c true.
   void replaceAllUsesWith(Metadata *MD) {
     assert(isTemporary() && "Expected temporary node");
-    assert(!isResolved() && "Expected RAUW support");
-    Context.getReplaceableUses()->replaceAllUsesWith(MD);
-  }
-
-  /// Set the CanReplace flag to the given value.
-  void setCanReplace(bool Replaceable) {
-    Context.getReplaceableUses()->setCanReplace(Replaceable);
+    if (Context.hasReplaceableUses())
+      Context.getReplaceableUses()->replaceAllUsesWith(MD);
   }
 
   /// \brief Resolve cycles.
   ///
   /// Once all forward declarations have been resolved, force cycles to be
-  /// resolved. This interface is used when there are no more temporaries,
-  /// and thus unresolved nodes are part of cycles and no longer need RAUW
-  /// support.
+  /// resolved.
   ///
   /// \pre No operands (or operands' operands, etc.) have \a isTemporary().
-  void resolveCycles() { resolveRecursivelyImpl(/* AllowTemps */ false); }
-
-  /// \brief Resolve cycles while ignoring temporaries.
-  ///
-  /// This drops RAUW support for any temporaries, which can no longer
-  /// be uniqued.
-  ///
-  void resolveNonTemporaries() {
-    resolveRecursivelyImpl(/* AllowTemps */ true);
-  }
+  void resolveCycles();
 
   /// \brief Replace a temporary node with a permanent one.
   ///
@@ -982,15 +979,15 @@ protected:
 private:
   void handleChangedOperand(void *Ref, Metadata *New);
 
+  /// Resolve a unique, unresolved node.
   void resolve();
+
+  /// Drop RAUW support, if any.
+  void dropReplaceableUses();
+
   void resolveAfterOperandChange(Metadata *Old, Metadata *New);
   void decrementUnresolvedOperandCount();
-  unsigned countUnresolvedOperands();
-
-  /// Resolve cycles recursively. If \p AllowTemps is true, then any temporary
-  /// metadata is ignored, otherwise it asserts when encountering temporary
-  /// metadata.
-  void resolveRecursivelyImpl(bool AllowTemps);
+  void countUnresolvedOperands();
 
   /// \brief Mutate this to be "uniqued".
   ///

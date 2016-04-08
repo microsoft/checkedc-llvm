@@ -152,7 +152,7 @@
 ; OBJ:   InlineSite {
 ; OBJ:     PtrParent: 0x0
 ; OBJ:     PtrEnd: 0x0
-; OBJ:     Inlinee: inlineinc (0x1003)
+; OBJ:     Inlinee: inlineinc (0x1002)
 ; OBJ:   }
 ; OBJ:   Local {
 ; OBJ:     Type: int (0x74)
@@ -239,7 +239,7 @@ attributes #3 = { nounwind }
 !llvm.module.flags = !{!25, !26, !27}
 !llvm.ident = !{!28}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.9.0 (trunk 260617) (llvm/trunk 260619)", isOptimized: true, runtimeVersion: 0, emissionKind: 1, enums: !2, subprograms: !3, globals: !22)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.9.0 (trunk 260617) (llvm/trunk 260619)", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, subprograms: !3, globals: !22)
 !1 = !DIFile(filename: "t.cpp", directory: "D:\5Csrc\5Cllvm\5Cbuild")
 !2 = !{}
 !3 = !{!4, !16}

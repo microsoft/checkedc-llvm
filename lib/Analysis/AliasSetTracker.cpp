@@ -300,7 +300,7 @@ bool AliasSetTracker::add(Value *Ptr, uint64_t Size, const AAMDNodes &AAInfo) {
 
 
 bool AliasSetTracker::add(LoadInst *LI) {
-  if (LI->getOrdering() > Monotonic) return addUnknown(LI);
+  if (isStrongerThanMonotonic(LI->getOrdering())) return addUnknown(LI);
 
   AAMDNodes AAInfo;
   LI->getAAMetadata(AAInfo);
@@ -316,7 +316,7 @@ bool AliasSetTracker::add(LoadInst *LI) {
 }
 
 bool AliasSetTracker::add(StoreInst *SI) {
-  if (SI->getOrdering() > Monotonic) return addUnknown(SI);
+  if (isStrongerThanMonotonic(SI->getOrdering())) return addUnknown(SI);
 
   AAMDNodes AAInfo;
   SI->getAAMetadata(AAInfo);
@@ -355,7 +355,7 @@ bool AliasSetTracker::add(MemSetInst *MSI) {
     Len = MemoryLocation::UnknownSize;
 
   AliasSet &AS =
-      addPointer(MSI->getDest(), Len, AAInfo, AliasSet::ModAccess, NewPtr);
+      addPointer(MSI->getRawDest(), Len, AAInfo, AliasSet::ModAccess, NewPtr);
   if (MSI->isVolatile())
     AS.setVolatile();
   return NewPtr;
@@ -510,7 +510,7 @@ bool AliasSetTracker::remove(MemSetInst *MSI) {
   else
     Len = MemoryLocation::UnknownSize;
 
-  AliasSet *AS = findAliasSetForPointer(MSI->getDest(), Len, AAInfo);
+  AliasSet *AS = findAliasSetForPointer(MSI->getRawDest(), Len, AAInfo);
   if (!AS)
     return false;
   remove(*AS);

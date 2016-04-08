@@ -16,9 +16,9 @@
 ; Test that we only emit register-indirect locations for the array array.
 ; rdar://problem/14874886
 ;
-; CHECK:     ##DEBUG_VALUE: main:array <- [%R{{.*}}+0]
-; CHECK:     ##DEBUG_VALUE: main:array <- [%R{{.*}}+0]
-; CHECK:     ##DEBUG_VALUE: main:array <- [%R{{.*}}+0]
+; FIXME: If we described this location as RSP-relative instead of RDI-relative
+; the live range would be larger.
+; CHECK:     ##DEBUG_VALUE: main:array <- [%RDI+0]
 ; CHECK-NOT: ##DEBUG_VALUE: main:array <- %R{{.*}}
 target datalayout = "e-m:o-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-apple-macosx10.9.0"
@@ -62,7 +62,7 @@ attributes #2 = { nounwind readnone }
 !llvm.module.flags = !{!25, !26}
 !llvm.ident = !{!27}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.5.0 ", isOptimized: true, emissionKind: 1, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.5.0 ", isOptimized: true, emissionKind: FullDebug, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
 !1 = !DIFile(filename: "array.c", directory: "")
 !2 = !{}
 !3 = !{!4, !12}
