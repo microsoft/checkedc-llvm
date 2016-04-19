@@ -1,8 +1,6 @@
-[submodule "projects/checkedc-llvm/CheckedC"]
-	path = projects/checkedc-llvm/CheckedC
-	url = https://msresearch.visualstudio.com/DefaultCollection/Autobahn/_git/checkedc
-	branch = tests
 [submodule "tools/clang"]
 	path = tools/clang
 	url = https://msresearch.visualstudio.com/DefaultCollection/Autobahn/_git/checkedc-clang
-	branch = master
+[submodule "projects/checkedc-llvm/CheckedC"]
+	path = projects/checkedc-llvm/CheckedC
+	url = https://msresearch.visualstudio.com/DefaultCollection/Autobahn/_git/CheckedC
