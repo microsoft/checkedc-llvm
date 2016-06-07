@@ -15,7 +15,7 @@ for Checked C reside in a separate repo on
 Github.   To use those tests, clone the
 Checked C repo to this directory:
 
-git clone https://github.com/Microsoft/CheckedC
+git clone https://github.com/Microsoft/checkedc
 
 ## Why this directory exists.
 
@@ -25,5 +25,7 @@ allowing us to elide this directory entirely.
 The build and test infrastructure configuration
 files are derived directly from existing LLVM files,
 so they are subject the LLVM license and copyright
-terms.
+terms.  The Checked C repo is subject to the MIT
+conflicting licenses in the repo, just for a few files.
+
 

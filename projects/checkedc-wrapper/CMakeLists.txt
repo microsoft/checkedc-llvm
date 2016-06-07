@@ -7,7 +7,7 @@
 # The script adds a new target for running Checked C tests.
 # To do that, it sets up  the information needed by the LIT tool.
 
-if(EXISTS ${LLVM_MAIN_SRC_DIR}/projects/checkedc-wrapper/CheckedC)
+if(EXISTS ${LLVM_MAIN_SRC_DIR}/projects/checkedc-wrapper/checkedc)
  
   set(CHECKEDC_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
   set(CHECKEDC_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
