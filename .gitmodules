@@ -1,6 +1,6 @@
 [submodule "tools/clang"]
 	path = tools/clang
-	url = https://msresearch.visualstudio.com/DefaultCollection/Autobahn/_git/checkedc-clang
+	url = https://github.com/Microsoft/checkedc-clang 
 [submodule "projects/checkedc-wrapper/checkedc"]
 	path = projects/checkedc-wrapper/checkedc
-	url = https://msresearch.visualstudio.com/DefaultCollection/Autobahn/_git/checkedc
+	url = https://github.com/Microsoft/checkedc
