@@ -344,6 +344,15 @@ ValueEnumerator::ValueEnumerator(const Module &M,
   EnumerateNamedMetadata(M);
 
   SmallVector<std::pair<unsigned, MDNode *>, 8> MDs;
+  for (const GlobalVariable &GV : M.globals()) {
+    MDs.clear();
+    GV.getAllMetadata(MDs);
+    for (const auto &I : MDs)
+      // FIXME: Pass GV to EnumerateMetadata and arrange for the bitcode writer
+      // to write metadata to the global variable's own metadata block
+      // (PR28134).
+      EnumerateMetadata(nullptr, I.second);
+  }
 
   // Enumerate types used by function bodies and argument lists.
   for (const Function &F : M) {
@@ -351,9 +360,10 @@ ValueEnumerator::ValueEnumerator(const Module &M,
       EnumerateType(A.getType());
 
     // Enumerate metadata attached to this function.
+    MDs.clear();
     F.getAllMetadata(MDs);
     for (const auto &I : MDs)
-      EnumerateMetadata(&F, I.second);
+      EnumerateMetadata(F.isDeclaration() ? nullptr : &F, I.second);
 
     for (const BasicBlock &BB : F)
       for (const Instruction &I : BB) {
@@ -385,7 +395,8 @@ ValueEnumerator::ValueEnumerator(const Module &M,
         // Don't enumerate the location directly -- it has a special record
         // type -- but enumerate its operands.
         if (DILocation *L = I.getDebugLoc())
-          EnumerateMDNodeOperands(&F, L);
+          for (const Metadata *Op : L->operands())
+            EnumerateMetadata(&F, Op);
       }
   }
 
@@ -526,11 +537,6 @@ unsigned ValueEnumerator::getMetadataFunctionID(const Function *F) const {
   return F ? getValueID(F) + 1 : 0;
 }
 
-void ValueEnumerator::EnumerateMDNodeOperands(const Function *F,
-                                              const MDNode *N) {
-  EnumerateMDNodeOperands(getMetadataFunctionID(F), N);
-}
-
 void ValueEnumerator::EnumerateMetadata(const Function *F, const Metadata *MD) {
   EnumerateMetadata(getMetadataFunctionID(F), MD);
 }
@@ -540,86 +546,114 @@ void ValueEnumerator::EnumerateFunctionLocalMetadata(
   EnumerateFunctionLocalMetadata(getMetadataFunctionID(&F), Local);
 }
 
-/// EnumerateMDNodeOperands - Enumerate all non-function-local values
-/// and types referenced by the given MDNode.
-void ValueEnumerator::EnumerateMDNodeOperands(unsigned F, const MDNode *N) {
-  for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i) {
-    Metadata *MD = N->getOperand(i);
-    if (!MD)
-      continue;
-    assert(!isa<LocalAsMetadata>(MD) && "MDNodes cannot be function-local");
-    EnumerateMetadata(F, MD);
-  }
-}
+void ValueEnumerator::dropFunctionFromMetadata(
+    MetadataMapType::value_type &FirstMD) {
+  SmallVector<const MDNode *, 64> Worklist;
+  auto push = [this, &Worklist](MetadataMapType::value_type &MD) {
+    auto &Entry = MD.second;
 
-bool ValueEnumerator::insertMetadata(unsigned F, const Metadata *MD) {
-  auto Insertion = MetadataMap.insert(std::make_pair(MD, MDIndex(F)));
-  if (Insertion.second)
-    return true;
+    // Nothing to do if this metadata isn't tagged.
+    if (!Entry.F)
+      return;
 
-  // Check whether F is a different function.
-  MDIndex &Entry = Insertion.first->second;
-  if (!Entry.hasDifferentFunction(F))
-    return false;
+    // Drop the function tag.
+    Entry.F = 0;
 
-  // Since MD was tagged from a different function entry point then it must
-  // already have an ID.
-  assert(Entry.ID && "Expected metadata to already be indexed");
-  Entry.F = 0;
-
-  // Drop the function from transitive operands.
-  if (auto *N = dyn_cast<MDNode>(MD))
-    dropFunctionFromOps(*N);
-
-  return false;
-}
-
-void ValueEnumerator::dropFunctionFromOps(const MDNode &N) {
-  SmallVector<const MDNode *, 64> WorkList;
-  WorkList.push_back(&N);
-  while (!WorkList.empty()) {
-    for (const Metadata *Op : WorkList.pop_back_val()->operands()) {
+    // If this is has an ID and is an MDNode, then its operands have entries as
+    // well.  We need to drop the function from them too.
+    if (Entry.ID)
+      if (auto *N = dyn_cast<MDNode>(MD.first))
+        Worklist.push_back(N);
+  };
+  push(FirstMD);
+  while (!Worklist.empty())
+    for (const Metadata *Op : Worklist.pop_back_val()->operands()) {
       if (!Op)
         continue;
+      auto MD = MetadataMap.find(Op);
+      if (MD != MetadataMap.end())
+        push(*MD);
+    }
+}
 
-      // All transitive operands of N should already have IDs.  This should be
-      // a second traversal.
-      auto &Entry = MetadataMap[Op];
-      assert(Entry.ID && "Expected metadata to already be indexed");
+void ValueEnumerator::EnumerateMetadata(unsigned F, const Metadata *MD) {
+  // It's vital for reader efficiency that uniqued subgraphs are done in
+  // post-order; it's expensive when their operands have forward references.
+  // If a distinct node is referenced from a uniqued node, it'll be delayed
+  // until the uniqued subgraph has been completely traversed.
+  SmallVector<const MDNode *, 32> DelayedDistinctNodes;
 
-      // Nothing to do if this operand isn't tagged.
-      if (!Entry.F)
-        continue;
+  // Start by enumerating MD, and then work through its transitive operands in
+  // post-order.  This requires a depth-first search.
+  SmallVector<std::pair<const MDNode *, MDNode::op_iterator>, 32> Worklist;
+  if (const MDNode *N = enumerateMetadataImpl(F, MD))
+    Worklist.push_back(std::make_pair(N, N->op_begin()));
 
-      // Drop the tag, and if it's a node (with potential operands), queue it.
-      Entry.F = 0;
-      if (auto *OpN = dyn_cast<MDNode>(Op))
-        WorkList.push_back(OpN);
+  while (!Worklist.empty()) {
+    const MDNode *N = Worklist.back().first;
+
+    // Enumerate operands until we hit a new node.  We need to traverse these
+    // nodes' operands before visiting the rest of N's operands.
+    MDNode::op_iterator I = std::find_if(
+        Worklist.back().second, N->op_end(),
+        [&](const Metadata *MD) { return enumerateMetadataImpl(F, MD); });
+    if (I != N->op_end()) {
+      auto *Op = cast<MDNode>(*I);
+      Worklist.back().second = ++I;
+
+      // Delay traversing Op if it's a distinct node and N is uniqued.
+      if (Op->isDistinct() && !N->isDistinct())
+        DelayedDistinctNodes.push_back(Op);
+      else
+        Worklist.push_back(std::make_pair(Op, Op->op_begin()));
+      continue;
+    }
+
+    // All the operands have been visited.  Now assign an ID.
+    Worklist.pop_back();
+    MDs.push_back(N);
+    MetadataMap[N].ID = MDs.size();
+
+    // Flush out any delayed distinct nodes; these are all the distinct nodes
+    // that are leaves in last uniqued subgraph.
+    if (Worklist.empty() || Worklist.back().first->isDistinct()) {
+      for (const MDNode *N : DelayedDistinctNodes)
+        Worklist.push_back(std::make_pair(N, N->op_begin()));
+      DelayedDistinctNodes.clear();
     }
   }
 }
 
-void ValueEnumerator::EnumerateMetadata(unsigned F, const Metadata *MD) {
+const MDNode *ValueEnumerator::enumerateMetadataImpl(unsigned F, const Metadata *MD) {
+  if (!MD)
+    return nullptr;
+
   assert(
       (isa<MDNode>(MD) || isa<MDString>(MD) || isa<ConstantAsMetadata>(MD)) &&
       "Invalid metadata kind");
 
-  // Insert a dummy ID to block the co-recursive call to
-  // EnumerateMDNodeOperands() from re-visiting MD in a cyclic graph.
-  //
-  // Return early if there's already an ID.
-  if (!insertMetadata(F, MD))
-    return;
+  auto Insertion = MetadataMap.insert(std::make_pair(MD, MDIndex(F)));
+  MDIndex &Entry = Insertion.first->second;
+  if (!Insertion.second) {
+    // Already mapped.  If F doesn't match the function tag, drop it.
+    if (Entry.hasDifferentFunction(F))
+      dropFunctionFromMetadata(*Insertion.first);
+    return nullptr;
+  }
 
-  // Visit operands first to minimize RAUW.
+  // Don't assign IDs to metadata nodes.
   if (auto *N = dyn_cast<MDNode>(MD))
-    EnumerateMDNodeOperands(F, N);
-  else if (auto *C = dyn_cast<ConstantAsMetadata>(MD))
-    EnumerateValue(C->getValue());
+    return N;
 
   // Save the metadata.
   MDs.push_back(MD);
-  MetadataMap[MD].ID = MDs.size();
+  Entry.ID = MDs.size();
+
+  // Enumerate the constant, if any.
+  if (auto *C = dyn_cast<ConstantAsMetadata>(MD))
+    EnumerateValue(C->getValue());
+
+  return nullptr;
 }
 
 /// EnumerateFunctionLocalMetadataa - Incorporate function-local metadata
@@ -640,6 +674,22 @@ void ValueEnumerator::EnumerateFunctionLocalMetadata(
   Index.ID = MDs.size();
 
   EnumerateValue(Local->getValue());
+}
+
+static unsigned getMetadataTypeOrder(const Metadata *MD) {
+  // Strings are emitted in bulk and must come first.
+  if (isa<MDString>(MD))
+    return 0;
+
+  // ConstantAsMetadata doesn't reference anything.  We may as well shuffle it
+  // to the front since we can detect it.
+  auto *N = dyn_cast<MDNode>(MD);
+  if (!N)
+    return 1;
+
+  // The reader is fast forward references for distinct node operands, but slow
+  // when uniqued operands are unresolved.
+  return N->isDistinct() ? 2 : 3;
 }
 
 void ValueEnumerator::organizeMetadata() {
@@ -663,13 +713,9 @@ void ValueEnumerator::organizeMetadata() {
   // be unique, the result of std::sort will be deterministic.  There's no need
   // for std::stable_sort.
   std::sort(Order.begin(), Order.end(), [this](MDIndex LHS, MDIndex RHS) {
-    return std::make_tuple(LHS.F, !isa<MDString>(LHS.get(MDs)), LHS.ID) <
-           std::make_tuple(RHS.F, !isa<MDString>(RHS.get(MDs)), RHS.ID);
+    return std::make_tuple(LHS.F, getMetadataTypeOrder(LHS.get(MDs)), LHS.ID) <
+           std::make_tuple(RHS.F, getMetadataTypeOrder(RHS.get(MDs)), RHS.ID);
   });
-
-  // Return early if nothing is moving to functions and there are no strings.
-  if (!Order.back().F && !isa<MDString>(Order.front().get(MDs)))
-    return;
 
   // Rebuild MDs, index the metadata ranges for each function in FunctionMDs,
   // and fix up MetadataMap.
@@ -911,8 +957,13 @@ void ValueEnumerator::incorporateFunction(const Function &F) {
   }
 
   // Add all of the function-local metadata.
-  for (unsigned i = 0, e = FnLocalMDVector.size(); i != e; ++i)
+  for (unsigned i = 0, e = FnLocalMDVector.size(); i != e; ++i) {
+    // At this point, every local values have been incorporated, we shouldn't
+    // have a metadata operand that references a value that hasn't been seen.
+    assert(ValueMap.count(FnLocalMDVector[i]->getValue()) &&
+           "Missing value for metadata operand");
     EnumerateFunctionLocalMetadata(F, FnLocalMDVector[i]);
+  }
 }
 
 void ValueEnumerator::purgeFunction() {

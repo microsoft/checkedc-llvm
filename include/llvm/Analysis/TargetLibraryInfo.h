@@ -11,7 +11,6 @@
 #define LLVM_ANALYSIS_TARGETLIBRARYINFO_H
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/Function.h"
@@ -20,6 +19,8 @@
 #include "llvm/Pass.h"
 
 namespace llvm {
+template <typename T> class ArrayRef;
+
 /// Describes a possible vectorization of a function.
 /// Function 'VectorFnName' is equivalent to 'ScalarFnName' vectorized
 /// by a factor 'VectorizationFactor'.
@@ -70,6 +71,11 @@ class TargetLibraryInfoImpl {
   /// on VectorFnName rather than ScalarFnName.
   std::vector<VecDesc> ScalarDescs;
 
+  /// Return true if the function type FTy is valid for the library function
+  /// F, regardless of whether the function is available.
+  bool isValidProtoForLibFunc(const FunctionType &FTy, LibFunc::Func F,
+                              const DataLayout *DL) const;
+
 public:
   /// List of known vector-functions libraries.
   ///
@@ -79,8 +85,9 @@ public:
   /// addVectorizableFunctionsFromVecLib for filling up the tables of
   /// vectorizable functions.
   enum VectorLibrary {
-    NoLibrary, // Don't use any vector library.
-    Accelerate // Use Accelerate framework.
+    NoLibrary,  // Don't use any vector library.
+    Accelerate, // Use Accelerate framework.
+    SVML        // Intel short vector math library.
   };
 
   TargetLibraryInfoImpl();
@@ -97,6 +104,13 @@ public:
   /// If it is one of the known library functions, return true and set F to the
   /// corresponding value.
   bool getLibFunc(StringRef funcName, LibFunc::Func &F) const;
+
+  /// Searches for a particular function name, also checking that its type is
+  /// valid for the library function matching that name.
+  ///
+  /// If it is one of the known library functions, return true and set F to the
+  /// corresponding value.
+  bool getLibFunc(const Function &FDecl, LibFunc::Func &F) const;
 
   /// Forces a function to be marked as unavailable.
   void setUnavailable(LibFunc::Func F) {
@@ -194,6 +208,10 @@ public:
     return Impl->getLibFunc(funcName, F);
   }
 
+  bool getLibFunc(const Function &FDecl, LibFunc::Func &F) const {
+    return Impl->getLibFunc(FDecl, F);
+  }
+
   /// Tests whether a library function is available.
   bool has(LibFunc::Func F) const {
     return Impl->getState(F) != TargetLibraryInfoImpl::Unavailable;
@@ -234,7 +252,7 @@ public:
     case LibFunc::exp2:      case LibFunc::exp2f:      case LibFunc::exp2l:
     case LibFunc::memcmp:    case LibFunc::strcmp:     case LibFunc::strcpy:
     case LibFunc::stpcpy:    case LibFunc::strlen:     case LibFunc::strnlen:
-    case LibFunc::memchr:
+    case LibFunc::memchr:    case LibFunc::mempcpy:
       return true;
     }
     return false;
@@ -253,8 +271,9 @@ public:
   /// Handle invalidation from the pass manager.
   ///
   /// If we try to invalidate this info, just return false. It cannot become
-  /// invalid even if the module changes.
+  /// invalid even if the module or function changes.
   bool invalidate(Module &, const PreservedAnalyses &) { return false; }
+  bool invalidate(Function &, const PreservedAnalyses &) { return false; }
 };
 
 /// Analysis pass providing the \c TargetLibraryInfo.
@@ -287,8 +306,8 @@ public:
     return *this;
   }
 
-  TargetLibraryInfo run(Module &M);
-  TargetLibraryInfo run(Function &F);
+  TargetLibraryInfo run(Module &M, ModuleAnalysisManager &);
+  TargetLibraryInfo run(Function &F, FunctionAnalysisManager &);
 
 private:
   friend AnalysisInfoMixin<TargetLibraryAnalysis>;
@@ -298,7 +317,7 @@ private:
 
   StringMap<std::unique_ptr<TargetLibraryInfoImpl>> Impls;
 
-  TargetLibraryInfoImpl &lookupInfoImpl(Triple T);
+  TargetLibraryInfoImpl &lookupInfoImpl(const Triple &T);
 };
 
 class TargetLibraryInfoWrapperPass : public ImmutablePass {

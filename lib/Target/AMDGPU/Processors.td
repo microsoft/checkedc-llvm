@@ -13,11 +13,8 @@ class Proc<string Name, ProcessorItineraries itin, list<SubtargetFeature> Featur
 //===----------------------------------------------------------------------===//
 // R600
 //===----------------------------------------------------------------------===//
-def : Proc<"",           R600_VLIW5_Itin,
-    [FeatureR600, FeatureVertexCache]>;
-
 def : Proc<"r600",       R600_VLIW5_Itin,
-    [FeatureR600 , FeatureVertexCache, FeatureWavefrontSize64]>;
+    [FeatureR600, FeatureVertexCache, FeatureWavefrontSize64]>;
 
 def : Proc<"r630",       R600_VLIW5_Itin,
     [FeatureR600, FeatureVertexCache, FeatureWavefrontSize32]>;
@@ -138,7 +135,7 @@ def : ProcessorModel<"iceland", SIQuarterSpeedModel,
 >;
 
 def : ProcessorModel<"carrizo", SIQuarterSpeedModel,
-  [FeatureVolcanicIslands, FeatureISAVersion8_0_1, FeatureLDSBankCount32]
+  [FeatureVolcanicIslands, FeatureISAVersion8_0_1, FeatureLDSBankCount32, FeatureXNACK]
 >;
 
 def : ProcessorModel<"fiji", SIQuarterSpeedModel,
@@ -146,7 +143,7 @@ def : ProcessorModel<"fiji", SIQuarterSpeedModel,
 >;
 
 def : ProcessorModel<"stoney", SIQuarterSpeedModel,
-  [FeatureVolcanicIslands, FeatureISAVersion8_0_1, FeatureLDSBankCount16]
+  [FeatureVolcanicIslands, FeatureISAVersion8_0_1, FeatureLDSBankCount16, FeatureXNACK]
 >;
 
 def : ProcessorModel<"polaris10", SIQuarterSpeedModel,

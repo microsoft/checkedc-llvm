@@ -11,25 +11,19 @@
 #ifndef LLVM_LIB_TARGET_AMDGPU_AMDGPU_H
 #define LLVM_LIB_TARGET_AMDGPU_AMDGPU_H
 
-#include "llvm/Support/TargetRegistry.h"
-#include "llvm/Target/TargetMachine.h"
-
 namespace llvm {
 
-class AMDGPUInstrPrinter;
-class AMDGPUSubtarget;
 class AMDGPUTargetMachine;
 class FunctionPass;
-struct MachineSchedContext;
-class MCAsmInfo;
-class raw_ostream;
-class ScheduleDAGInstrs;
+class GCNTargetMachine;
+class ModulePass;
+class Pass;
 class Target;
 class TargetMachine;
+class PassRegistry;
 
 // R600 Passes
 FunctionPass *createR600VectorRegMerger(TargetMachine &tm);
-FunctionPass *createR600TextureIntrinsicsReplacer();
 FunctionPass *createR600ExpandSpecialInstrsPass(TargetMachine &tm);
 FunctionPass *createR600EmitClauseMarkers();
 FunctionPass *createR600ClauseMergePass(TargetMachine &tm);
@@ -45,15 +39,11 @@ FunctionPass *createSILowerI1CopiesPass();
 FunctionPass *createSIShrinkInstructionsPass();
 FunctionPass *createSILoadStoreOptimizerPass(TargetMachine &tm);
 FunctionPass *createSIWholeQuadModePass();
-FunctionPass *createSILowerControlFlowPass();
 FunctionPass *createSIFixControlFlowLiveIntervalsPass();
 FunctionPass *createSIFixSGPRCopiesPass();
-FunctionPass *createSIFixSGPRLiveRangesPass();
-FunctionPass *createSICodeEmitterPass(formatted_raw_ostream &OS);
-FunctionPass *createSIInsertNopsPass();
+FunctionPass *createSIDebuggerInsertNopsPass();
 FunctionPass *createSIInsertWaitsPass();
-
-ScheduleDAGInstrs *createSIMachineScheduler(MachineSchedContext *C);
+FunctionPass *createAMDGPUCodeGenPreparePass(const GCNTargetMachine *TM = nullptr);
 
 ModulePass *createAMDGPUAnnotateKernelFeaturesPass();
 void initializeAMDGPUAnnotateKernelFeaturesPass(PassRegistry &);
@@ -61,6 +51,9 @@ extern char &AMDGPUAnnotateKernelFeaturesID;
 
 void initializeSIFoldOperandsPass(PassRegistry &);
 extern char &SIFoldOperandsID;
+
+void initializeSIShrinkInstructionsPass(PassRegistry&);
+extern char &SIShrinkInstructionsID;
 
 void initializeSIFixSGPRCopiesPass(PassRegistry &);
 extern char &SIFixSGPRCopiesID;
@@ -75,15 +68,16 @@ void initializeSIWholeQuadModePass(PassRegistry &);
 extern char &SIWholeQuadModeID;
 
 void initializeSILowerControlFlowPass(PassRegistry &);
-extern char &SILowerControlFlowPassID;
+extern char &SILowerControlFlowID;
 
+void initializeSIInsertSkipsPass(PassRegistry &);
+extern char &SIInsertSkipsPassID;
 
 // Passes common to R600 and SI
 FunctionPass *createAMDGPUPromoteAlloca(const TargetMachine *TM = nullptr);
 void initializeAMDGPUPromoteAllocaPass(PassRegistry&);
 extern char &AMDGPUPromoteAllocaID;
 
-FunctionPass *createAMDGPUAddDivergenceMetadata(const AMDGPUSubtarget &ST);
 Pass *createAMDGPUStructurizeCFGPass();
 FunctionPass *createAMDGPUISelDag(TargetMachine &tm);
 ModulePass *createAMDGPUAlwaysInlinePass();
@@ -93,17 +87,17 @@ FunctionPass *createAMDGPUAnnotateUniformValues();
 void initializeSIFixControlFlowLiveIntervalsPass(PassRegistry&);
 extern char &SIFixControlFlowLiveIntervalsID;
 
-void initializeSIFixSGPRLiveRangesPass(PassRegistry&);
-extern char &SIFixSGPRLiveRangesID;
-
 void initializeAMDGPUAnnotateUniformValuesPass(PassRegistry&);
 extern char &AMDGPUAnnotateUniformValuesPassID;
+
+void initializeAMDGPUCodeGenPreparePass(PassRegistry&);
+extern char &AMDGPUCodeGenPrepareID;
 
 void initializeSIAnnotateControlFlowPass(PassRegistry&);
 extern char &SIAnnotateControlFlowPassID;
 
-void initializeSIInsertNopsPass(PassRegistry&);
-extern char &SIInsertNopsID;
+void initializeSIDebuggerInsertNopsPass(PassRegistry&);
+extern char &SIDebuggerInsertNopsID;
 
 void initializeSIInsertWaitsPass(PassRegistry&);
 extern char &SIInsertWaitsID;
@@ -133,7 +127,7 @@ namespace AMDGPUAS {
 enum AddressSpaces : unsigned {
   PRIVATE_ADDRESS  = 0, ///< Address space for private memory.
   GLOBAL_ADDRESS   = 1, ///< Address space for global memory (RAT0, VTX0).
-  CONSTANT_ADDRESS = 2, ///< Address space for constant memory
+  CONSTANT_ADDRESS = 2, ///< Address space for constant memory (VTX2)
   LOCAL_ADDRESS    = 3, ///< Address space for local memory.
   FLAT_ADDRESS     = 4, ///< Address space for flat memory.
   REGION_ADDRESS   = 5, ///< Address space for region memory.
@@ -161,8 +155,6 @@ enum AddressSpaces : unsigned {
   CONSTANT_BUFFER_13 = 21,
   CONSTANT_BUFFER_14 = 22,
   CONSTANT_BUFFER_15 = 23,
-  ADDRESS_NONE = 24, ///< Address space for unknown memory.
-  LAST_ADDRESS = ADDRESS_NONE,
 
   // Some places use this if the address space can't be determined.
   UNKNOWN_ADDRESS_SPACE = ~0u

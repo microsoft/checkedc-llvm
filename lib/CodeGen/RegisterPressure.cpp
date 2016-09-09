@@ -328,10 +328,9 @@ void RegPressureTracker::initLiveThru(const RegPressureTracker &RPTracker) {
 
 static LaneBitmask getRegLanes(ArrayRef<RegisterMaskPair> RegUnits,
                                unsigned RegUnit) {
-  auto I = std::find_if(RegUnits.begin(), RegUnits.end(),
-                        [RegUnit](const RegisterMaskPair Other) {
-                        return Other.RegUnit == RegUnit;
-                        });
+  auto I = find_if(RegUnits, [RegUnit](const RegisterMaskPair Other) {
+    return Other.RegUnit == RegUnit;
+  });
   if (I == RegUnits.end())
     return 0;
   return I->LaneMask;
@@ -341,10 +340,9 @@ static void addRegLanes(SmallVectorImpl<RegisterMaskPair> &RegUnits,
                         RegisterMaskPair Pair) {
   unsigned RegUnit = Pair.RegUnit;
   assert(Pair.LaneMask != 0);
-  auto I = std::find_if(RegUnits.begin(), RegUnits.end(),
-                        [RegUnit](const RegisterMaskPair Other) {
-                          return Other.RegUnit == RegUnit;
-                        });
+  auto I = find_if(RegUnits, [RegUnit](const RegisterMaskPair Other) {
+    return Other.RegUnit == RegUnit;
+  });
   if (I == RegUnits.end()) {
     RegUnits.push_back(Pair);
   } else {
@@ -354,10 +352,9 @@ static void addRegLanes(SmallVectorImpl<RegisterMaskPair> &RegUnits,
 
 static void setRegZero(SmallVectorImpl<RegisterMaskPair> &RegUnits,
                        unsigned RegUnit) {
-  auto I = std::find_if(RegUnits.begin(), RegUnits.end(),
-                        [RegUnit](const RegisterMaskPair Other) {
-                          return Other.RegUnit == RegUnit;
-                        });
+  auto I = find_if(RegUnits, [RegUnit](const RegisterMaskPair Other) {
+    return Other.RegUnit == RegUnit;
+  });
   if (I == RegUnits.end()) {
     RegUnits.push_back(RegisterMaskPair(RegUnit, 0));
   } else {
@@ -369,10 +366,9 @@ static void removeRegLanes(SmallVectorImpl<RegisterMaskPair> &RegUnits,
                            RegisterMaskPair Pair) {
   unsigned RegUnit = Pair.RegUnit;
   assert(Pair.LaneMask != 0);
-  auto I = std::find_if(RegUnits.begin(), RegUnits.end(),
-                        [RegUnit](const RegisterMaskPair Other) {
-                          return Other.RegUnit == RegUnit;
-                        });
+  auto I = find_if(RegUnits, [RegUnit](const RegisterMaskPair Other) {
+    return Other.RegUnit == RegUnit;
+  });
   if (I != RegUnits.end()) {
     I->LaneMask &= ~Pair.LaneMask;
     if (I->LaneMask == 0)
@@ -382,7 +378,7 @@ static void removeRegLanes(SmallVectorImpl<RegisterMaskPair> &RegUnits,
 
 static LaneBitmask getLanesWithProperty(const LiveIntervals &LIS,
     const MachineRegisterInfo &MRI, bool TrackLaneMasks, unsigned RegUnit,
-    SlotIndex Pos,
+    SlotIndex Pos, LaneBitmask SafeDefault,
     bool(*Property)(const LiveRange &LR, SlotIndex Pos)) {
   if (TargetRegisterInfo::isVirtualRegister(RegUnit)) {
     const LiveInterval &LI = LIS.getInterval(RegUnit);
@@ -402,7 +398,7 @@ static LaneBitmask getLanesWithProperty(const LiveIntervals &LIS,
     // Be prepared for missing liveranges: We usually do not compute liveranges
     // for physical registers on targets with many registers (GPUs).
     if (LR == nullptr)
-      return 0;
+      return SafeDefault;
     return Property(*LR, Pos) ? ~0u : 0;
   }
 }
@@ -411,7 +407,7 @@ static LaneBitmask getLiveLanesAt(const LiveIntervals &LIS,
                                   const MachineRegisterInfo &MRI,
                                   bool TrackLaneMasks, unsigned RegUnit,
                                   SlotIndex Pos) {
-  return getLanesWithProperty(LIS, MRI, TrackLaneMasks, RegUnit, Pos,
+  return getLanesWithProperty(LIS, MRI, TrackLaneMasks, RegUnit, Pos, ~0u,
                               [](const LiveRange &LR, SlotIndex Pos) {
                                 return LR.liveAt(Pos);
                               });
@@ -570,14 +566,11 @@ void RegisterOperands::adjustLaneLiveness(const LiveIntervals &LIS,
         AddFlagsMI != nullptr && (LiveAfter & ~I->LaneMask) == 0)
       AddFlagsMI->setRegisterDefReadUndef(RegUnit);
 
-    LaneBitmask LaneMask = I->LaneMask & LiveAfter;
-    if (LaneMask == 0) {
+    LaneBitmask ActualDef = I->LaneMask & LiveAfter;
+    if (ActualDef == 0) {
       I = Defs.erase(I);
-      // Make sure the operand is properly marked as Dead.
-      if (AddFlagsMI != nullptr)
-        AddFlagsMI->addRegisterDead(RegUnit, MRI.getTargetRegisterInfo());
     } else {
-      I->LaneMask = LaneMask;
+      I->LaneMask = ActualDef;
       ++I;
     }
   }
@@ -595,6 +588,8 @@ void RegisterOperands::adjustLaneLiveness(const LiveIntervals &LIS,
   if (AddFlagsMI != nullptr) {
     for (const RegisterMaskPair &P : DeadDefs) {
       unsigned RegUnit = P.RegUnit;
+      if (!TargetRegisterInfo::isVirtualRegister(RegUnit))
+        continue;
       LaneBitmask LiveAfter = getLiveLanesAt(LIS, MRI, true, RegUnit,
                                              Pos.getDeadSlot());
       if (LiveAfter == 0)
@@ -677,10 +672,9 @@ void RegPressureTracker::discoverLiveInOrOut(RegisterMaskPair Pair,
   assert(Pair.LaneMask != 0);
 
   unsigned RegUnit = Pair.RegUnit;
-  auto I = std::find_if(LiveInOrOut.begin(), LiveInOrOut.end(),
-                        [RegUnit](const RegisterMaskPair &Other) {
-                          return Other.RegUnit == RegUnit;
-                        });
+  auto I = find_if(LiveInOrOut, [RegUnit](const RegisterMaskPair &Other) {
+    return Other.RegUnit == RegUnit;
+  });
   LaneBitmask PrevMask;
   LaneBitmask NewMask;
   if (I == LiveInOrOut.end()) {
@@ -775,10 +769,9 @@ void RegPressureTracker::recede(const RegisterOperands &RegOpers,
         if (!TrackLaneMasks) {
           addRegLanes(*LiveUses, RegisterMaskPair(Reg, NewMask));
         } else {
-          auto I = std::find_if(LiveUses->begin(), LiveUses->end(),
-                                [Reg](const RegisterMaskPair Other) {
-                                return Other.RegUnit == Reg;
-                                });
+          auto I = find_if(*LiveUses, [Reg](const RegisterMaskPair Other) {
+            return Other.RegUnit == Reg;
+          });
           bool IsRedef = I != LiveUses->end();
           if (IsRedef) {
             // ignore re-defs here...
@@ -791,9 +784,11 @@ void RegPressureTracker::recede(const RegisterOperands &RegOpers,
       }
 
       // Discover live outs if this may be the first occurance of this register.
-      LaneBitmask LiveOut = getLiveThroughAt(Reg, SlotIdx);
-      if (LiveOut != 0)
-        discoverLiveOut(RegisterMaskPair(Reg, LiveOut));
+      if (RequireIntervals) {
+        LaneBitmask LiveOut = getLiveThroughAt(Reg, SlotIdx);
+        if (LiveOut != 0)
+          discoverLiveOut(RegisterMaskPair(Reg, LiveOut));
+      }
     }
 
     increaseRegPressure(Reg, PreviousMask, NewMask);
@@ -876,10 +871,12 @@ void RegPressureTracker::advance(const RegisterOperands &RegOpers) {
       LiveRegs.insert(RegisterMaskPair(Reg, LiveIn));
     }
     // Kill liveness at last uses.
-    LaneBitmask LastUseMask = getLastUsedLanes(Reg, SlotIdx);
-    if (LastUseMask != 0) {
-      LiveRegs.erase(RegisterMaskPair(Reg, LastUseMask));
-      decreaseRegPressure(Reg, LiveMask, LiveMask & ~LastUseMask);
+    if (RequireIntervals) {
+      LaneBitmask LastUseMask = getLastUsedLanes(Reg, SlotIdx);
+      if (LastUseMask != 0) {
+        LiveRegs.erase(RegisterMaskPair(Reg, LastUseMask));
+        decreaseRegPressure(Reg, LiveMask, LiveMask & ~LastUseMask);
+      }
     }
   }
 
@@ -1198,10 +1195,8 @@ static LaneBitmask findUseBetween(unsigned Reg, LaneBitmask LastUseMask,
 
 LaneBitmask RegPressureTracker::getLiveLanesAt(unsigned RegUnit,
                                                SlotIndex Pos) const {
-  if (!RequireIntervals)
-    return 0;
-
-  return getLanesWithProperty(*LIS, *MRI, TrackLaneMasks, RegUnit, Pos,
+  assert(RequireIntervals);
+  return getLanesWithProperty(*LIS, *MRI, TrackLaneMasks, RegUnit, Pos, ~0u,
       [](const LiveRange &LR, SlotIndex Pos) {
         return LR.liveAt(Pos);
       });
@@ -1209,11 +1204,9 @@ LaneBitmask RegPressureTracker::getLiveLanesAt(unsigned RegUnit,
 
 LaneBitmask RegPressureTracker::getLastUsedLanes(unsigned RegUnit,
                                                  SlotIndex Pos) const {
-  if (!RequireIntervals)
-    return 0;
-
+  assert(RequireIntervals);
   return getLanesWithProperty(*LIS, *MRI, TrackLaneMasks, RegUnit,
-                              Pos.getBaseIndex(),
+                              Pos.getBaseIndex(), 0,
       [](const LiveRange &LR, SlotIndex Pos) {
         const LiveRange::Segment *S = LR.getSegmentContaining(Pos);
         return S != nullptr && S->end == Pos.getRegSlot();
@@ -1222,10 +1215,8 @@ LaneBitmask RegPressureTracker::getLastUsedLanes(unsigned RegUnit,
 
 LaneBitmask RegPressureTracker::getLiveThroughAt(unsigned RegUnit,
                                                  SlotIndex Pos) const {
-  if (!RequireIntervals)
-    return 0;
-
-  return getLanesWithProperty(*LIS, *MRI, TrackLaneMasks, RegUnit, Pos,
+  assert(RequireIntervals);
+  return getLanesWithProperty(*LIS, *MRI, TrackLaneMasks, RegUnit, Pos, 0u,
       [](const LiveRange &LR, SlotIndex Pos) {
         const LiveRange::Segment *S = LR.getSegmentContaining(Pos);
         return S != nullptr && S->start < Pos.getRegSlot(true) &&
@@ -1252,12 +1243,12 @@ void RegPressureTracker::bumpDownwardPressure(const MachineInstr *MI) {
   if (TrackLaneMasks)
     RegOpers.adjustLaneLiveness(*LIS, *MRI, SlotIdx);
 
-  for (const RegisterMaskPair &Use : RegOpers.Uses) {
-    unsigned Reg = Use.RegUnit;
-    LaneBitmask LastUseMask = getLastUsedLanes(Reg, SlotIdx);
-    if (LastUseMask == 0)
-      continue;
-    if (RequireIntervals) {
+  if (RequireIntervals) {
+    for (const RegisterMaskPair &Use : RegOpers.Uses) {
+      unsigned Reg = Use.RegUnit;
+      LaneBitmask LastUseMask = getLastUsedLanes(Reg, SlotIdx);
+      if (LastUseMask == 0)
+        continue;
       // The LastUseMask is queried from the liveness information of instruction
       // which may be further down the schedule. Some lanes may actually not be
       // last uses for the current position.
@@ -1268,11 +1259,11 @@ void RegPressureTracker::bumpDownwardPressure(const MachineInstr *MI) {
         = findUseBetween(Reg, LastUseMask, CurrIdx, SlotIdx, *MRI, LIS);
       if (LastUseMask == 0)
         continue;
-    }
 
-    LaneBitmask LiveMask = LiveRegs.contains(Reg);
-    LaneBitmask NewMask = LiveMask & ~LastUseMask;
-    decreaseRegPressure(Reg, LiveMask, NewMask);
+      LaneBitmask LiveMask = LiveRegs.contains(Reg);
+      LaneBitmask NewMask = LiveMask & ~LastUseMask;
+      decreaseRegPressure(Reg, LiveMask, NewMask);
+    }
   }
 
   // Generate liveness for defs.

@@ -52,7 +52,7 @@ protected:
   enum StorageType { Uniqued, Distinct, Temporary };
 
   /// \brief Storage flag for non-uniqued, otherwise unowned, metadata.
-  unsigned Storage : 2;
+  unsigned char Storage;
   // TODO: expose remaining bits to subclasses.
 
   unsigned short SubclassData16;
@@ -60,39 +60,14 @@ protected:
 
 public:
   enum MetadataKind {
-    MDTupleKind,
-    DILocationKind,
-    GenericDINodeKind,
-    DISubrangeKind,
-    DIEnumeratorKind,
-    DIBasicTypeKind,
-    DIDerivedTypeKind,
-    DICompositeTypeKind,
-    DISubroutineTypeKind,
-    DIFileKind,
-    DICompileUnitKind,
-    DISubprogramKind,
-    DILexicalBlockKind,
-    DILexicalBlockFileKind,
-    DINamespaceKind,
-    DIModuleKind,
-    DITemplateTypeParameterKind,
-    DITemplateValueParameterKind,
-    DIGlobalVariableKind,
-    DILocalVariableKind,
-    DIExpressionKind,
-    DIObjCPropertyKind,
-    DIImportedEntityKind,
-    ConstantAsMetadataKind,
-    LocalAsMetadataKind,
-    MDStringKind,
-    DIMacroKind,
-    DIMacroFileKind
+#define HANDLE_METADATA_LEAF(CLASS) CLASS##Kind,
+#include "llvm/IR/Metadata.def"
   };
 
 protected:
   Metadata(unsigned ID, StorageType Storage)
       : SubclassID(ID), Storage(Storage), SubclassData16(0), SubclassData32(0) {
+    static_assert(sizeof(*this) == 8, "Metdata fields poorly packed");
   }
   ~Metadata() = default;
 
@@ -1218,6 +1193,52 @@ public:
   typedef MDTupleTypedArrayWrapper<CLASS> CLASS##Array;
 #include "llvm/IR/Metadata.def"
 
+/// Placeholder metadata for operands of distinct MDNodes.
+///
+/// This is a lightweight placeholder for an operand of a distinct node.  It's
+/// purpose is to help track forward references when creating a distinct node.
+/// This allows distinct nodes involved in a cycle to be constructed before
+/// their operands without requiring a heavyweight temporary node with
+/// full-blown RAUW support.
+///
+/// Each placeholder supports only a single MDNode user.  Clients should pass
+/// an ID, retrieved via \a getID(), to indicate the "real" operand that this
+/// should be replaced with.
+///
+/// While it would be possible to implement move operators, they would be
+/// fairly expensive.  Leave them unimplemented to discourage their use
+/// (clients can use std::deque, std::list, BumpPtrAllocator, etc.).
+class DistinctMDOperandPlaceholder : public Metadata {
+  friend class MetadataTracking;
+
+  Metadata **Use = nullptr;
+
+  DistinctMDOperandPlaceholder() = delete;
+  DistinctMDOperandPlaceholder(DistinctMDOperandPlaceholder &&) = delete;
+  DistinctMDOperandPlaceholder(const DistinctMDOperandPlaceholder &) = delete;
+
+public:
+  explicit DistinctMDOperandPlaceholder(unsigned ID)
+      : Metadata(DistinctMDOperandPlaceholderKind, Distinct) {
+    SubclassData32 = ID;
+  }
+
+  ~DistinctMDOperandPlaceholder() {
+    if (Use)
+      *Use = nullptr;
+  }
+
+  unsigned getID() const { return SubclassData32; }
+
+  /// Replace the use of this with MD.
+  void replaceUseWith(Metadata *MD) {
+    if (!Use)
+      return;
+    *Use = MD;
+    Use = nullptr;
+  }
+};
+
 //===----------------------------------------------------------------------===//
 /// \brief A tuple of MDNodes.
 ///
@@ -1226,7 +1247,6 @@ public:
 ///
 /// TODO: Inherit from Metadata.
 class NamedMDNode : public ilist_node<NamedMDNode> {
-  friend struct ilist_traits<NamedMDNode>;
   friend class LLVMContextImpl;
   friend class Module;
   NamedMDNode(const NamedMDNode &) = delete;
@@ -1294,6 +1314,8 @@ public:
   void setOperand(unsigned I, MDNode *New);
   StringRef getName() const;
   void print(raw_ostream &ROS, bool IsForDebug = false) const;
+  void print(raw_ostream &ROS, ModuleSlotTracker &MST,
+             bool IsForDebug = false) const;
   void dump() const;
 
   // ---------------------------------------------------------------------------

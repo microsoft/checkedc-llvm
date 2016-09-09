@@ -61,6 +61,12 @@ def FeatureFlatAddressSpace : SubtargetFeature<"flat-address-space",
   "Support flat address space"
 >;
 
+def FeatureUnalignedBufferAccess : SubtargetFeature<"unaligned-buffer-access",
+  "UnalignedBufferAccess",
+  "true",
+  "Support unaligned global loads and stores"
+>;
+
 def FeatureXNACK : SubtargetFeature<"xnack",
   "EnableXNACK",
   "true",
@@ -216,12 +222,6 @@ def FeatureDumpCodeLower : SubtargetFeature <"dumpcode",
   "Dump MachineInstrs in the CodeEmitter"
 >;
 
-def FeatureIRStructurizer : SubtargetFeature <"disable-irstructurizer",
-  "EnableIRStructurizer",
-  "false",
-  "Disable IR Structurizer"
->;
-
 def FeaturePromoteAlloca : SubtargetFeature <"promote-alloca",
   "EnablePromoteAlloca",
   "true",
@@ -245,12 +245,6 @@ def FeatureEnableUnsafeDSOffsetFolding : SubtargetFeature <
   "EnableUnsafeDSOffsetFolding",
   "true",
   "Force using DS instruction immediate offsets on SI"
->;
-
-def FeatureIfCvt : SubtargetFeature <"disable-ifcvt",
-  "EnableIfCvt",
-  "false",
-  "Disable the if conversion pass"
 >;
 
 def FeatureEnableSIScheduler : SubtargetFeature<"si-scheduler",
@@ -318,6 +312,31 @@ def FeatureVolcanicIslands : SubtargetFeatureGeneration<"VOLCANIC_ISLANDS",
 >;
 
 //===----------------------------------------------------------------------===//
+// Debugger related subtarget features.
+//===----------------------------------------------------------------------===//
+
+def FeatureDebuggerInsertNops : SubtargetFeature<
+  "amdgpu-debugger-insert-nops",
+  "DebuggerInsertNops",
+  "true",
+  "Insert one nop instruction for each high level source statement"
+>;
+
+def FeatureDebuggerReserveRegs : SubtargetFeature<
+  "amdgpu-debugger-reserve-regs",
+  "DebuggerReserveRegs",
+  "true",
+  "Reserve registers for debugger usage"
+>;
+
+def FeatureDebuggerEmitPrologue : SubtargetFeature<
+  "amdgpu-debugger-emit-prologue",
+  "DebuggerEmitPrologue",
+  "true",
+  "Emit debugger prologue"
+>;
+
+//===----------------------------------------------------------------------===//
 
 def AMDGPUInstrInfo : InstrInfo {
   let guessInstructionProperties = 1;
@@ -330,10 +349,45 @@ def AMDGPUAsmParser : AsmParser {
   let ShouldEmitMatchRegisterName = 0;
 }
 
+def AMDGPUAsmVariants {
+  string Default = "Default";
+  int Default_ID = 0;
+  string VOP3 = "VOP3";
+  int VOP3_ID = 1;
+  string SDWA = "SDWA";
+  int SDWA_ID = 2;
+  string DPP = "DPP";
+  int DPP_ID = 3;
+}
+
+def DefaultAMDGPUAsmParserVariant : AsmParserVariant {
+  let Variant = AMDGPUAsmVariants.Default_ID;
+  let Name = AMDGPUAsmVariants.Default;
+}
+
+def VOP3AsmParserVariant : AsmParserVariant {
+  let Variant = AMDGPUAsmVariants.VOP3_ID;
+  let Name = AMDGPUAsmVariants.VOP3;
+}
+
+def SDWAAsmParserVariant : AsmParserVariant {
+  let Variant = AMDGPUAsmVariants.SDWA_ID;
+  let Name = AMDGPUAsmVariants.SDWA;
+}
+
+def DPPAsmParserVariant : AsmParserVariant {
+  let Variant = AMDGPUAsmVariants.DPP_ID;
+  let Name = AMDGPUAsmVariants.DPP;
+}
+
 def AMDGPU : Target {
   // Pull in Instruction Info:
   let InstructionSet = AMDGPUInstrInfo;
   let AssemblyParsers = [AMDGPUAsmParser];
+  let AssemblyParserVariants = [DefaultAMDGPUAsmParserVariant,
+                                VOP3AsmParserVariant,
+                                SDWAAsmParserVariant,
+                                DPPAsmParserVariant];
 }
 
 // Dummy Instruction itineraries for pseudo instructions

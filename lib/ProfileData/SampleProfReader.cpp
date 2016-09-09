@@ -23,7 +23,6 @@
 #include "llvm/ProfileData/SampleProfReader.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/LEB128.h"
@@ -471,9 +470,9 @@ std::error_code SampleProfileReaderBinary::readSummary() {
     if (EC != sampleprof_error::success)
       return EC;
   }
-  Summary = llvm::make_unique<SampleProfileSummary>(
-      *TotalCount, *MaxBlockCount, *MaxFunctionCount, *NumBlocks, *NumFunctions,
-      Entries);
+  Summary = llvm::make_unique<ProfileSummary>(
+      ProfileSummary::PSK_Sample, Entries, *TotalCount, *MaxBlockCount, 0,
+      *MaxFunctionCount, *NumBlocks, *NumFunctions);
 
   return sampleprof_error::success;
 }
@@ -734,7 +733,7 @@ bool SampleProfileReaderGCC::hasFormat(const MemoryBuffer &Buffer) {
 ///
 /// \returns an error code indicating the status of the buffer.
 static ErrorOr<std::unique_ptr<MemoryBuffer>>
-setupMemoryBuffer(std::string Filename) {
+setupMemoryBuffer(const Twine &Filename) {
   auto BufferOrErr = MemoryBuffer::getFileOrSTDIN(Filename);
   if (std::error_code EC = BufferOrErr.getError())
     return EC;
@@ -757,7 +756,7 @@ setupMemoryBuffer(std::string Filename) {
 ///
 /// \returns an error code indicating the status of the created reader.
 ErrorOr<std::unique_ptr<SampleProfileReader>>
-SampleProfileReader::create(StringRef Filename, LLVMContext &C) {
+SampleProfileReader::create(const Twine &Filename, LLVMContext &C) {
   auto BufferOrError = setupMemoryBuffer(Filename);
   if (std::error_code EC = BufferOrError.getError())
     return EC;
@@ -794,10 +793,10 @@ SampleProfileReader::create(std::unique_ptr<MemoryBuffer> &B, LLVMContext &C) {
 // For text and GCC file formats, we compute the summary after reading the
 // profile. Binary format has the profile summary in its header.
 void SampleProfileReader::computeSummary() {
-  Summary.reset(new SampleProfileSummary(ProfileSummary::DefaultCutoffs));
+  SampleProfileSummaryBuilder Builder(ProfileSummaryBuilder::DefaultCutoffs);
   for (const auto &I : Profiles) {
     const FunctionSamples &Profile = I.second;
-    Summary->addRecord(Profile);
+    Builder.addRecord(Profile);
   }
-  Summary->computeDetailedSummary();
+  Summary = Builder.getSummary();
 }

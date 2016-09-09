@@ -25,7 +25,9 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/Binary.h"
+#include "llvm/Object/COFF.h"
 #include "llvm/Object/ELFObjectFile.h"
+#include "llvm/Object/MachO.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
@@ -135,6 +137,17 @@ template <typename T> static void FailIfError(const ErrorOr<T> &E) {
   FailIfError(E.getError());
 }
 
+static void FailIfError(Error Err) {
+  if (Err) {
+    logAllUnhandledErrors(std::move(Err), errs(), "Error: ");
+    exit(1);
+  }
+}
+
+template <typename T> static void FailIfError(Expected<T> &E) {
+  FailIfError(E.takeError());
+}
+
 static void FailIfNotEmpty(const llvm::Twine &E) {
   if (E.str().empty())
     return;
@@ -228,7 +241,7 @@ struct AddrInfo : public DILineInfo {
   }
 
 private:
-  static std::string normalizeFilename(std::string FileName) {
+  static std::string normalizeFilename(const std::string &FileName) {
     SmallString<256> S(FileName);
     sys::path::remove_dots(S, /* remove_dot_dot */ true);
     return S.str().str();
@@ -241,14 +254,16 @@ public:
       : DefaultBlacklist(createDefaultBlacklist()),
         UserBlacklist(createUserBlacklist()) {}
 
-  bool isBlacklisted(const DILineInfo &DI) {
-    if (DefaultBlacklist && DefaultBlacklist->inSection("fun", DI.FunctionName))
+  // AddrInfo contains normalized filename. It is important to check it rather
+  // than DILineInfo.
+  bool isBlacklisted(const AddrInfo &AI) {
+    if (DefaultBlacklist && DefaultBlacklist->inSection("fun", AI.FunctionName))
       return true;
-    if (DefaultBlacklist && DefaultBlacklist->inSection("src", DI.FileName))
+    if (DefaultBlacklist && DefaultBlacklist->inSection("src", AI.FileName))
       return true;
-    if (UserBlacklist && UserBlacklist->inSection("fun", DI.FunctionName))
+    if (UserBlacklist && UserBlacklist->inSection("fun", AI.FunctionName))
       return true;
-    if (UserBlacklist && UserBlacklist->inSection("src", DI.FileName))
+    if (UserBlacklist && UserBlacklist->inSection("src", AI.FileName))
       return true;
     return false;
   }
@@ -276,7 +291,7 @@ private:
 };
 
 // Collect all debug info for given addresses.
-static std::vector<AddrInfo> getAddrInfo(std::string ObjectFile,
+static std::vector<AddrInfo> getAddrInfo(const std::string &ObjectFile,
                                          const std::set<uint64_t> &Addrs,
                                          bool InlinedCode) {
   std::vector<AddrInfo> Result;
@@ -286,22 +301,71 @@ static std::vector<AddrInfo> getAddrInfo(std::string ObjectFile,
   for (auto Addr : Addrs) {
     auto LineInfo = Symbolizer->symbolizeCode(ObjectFile, Addr);
     FailIfError(LineInfo);
-    if (B.isBlacklisted(*LineInfo))
+    auto LineAddrInfo = AddrInfo(*LineInfo, Addr);
+    if (B.isBlacklisted(LineAddrInfo))
       continue;
-    Result.push_back(AddrInfo(*LineInfo, Addr));
+    Result.push_back(LineAddrInfo);
     if (InlinedCode) {
       auto InliningInfo = Symbolizer->symbolizeInlinedCode(ObjectFile, Addr);
       FailIfError(InliningInfo);
       for (uint32_t I = 0; I < InliningInfo->getNumberOfFrames(); ++I) {
         auto FrameInfo = InliningInfo->getFrame(I);
-        if (B.isBlacklisted(FrameInfo))
+        auto FrameAddrInfo = AddrInfo(FrameInfo, Addr);
+        if (B.isBlacklisted(FrameAddrInfo))
           continue;
-        Result.push_back(AddrInfo(FrameInfo, Addr));
+        Result.push_back(FrameAddrInfo);
       }
     }
   }
 
   return Result;
+}
+
+static bool isCoveragePointSymbol(StringRef Name) {
+  return Name == "__sanitizer_cov" || Name == "__sanitizer_cov_with_check" ||
+         Name == "__sanitizer_cov_trace_func_enter" ||
+         // Mac has '___' prefix
+         Name == "___sanitizer_cov" || Name == "___sanitizer_cov_with_check" ||
+         Name == "___sanitizer_cov_trace_func_enter";
+}
+
+// Locate __sanitizer_cov* function addresses inside the stubs table on MachO.
+static void findMachOIndirectCovFunctions(const object::MachOObjectFile &O,
+                                          std::set<uint64_t> *Result) {
+  MachO::dysymtab_command Dysymtab = O.getDysymtabLoadCommand();
+  MachO::symtab_command Symtab = O.getSymtabLoadCommand();
+
+  for (const auto &Load : O.load_commands()) {
+    if (Load.C.cmd == MachO::LC_SEGMENT_64) {
+      MachO::segment_command_64 Seg = O.getSegment64LoadCommand(Load);
+      for (unsigned J = 0; J < Seg.nsects; ++J) {
+        MachO::section_64 Sec = O.getSection64(Load, J);
+
+        uint32_t SectionType = Sec.flags & MachO::SECTION_TYPE;
+        if (SectionType == MachO::S_SYMBOL_STUBS) {
+          uint32_t Stride = Sec.reserved2;
+          uint32_t Cnt = Sec.size / Stride;
+          uint32_t N = Sec.reserved1;
+          for (uint32_t J = 0; J < Cnt && N + J < Dysymtab.nindirectsyms; J++) {
+            uint32_t IndirectSymbol =
+                O.getIndirectSymbolTableEntry(Dysymtab, N + J);
+            uint64_t Addr = Sec.addr + J * Stride;
+            if (IndirectSymbol < Symtab.nsyms) {
+              object::SymbolRef Symbol = *(O.getSymbolByIndex(IndirectSymbol));
+              Expected<StringRef> Name = Symbol.getName();
+              FailIfError(Name);
+              if (isCoveragePointSymbol(Name.get())) {
+                Result->insert(Addr);
+              }
+            }
+          }
+        }
+      }
+    }
+    if (Load.C.cmd == MachO::LC_SEGMENT) {
+      errs() << "ERROR: 32 bit MachO binaries not supported\n";
+    }
+  }
 }
 
 // Locate __sanitizer_cov* function addresses that are used for coverage
@@ -311,18 +375,38 @@ findSanitizerCovFunctions(const object::ObjectFile &O) {
   std::set<uint64_t> Result;
 
   for (const object::SymbolRef &Symbol : O.symbols()) {
-    ErrorOr<uint64_t> AddressOrErr = Symbol.getAddress();
+    Expected<uint64_t> AddressOrErr = Symbol.getAddress();
     FailIfError(AddressOrErr);
+    uint64_t Address = AddressOrErr.get();
 
-    ErrorOr<StringRef> NameOrErr = Symbol.getName();
+    Expected<StringRef> NameOrErr = Symbol.getName();
     FailIfError(NameOrErr);
     StringRef Name = NameOrErr.get();
 
-    if (Name == "__sanitizer_cov" || Name == "__sanitizer_cov_with_check" ||
-        Name == "__sanitizer_cov_trace_func_enter") {
-      if (!(Symbol.getFlags() & object::BasicSymbolRef::SF_Undefined))
-        Result.insert(AddressOrErr.get());
+    if (!(Symbol.getFlags() & object::BasicSymbolRef::SF_Undefined) &&
+        isCoveragePointSymbol(Name)) {
+      Result.insert(Address);
     }
+  }
+
+  if (const auto *CO = dyn_cast<object::COFFObjectFile>(&O)) {
+    for (const object::ExportDirectoryEntryRef &Export :
+         CO->export_directories()) {
+      uint32_t RVA;
+      std::error_code EC = Export.getExportRVA(RVA);
+      FailIfError(EC);
+
+      StringRef Name;
+      EC = Export.getSymbolName(Name);
+      FailIfError(EC);
+
+      if (isCoveragePointSymbol(Name))
+        Result.insert(CO->getImageBase() + RVA);
+    }
+  }
+
+  if (const auto *MO = dyn_cast<object::MachOObjectFile>(&O)) {
+    findMachOIndirectCovFunctions(*MO, &Result);
   }
 
   return Result;
@@ -406,26 +490,26 @@ static void getObjectCoveragePoints(const object::ObjectFile &O,
 
 static void
 visitObjectFiles(const object::Archive &A,
-                 std::function<void(const object::ObjectFile &)> Fn) {
-  for (auto &ErrorOrChild : A.children()) {
-    FailIfError(ErrorOrChild);
-    const object::Archive::Child &C = *ErrorOrChild;
-    ErrorOr<std::unique_ptr<object::Binary>> ChildOrErr = C.getAsBinary();
+                 function_ref<void(const object::ObjectFile &)> Fn) {
+  Error Err;
+  for (auto &C : A.children(Err)) {
+    Expected<std::unique_ptr<object::Binary>> ChildOrErr = C.getAsBinary();
     FailIfError(ChildOrErr);
     if (auto *O = dyn_cast<object::ObjectFile>(&*ChildOrErr.get()))
       Fn(*O);
     else
       FailIfError(object::object_error::invalid_file_type);
   }
+  FailIfError(std::move(Err));
 }
 
 static void
-visitObjectFiles(std::string FileName,
-                 std::function<void(const object::ObjectFile &)> Fn) {
+visitObjectFiles(const std::string &FileName,
+                 function_ref<void(const object::ObjectFile &)> Fn) {
   Expected<object::OwningBinary<object::Binary>> BinaryOrErr =
       object::createBinary(FileName);
   if (!BinaryOrErr)
-    FailIfError(errorToErrorCode(BinaryOrErr.takeError()));
+    FailIfError(BinaryOrErr);
 
   object::Binary &Binary = *BinaryOrErr.get().getBinary();
   if (object::Archive *A = dyn_cast<object::Archive>(&Binary))
@@ -436,7 +520,7 @@ visitObjectFiles(std::string FileName,
     FailIfError(object::object_error::invalid_file_type);
 }
 
-std::set<uint64_t> findSanitizerCovFunctions(std::string FileName) {
+std::set<uint64_t> findSanitizerCovFunctions(const std::string &FileName) {
   std::set<uint64_t> Result;
   visitObjectFiles(FileName, [&](const object::ObjectFile &O) {
     auto Addrs = findSanitizerCovFunctions(O);
@@ -448,7 +532,7 @@ std::set<uint64_t> findSanitizerCovFunctions(std::string FileName) {
 // Locate addresses of all coverage points in a file. Coverage point
 // is defined as the 'address of instruction following __sanitizer_cov
 // call - 1'.
-std::set<uint64_t> getCoveragePoints(std::string FileName) {
+std::set<uint64_t> getCoveragePoints(const std::string &FileName) {
   std::set<uint64_t> Result;
   visitObjectFiles(FileName, [&](const object::ObjectFile &O) {
     getObjectCoveragePoints(O, &Result);
@@ -456,7 +540,7 @@ std::set<uint64_t> getCoveragePoints(std::string FileName) {
   return Result;
 }
 
-static void printCovPoints(std::string ObjFile, raw_ostream &OS) {
+static void printCovPoints(const std::string &ObjFile, raw_ostream &OS) {
   for (uint64_t Addr : getCoveragePoints(ObjFile)) {
     OS << "0x";
     OS.write_hex(Addr);
@@ -505,7 +589,7 @@ static std::string formatHtmlPct(size_t Pct) {
   return Zeroes + Num;
 }
 
-static std::string anchorName(std::string Anchor) {
+static std::string anchorName(const std::string &Anchor) {
   llvm::MD5 Hasher;
   llvm::MD5::MD5Result Hash;
   Hasher.update(Anchor);
@@ -516,7 +600,7 @@ static std::string anchorName(std::string Anchor) {
   return HexString.str().str();
 }
 
-static ErrorOr<bool> isCoverageFile(std::string FileName) {
+static ErrorOr<bool> isCoverageFile(const std::string &FileName) {
   ErrorOr<std::unique_ptr<MemoryBuffer>> BufOrErr =
       MemoryBuffer::getFile(FileName);
   if (!BufOrErr) {
@@ -554,21 +638,22 @@ static raw_ostream &operator<<(raw_ostream &OS, const CoverageStats &Stats) {
 class CoverageData {
 public:
   // Read single file coverage data.
-  static ErrorOr<std::unique_ptr<CoverageData>> read(std::string FileName) {
+  static ErrorOr<std::unique_ptr<CoverageData>>
+  read(const std::string &FileName) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> BufOrErr =
         MemoryBuffer::getFile(FileName);
     if (!BufOrErr)
       return BufOrErr.getError();
     std::unique_ptr<MemoryBuffer> Buf = std::move(BufOrErr.get());
     if (Buf->getBufferSize() < 8) {
-      errs() << "File too small (<8): " << Buf->getBufferSize();
+      errs() << "File too small (<8): " << Buf->getBufferSize() << '\n';
       return make_error_code(errc::illegal_byte_sequence);
     }
     const FileHeader *Header =
         reinterpret_cast<const FileHeader *>(Buf->getBufferStart());
 
     if (Header->Magic != BinCoverageMagic) {
-      errs() << "Wrong magic: " << Header->Magic;
+      errs() << "Wrong magic: " << Header->Magic << '\n';
       return make_error_code(errc::illegal_byte_sequence);
     }
 
@@ -584,7 +669,7 @@ public:
                          Addrs.get());
       break;
     default:
-      errs() << "Unsupported bitness: " << Header->Bitness;
+      errs() << "Unsupported bitness: " << Header->Bitness << '\n';
       return make_error_code(errc::illegal_byte_sequence);
     }
 
@@ -837,7 +922,7 @@ static void printFunctionLocs(const SourceCoverageData::FunctionLocs &FnLocs,
 class CoverageDataWithObjectFile : public CoverageData {
 public:
   static ErrorOr<std::unique_ptr<CoverageDataWithObjectFile>>
-  readAndMerge(std::string ObjectFile,
+  readAndMerge(const std::string &ObjectFile,
                const std::vector<std::string> &FileNames) {
     auto MergedDataOrError = CoverageData::readAndMerge(FileNames);
     if (!MergedDataOrError)
@@ -890,7 +975,7 @@ public:
     OS << "<table>\n";
     OS << "<tr><th>File</th><th>Coverage %</th>";
     OS << "<th>Hit (Total) Fns</th></tr>\n";
-    for (auto FileName : Files) {
+    for (const auto &FileName : Files) {
       std::pair<size_t, size_t> FC = FileCoverage[FileName];
       if (FC.first == 0) {
         NotCoveredFilesCount++;
@@ -911,7 +996,7 @@ public:
     if (NotCoveredFilesCount) {
       OS << "<details><summary>Not Touched Files</summary>\n";
       OS << "<table>\n";
-      for (auto FileName : Files) {
+      for (const auto &FileName : Files) {
         std::pair<size_t, size_t> FC = FileCoverage[FileName];
         if (FC.first == 0)
           OS << "<tr><td>" << stripPathPrefix(FileName) << "</td>\n";
@@ -923,7 +1008,7 @@ public:
     }
 
     // Source
-    for (auto FileName : Files) {
+    for (const auto &FileName : Files) {
       std::pair<size_t, size_t> FC = FileCoverage[FileName];
       if (FC.first == 0)
         continue;
@@ -965,7 +1050,7 @@ public:
           FileLoc Loc = FileLoc{FileName, Line};
           auto It = AllFnsByLoc.find(Loc);
           if (It != AllFnsByLoc.end()) {
-            for (std::string Fn : It->second) {
+            for (const std::string &Fn : It->second) {
               OS << "<a name=\"" << anchorName(FileName + "::" + Fn)
                  << "\"></a>";
             };
@@ -1065,7 +1150,7 @@ public:
     std::vector<std::unique_ptr<CoverageDataWithObjectFile>> MergedCoverage;
     for (const auto &Pair : CoverageByObjFile) {
       if (findSanitizerCovFunctions(Pair.first).empty()) {
-        for (auto FileName : Pair.second) {
+        for (const auto &FileName : Pair.second) {
           CovFiles.erase(FileName);
         }
 
@@ -1155,7 +1240,7 @@ public:
     // About
     OS << "<details><summary>About</summary>\n";
     OS << "Coverage files:<ul>";
-    for (auto InputFile : CoverageFiles) {
+    for (const auto &InputFile : CoverageFiles) {
       llvm::sys::fs::file_status Status;
       llvm::sys::fs::status(InputFile, Status);
       OS << "<li>" << stripPathPrefix(InputFile) << " ("
@@ -1187,7 +1272,7 @@ private:
 
 int main(int argc, char **argv) {
   // Print stack trace if we signal out.
-  sys::PrintStackTraceOnErrorSignal();
+  sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
   llvm_shutdown_obj Y; // Call llvm_shutdown() on exit.
 
@@ -1205,7 +1290,7 @@ int main(int argc, char **argv) {
     return 0;
   } else if (Action == PrintCovPointsAction) {
     // -print-coverage-points doesn't need coverage files.
-    for (std::string ObjFile : ClInputFiles) {
+    for (const std::string &ObjFile : ClInputFiles) {
       printCovPoints(ObjFile, outs());
     }
     return 0;

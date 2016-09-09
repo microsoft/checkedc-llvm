@@ -11,7 +11,6 @@
 #define LLVM_LIB_CODEGEN_ASMPRINTER_DEBUGLOCENTRY_H
 
 #include "DebugLocStream.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/MC/MCSymbol.h"
@@ -129,7 +128,7 @@ public:
   void addValues(ArrayRef<DebugLocEntry::Value> Vals) {
     Values.append(Vals.begin(), Vals.end());
     sortUniqueValues();
-    assert(std::all_of(Values.begin(), Values.end(), [](DebugLocEntry::Value V){
+    assert(all_of(Values, [](DebugLocEntry::Value V) {
           return V.isBitPiece();
         }) && "value must be a piece");
   }

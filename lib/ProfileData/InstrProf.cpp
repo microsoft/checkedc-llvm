@@ -14,6 +14,7 @@
 
 #include "llvm/ProfileData/InstrProf.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
@@ -23,47 +24,63 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/Path.h"
 
 using namespace llvm;
 
+static cl::opt<bool> StaticFuncFullModulePrefix(
+    "static-func-full-module-prefix", cl::init(false),
+    cl::desc("Use full module build paths in the profile counter names for "
+             "static functions."));
+
 namespace {
+std::string getInstrProfErrString(instrprof_error Err) {
+  switch (Err) {
+  case instrprof_error::success:
+    return "Success";
+  case instrprof_error::eof:
+    return "End of File";
+  case instrprof_error::unrecognized_format:
+    return "Unrecognized instrumentation profile encoding format";
+  case instrprof_error::bad_magic:
+    return "Invalid instrumentation profile data (bad magic)";
+  case instrprof_error::bad_header:
+    return "Invalid instrumentation profile data (file header is corrupt)";
+  case instrprof_error::unsupported_version:
+    return "Unsupported instrumentation profile format version";
+  case instrprof_error::unsupported_hash_type:
+    return "Unsupported instrumentation profile hash type";
+  case instrprof_error::too_large:
+    return "Too much profile data";
+  case instrprof_error::truncated:
+    return "Truncated profile data";
+  case instrprof_error::malformed:
+    return "Malformed instrumentation profile data";
+  case instrprof_error::unknown_function:
+    return "No profile data available for function";
+  case instrprof_error::hash_mismatch:
+    return "Function control flow change detected (hash mismatch)";
+  case instrprof_error::count_mismatch:
+    return "Function basic block count change detected (counter mismatch)";
+  case instrprof_error::counter_overflow:
+    return "Counter overflow";
+  case instrprof_error::value_site_count_mismatch:
+    return "Function value site count change detected (counter mismatch)";
+  case instrprof_error::compress_failed:
+    return "Failed to compress data (zlib)";
+  case instrprof_error::uncompress_failed:
+    return "Failed to uncompress data (zlib)";
+  }
+  llvm_unreachable("A value of instrprof_error has no message.");
+}
+
+// FIXME: This class is only here to support the transition to llvm::Error. It
+// will be removed once this transition is complete. Clients should prefer to
+// deal with the Error value directly, rather than converting to error_code.
 class InstrProfErrorCategoryType : public std::error_category {
   const char *name() const LLVM_NOEXCEPT override { return "llvm.instrprof"; }
   std::string message(int IE) const override {
-    instrprof_error E = static_cast<instrprof_error>(IE);
-    switch (E) {
-    case instrprof_error::success:
-      return "Success";
-    case instrprof_error::eof:
-      return "End of File";
-    case instrprof_error::unrecognized_format:
-      return "Unrecognized instrumentation profile encoding format";
-    case instrprof_error::bad_magic:
-      return "Invalid instrumentation profile data (bad magic)";
-    case instrprof_error::bad_header:
-      return "Invalid instrumentation profile data (file header is corrupt)";
-    case instrprof_error::unsupported_version:
-      return "Unsupported instrumentation profile format version";
-    case instrprof_error::unsupported_hash_type:
-      return "Unsupported instrumentation profile hash type";
-    case instrprof_error::too_large:
-      return "Too much profile data";
-    case instrprof_error::truncated:
-      return "Truncated profile data";
-    case instrprof_error::malformed:
-      return "Malformed instrumentation profile data";
-    case instrprof_error::unknown_function:
-      return "No profile data available for function";
-    case instrprof_error::hash_mismatch:
-      return "Function control flow change detected (hash mismatch)";
-    case instrprof_error::count_mismatch:
-      return "Function basic block count change detected (counter mismatch)";
-    case instrprof_error::counter_overflow:
-      return "Counter overflow";
-    case instrprof_error::value_site_count_mismatch:
-      return "Function value site count change detected (counter mismatch)";
-    }
-    llvm_unreachable("A value of instrprof_error has no message.");
+    return getInstrProfErrString(static_cast<instrprof_error>(IE));
   }
 };
 } // end anonymous namespace
@@ -75,6 +92,37 @@ const std::error_category &llvm::instrprof_category() {
 }
 
 namespace llvm {
+
+void SoftInstrProfErrors::addError(instrprof_error IE) {
+  if (IE == instrprof_error::success)
+    return;
+
+  if (FirstError == instrprof_error::success)
+    FirstError = IE;
+
+  switch (IE) {
+  case instrprof_error::hash_mismatch:
+    ++NumHashMismatches;
+    break;
+  case instrprof_error::count_mismatch:
+    ++NumCountMismatches;
+    break;
+  case instrprof_error::counter_overflow:
+    ++NumCounterOverflows;
+    break;
+  case instrprof_error::value_site_count_mismatch:
+    ++NumValueSiteCountMismatches;
+    break;
+  default:
+    llvm_unreachable("Not a soft error");
+  }
+}
+
+std::string InstrProfError::message() const {
+  return getInstrProfErrString(Err);
+}
+
+char InstrProfError::ID = 0;
 
 std::string getPGOFuncName(StringRef RawFuncName,
                            GlobalValue::LinkageTypes Linkage,
@@ -88,15 +136,21 @@ std::string getPGOFuncName(StringRef RawFuncName,
 // (when \c InLTO is true): LTO's internalization privatizes many global linkage
 // symbols. This happens after value profile annotation, but those internal
 // linkage functions should not have a source prefix.
+// Additionally, for ThinLTO mode, exported internal functions are promoted
+// and renamed. We need to ensure that the original internal PGO name is
+// used when computing the GUID that is compared against the profiled GUIDs.
 // To differentiate compiler generated internal symbols from original ones,
 // PGOFuncName meta data are created and attached to the original internal
 // symbols in the value profile annotation step
 // (PGOUseFunc::annotateIndirectCallSites). If a symbol does not have the meta
 // data, its original linkage must be non-internal.
 std::string getPGOFuncName(const Function &F, bool InLTO, uint64_t Version) {
-  if (!InLTO)
-    return getPGOFuncName(F.getName(), F.getLinkage(), F.getParent()->getName(),
-                          Version);
+  if (!InLTO) {
+    StringRef FileName = (StaticFuncFullModulePrefix
+                              ? F.getParent()->getName()
+                              : sys::path::filename(F.getParent()->getName()));
+    return getPGOFuncName(F.getName(), F.getLinkage(), FileName, Version);
+  }
 
   // In LTO mode (when InLTO is true), first check if there is a meta data.
   if (MDNode *MD = getPGOFuncNameMetadata(F)) {
@@ -130,7 +184,7 @@ std::string getPGOFuncNameVarName(StringRef FuncName,
     return VarName;
 
   // Now fix up illegal chars in local VarName that may upset the assembler.
-  const char *InvalidChars = "-:<>\"'";
+  const char *InvalidChars = "-:<>/\"'";
   size_t found = VarName.find_first_of(InvalidChars);
   while (found != std::string::npos) {
     VarName[found] = '_';
@@ -185,8 +239,8 @@ void InstrProfSymtab::create(Module &M, bool InLTO) {
   finalizeSymtab();
 }
 
-int collectPGOFuncNameStrings(const std::vector<std::string> &NameStrs,
-                              bool doCompression, std::string &Result) {
+Error collectPGOFuncNameStrings(const std::vector<std::string> &NameStrs,
+                                bool doCompression, std::string &Result) {
   assert(NameStrs.size() && "No name data to emit");
 
   uint8_t Header[16], *P = Header;
@@ -200,31 +254,30 @@ int collectPGOFuncNameStrings(const std::vector<std::string> &NameStrs,
   unsigned EncLen = encodeULEB128(UncompressedNameStrings.length(), P);
   P += EncLen;
 
-  auto WriteStringToResult = [&](size_t CompressedLen,
-                                 const std::string &InputStr) {
+  auto WriteStringToResult = [&](size_t CompressedLen, StringRef InputStr) {
     EncLen = encodeULEB128(CompressedLen, P);
     P += EncLen;
     char *HeaderStr = reinterpret_cast<char *>(&Header[0]);
     unsigned HeaderLen = P - &Header[0];
     Result.append(HeaderStr, HeaderLen);
     Result += InputStr;
-    return 0;
+    return Error::success();
   };
 
-  if (!doCompression)
+  if (!doCompression) {
     return WriteStringToResult(0, UncompressedNameStrings);
+  }
 
-  SmallVector<char, 128> CompressedNameStrings;
+  SmallString<128> CompressedNameStrings;
   zlib::Status Success =
       zlib::compress(StringRef(UncompressedNameStrings), CompressedNameStrings,
                      zlib::BestSizeCompression);
 
   if (Success != zlib::StatusOK)
-    return 1;
+    return make_error<InstrProfError>(instrprof_error::compress_failed);
 
-  return WriteStringToResult(
-      CompressedNameStrings.size(),
-      std::string(CompressedNameStrings.data(), CompressedNameStrings.size()));
+  return WriteStringToResult(CompressedNameStrings.size(),
+                             CompressedNameStrings);
 }
 
 StringRef getPGOFuncNameVarInitializer(GlobalVariable *NameVar) {
@@ -234,8 +287,8 @@ StringRef getPGOFuncNameVarInitializer(GlobalVariable *NameVar) {
   return NameStr;
 }
 
-int collectPGOFuncNameStrings(const std::vector<GlobalVariable *> &NameVars,
-                              std::string &Result, bool doCompression) {
+Error collectPGOFuncNameStrings(const std::vector<GlobalVariable *> &NameVars,
+                                std::string &Result, bool doCompression) {
   std::vector<std::string> NameStrs;
   for (auto *NameVar : NameVars) {
     NameStrs.push_back(getPGOFuncNameVarInitializer(NameVar));
@@ -244,7 +297,7 @@ int collectPGOFuncNameStrings(const std::vector<GlobalVariable *> &NameVars,
       NameStrs, zlib::isAvailable() && doCompression, Result);
 }
 
-int readPGOFuncNameStrings(StringRef NameStrings, InstrProfSymtab &Symtab) {
+Error readPGOFuncNameStrings(StringRef NameStrings, InstrProfSymtab &Symtab) {
   const uint8_t *P = reinterpret_cast<const uint8_t *>(NameStrings.data());
   const uint8_t *EndP = reinterpret_cast<const uint8_t *>(NameStrings.data() +
                                                           NameStrings.size());
@@ -262,7 +315,7 @@ int readPGOFuncNameStrings(StringRef NameStrings, InstrProfSymtab &Symtab) {
                                       CompressedSize);
       if (zlib::uncompress(CompressedNameStrings, UncompressedNameStrings,
                            UncompressedSize) != zlib::StatusOK)
-        return 1;
+        return make_error<InstrProfError>(instrprof_error::uncompress_failed);
       P += CompressedSize;
       NameStrings = StringRef(UncompressedNameStrings.data(),
                               UncompressedNameStrings.size());
@@ -281,16 +334,16 @@ int readPGOFuncNameStrings(StringRef NameStrings, InstrProfSymtab &Symtab) {
       P++;
   }
   Symtab.finalizeSymtab();
-  return 0;
+  return Error::success();
 }
 
-instrprof_error InstrProfValueSiteRecord::merge(InstrProfValueSiteRecord &Input,
-                                                uint64_t Weight) {
+void InstrProfValueSiteRecord::merge(SoftInstrProfErrors &SIPE,
+                                     InstrProfValueSiteRecord &Input,
+                                     uint64_t Weight) {
   this->sortByTargetValues();
   Input.sortByTargetValues();
   auto I = ValueData.begin();
   auto IE = ValueData.end();
-  instrprof_error Result = instrprof_error::success;
   for (auto J = Input.ValueData.begin(), JE = Input.ValueData.end(); J != JE;
        ++J) {
     while (I != IE && I->Value < J->Value)
@@ -299,92 +352,80 @@ instrprof_error InstrProfValueSiteRecord::merge(InstrProfValueSiteRecord &Input,
       bool Overflowed;
       I->Count = SaturatingMultiplyAdd(J->Count, Weight, I->Count, &Overflowed);
       if (Overflowed)
-        Result = instrprof_error::counter_overflow;
+        SIPE.addError(instrprof_error::counter_overflow);
       ++I;
       continue;
     }
     ValueData.insert(I, *J);
   }
-  return Result;
 }
 
-instrprof_error InstrProfValueSiteRecord::scale(uint64_t Weight) {
-  instrprof_error Result = instrprof_error::success;
+void InstrProfValueSiteRecord::scale(SoftInstrProfErrors &SIPE,
+                                     uint64_t Weight) {
   for (auto I = ValueData.begin(), IE = ValueData.end(); I != IE; ++I) {
     bool Overflowed;
     I->Count = SaturatingMultiply(I->Count, Weight, &Overflowed);
     if (Overflowed)
-      Result = instrprof_error::counter_overflow;
+      SIPE.addError(instrprof_error::counter_overflow);
   }
-  return Result;
 }
 
 // Merge Value Profile data from Src record to this record for ValueKind.
 // Scale merged value counts by \p Weight.
-instrprof_error InstrProfRecord::mergeValueProfData(uint32_t ValueKind,
-                                                    InstrProfRecord &Src,
-                                                    uint64_t Weight) {
+void InstrProfRecord::mergeValueProfData(uint32_t ValueKind,
+                                         InstrProfRecord &Src,
+                                         uint64_t Weight) {
   uint32_t ThisNumValueSites = getNumValueSites(ValueKind);
   uint32_t OtherNumValueSites = Src.getNumValueSites(ValueKind);
-  if (ThisNumValueSites != OtherNumValueSites)
-    return instrprof_error::value_site_count_mismatch;
+  if (ThisNumValueSites != OtherNumValueSites) {
+    SIPE.addError(instrprof_error::value_site_count_mismatch);
+    return;
+  }
   std::vector<InstrProfValueSiteRecord> &ThisSiteRecords =
       getValueSitesForKind(ValueKind);
   std::vector<InstrProfValueSiteRecord> &OtherSiteRecords =
       Src.getValueSitesForKind(ValueKind);
-  instrprof_error Result = instrprof_error::success;
   for (uint32_t I = 0; I < ThisNumValueSites; I++)
-    MergeResult(Result, ThisSiteRecords[I].merge(OtherSiteRecords[I], Weight));
-  return Result;
+    ThisSiteRecords[I].merge(SIPE, OtherSiteRecords[I], Weight);
 }
 
-instrprof_error InstrProfRecord::merge(InstrProfRecord &Other,
-                                       uint64_t Weight) {
+void InstrProfRecord::merge(InstrProfRecord &Other, uint64_t Weight) {
   // If the number of counters doesn't match we either have bad data
   // or a hash collision.
-  if (Counts.size() != Other.Counts.size())
-    return instrprof_error::count_mismatch;
-
-  instrprof_error Result = instrprof_error::success;
+  if (Counts.size() != Other.Counts.size()) {
+    SIPE.addError(instrprof_error::count_mismatch);
+    return;
+  }
 
   for (size_t I = 0, E = Other.Counts.size(); I < E; ++I) {
     bool Overflowed;
     Counts[I] =
         SaturatingMultiplyAdd(Other.Counts[I], Weight, Counts[I], &Overflowed);
     if (Overflowed)
-      Result = instrprof_error::counter_overflow;
+      SIPE.addError(instrprof_error::counter_overflow);
   }
 
   for (uint32_t Kind = IPVK_First; Kind <= IPVK_Last; ++Kind)
-    MergeResult(Result, mergeValueProfData(Kind, Other, Weight));
-
-  return Result;
+    mergeValueProfData(Kind, Other, Weight);
 }
 
-instrprof_error InstrProfRecord::scaleValueProfData(uint32_t ValueKind,
-                                                    uint64_t Weight) {
+void InstrProfRecord::scaleValueProfData(uint32_t ValueKind, uint64_t Weight) {
   uint32_t ThisNumValueSites = getNumValueSites(ValueKind);
   std::vector<InstrProfValueSiteRecord> &ThisSiteRecords =
       getValueSitesForKind(ValueKind);
-  instrprof_error Result = instrprof_error::success;
   for (uint32_t I = 0; I < ThisNumValueSites; I++)
-    MergeResult(Result, ThisSiteRecords[I].scale(Weight));
-  return Result;
+    ThisSiteRecords[I].scale(SIPE, Weight);
 }
 
-instrprof_error InstrProfRecord::scale(uint64_t Weight) {
-  instrprof_error Result = instrprof_error::success;
+void InstrProfRecord::scale(uint64_t Weight) {
   for (auto &Count : this->Counts) {
     bool Overflowed;
     Count = SaturatingMultiply(Count, Weight, &Overflowed);
-    if (Overflowed && Result == instrprof_error::success) {
-      Result = instrprof_error::counter_overflow;
-    }
+    if (Overflowed)
+      SIPE.addError(instrprof_error::counter_overflow);
   }
   for (uint32_t Kind = IPVK_First; Kind <= IPVK_Last; ++Kind)
-    MergeResult(Result, scaleValueProfData(Kind, Weight));
-
-  return Result;
+    scaleValueProfData(Kind, Weight);
 }
 
 // Map indirect call target name hash to name string.
@@ -398,8 +439,14 @@ uint64_t InstrProfRecord::remapValue(uint64_t Value, uint32_t ValueKind,
         std::lower_bound(ValueMap->begin(), ValueMap->end(), Value,
                          [](const std::pair<uint64_t, uint64_t> &LHS,
                             uint64_t RHS) { return LHS.first < RHS; });
-    if (Result != ValueMap->end())
+   // Raw function pointer collected by value profiler may be from 
+   // external functions that are not instrumented. They won't have
+   // mapping data to be used by the deserializer. Force the value to
+   // be 0 in this case.
+    if (Result != ValueMap->end() && Result->first == Value)
       Value = (uint64_t)Result->second;
+    else
+      Value = 0;
     break;
   }
   }
@@ -415,7 +462,7 @@ void InstrProfRecord::addValueData(uint32_t ValueKind, uint32_t Site,
   std::vector<InstrProfValueSiteRecord> &ValueSites =
       getValueSitesForKind(ValueKind);
   if (N == 0)
-    ValueSites.push_back(InstrProfValueSiteRecord());
+    ValueSites.emplace_back();
   else
     ValueSites.emplace_back(VData, VData + N);
 }
@@ -451,7 +498,6 @@ uint32_t getNumValueDataForSiteInstrProf(const void *R, uint32_t VK,
 void getValueForSiteInstrProf(const void *R, InstrProfValueData *Dst,
                               uint32_t K, uint32_t S) {
   reinterpret_cast<const InstrProfRecord *>(R)->getValueForSite(Dst, K, S);
-  return;
 }
 
 ValueProfData *allocValueProfDataInstrProf(size_t TotalSizeInBytes) {
@@ -552,45 +598,45 @@ static std::unique_ptr<ValueProfData> allocValueProfData(uint32_t TotalSize) {
                                             ValueProfData());
 }
 
-instrprof_error ValueProfData::checkIntegrity() {
+Error ValueProfData::checkIntegrity() {
   if (NumValueKinds > IPVK_Last + 1)
-    return instrprof_error::malformed;
+    return make_error<InstrProfError>(instrprof_error::malformed);
   // Total size needs to be mulltiple of quadword size.
   if (TotalSize % sizeof(uint64_t))
-    return instrprof_error::malformed;
+    return make_error<InstrProfError>(instrprof_error::malformed);
 
   ValueProfRecord *VR = getFirstValueProfRecord(this);
   for (uint32_t K = 0; K < this->NumValueKinds; K++) {
     if (VR->Kind > IPVK_Last)
-      return instrprof_error::malformed;
+      return make_error<InstrProfError>(instrprof_error::malformed);
     VR = getValueProfRecordNext(VR);
     if ((char *)VR - (char *)this > (ptrdiff_t)TotalSize)
-      return instrprof_error::malformed;
+      return make_error<InstrProfError>(instrprof_error::malformed);
   }
-  return instrprof_error::success;
+  return Error::success();
 }
 
-ErrorOr<std::unique_ptr<ValueProfData>>
+Expected<std::unique_ptr<ValueProfData>>
 ValueProfData::getValueProfData(const unsigned char *D,
                                 const unsigned char *const BufferEnd,
                                 support::endianness Endianness) {
   using namespace support;
   if (D + sizeof(ValueProfData) > BufferEnd)
-    return instrprof_error::truncated;
+    return make_error<InstrProfError>(instrprof_error::truncated);
 
   const unsigned char *Header = D;
   uint32_t TotalSize = swapToHostOrder<uint32_t>(Header, Endianness);
   if (D + TotalSize > BufferEnd)
-    return instrprof_error::too_large;
+    return make_error<InstrProfError>(instrprof_error::too_large);
 
   std::unique_ptr<ValueProfData> VPD = allocValueProfData(TotalSize);
   memcpy(VPD.get(), D, TotalSize);
   // Byte swap.
   VPD->swapBytesToHost(Endianness);
 
-  instrprof_error EC = VPD->checkIntegrity();
-  if (EC != instrprof_error::success)
-    return EC;
+  Error E = VPD->checkIntegrity();
+  if (E)
+    return std::move(E);
 
   return std::move(VPD);
 }
@@ -630,6 +676,8 @@ void annotateValueSite(Module &M, Instruction &Inst,
                        InstrProfValueKind ValueKind, uint32_t SiteIdx,
                        uint32_t MaxMDCount) {
   uint32_t NV = InstrProfR.getNumValueDataForSite(ValueKind, SiteIdx);
+  if (!NV)
+    return;
 
   uint64_t Sum = 0;
   std::unique_ptr<InstrProfValueData[]> VD =
@@ -724,14 +772,41 @@ MDNode *getPGOFuncNameMetadata(const Function &F) {
   return F.getMetadata(getPGOFuncNameMetadataName());
 }
 
-void createPGOFuncNameMetadata(Function &F) {
-  const std::string &FuncName = getPGOFuncName(F);
-  if (FuncName == F.getName())
+void createPGOFuncNameMetadata(Function &F, StringRef PGOFuncName) {
+  // Only for internal linkage functions.
+  if (PGOFuncName == F.getName())
+      return;
+  // Don't create duplicated meta-data.
+  if (getPGOFuncNameMetadata(F))
     return;
-
   LLVMContext &C = F.getContext();
-  MDNode *N = MDNode::get(C, MDString::get(C, FuncName.c_str()));
+  MDNode *N = MDNode::get(C, MDString::get(C, PGOFuncName));
   F.setMetadata(getPGOFuncNameMetadataName(), N);
 }
 
+bool needsComdatForCounter(const Function &F, const Module &M) {
+  if (F.hasComdat())
+    return true;
+
+  Triple TT(M.getTargetTriple());
+  if (!TT.isOSBinFormatELF())
+    return false;
+
+  // See createPGOFuncNameVar for more details. To avoid link errors, profile
+  // counters for function with available_externally linkage needs to be changed
+  // to linkonce linkage. On ELF based systems, this leads to weak symbols to be
+  // created. Without using comdat, duplicate entries won't be removed by the
+  // linker leading to increased data segement size and raw profile size. Even
+  // worse, since the referenced counter from profile per-function data object
+  // will be resolved to the common strong definition, the profile counts for
+  // available_externally functions will end up being duplicated in raw profile
+  // data. This can result in distorted profile as the counts of those dups
+  // will be accumulated by the profile merger.
+  GlobalValue::LinkageTypes Linkage = F.getLinkage();
+  if (Linkage != GlobalValue::ExternalWeakLinkage &&
+      Linkage != GlobalValue::AvailableExternallyLinkage)
+    return false;
+
+  return true;
+}
 } // end namespace llvm

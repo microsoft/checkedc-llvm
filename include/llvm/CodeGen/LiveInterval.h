@@ -316,6 +316,10 @@ namespace llvm {
     /// add liveness for a dead def.
     VNInfo *createDeadDef(SlotIndex Def, VNInfo::Allocator &VNInfoAllocator);
 
+    /// Create a def of value @p VNI. Return @p VNI. If there already exists
+    /// a definition at VNI->def, the value defined there must be @p VNI.
+    VNInfo *createDeadDef(VNInfo *VNI);
+
     /// Create a copy of the given value. The new value will be identical except
     /// for the Value number.
     VNInfo *createValueCopy(const VNInfo *orig,
@@ -451,10 +455,29 @@ namespace llvm {
     /// may have grown since it was inserted).
     iterator addSegment(Segment S);
 
+    /// Attempt to extend a value defined after @p StartIdx to include @p Use.
+    /// Both @p StartIdx and @p Use should be in the same basic block. In case
+    /// of subranges, an extension could be prevented by an explicit "undef"
+    /// caused by a <def,read-undef> on a non-overlapping lane. The list of
+    /// location of such "undefs" should be provided in @p Undefs.
+    /// The return value is a pair: the first element is VNInfo of the value
+    /// that was extended (possibly nullptr), the second is a boolean value
+    /// indicating whether an "undef" was encountered.
     /// If this range is live before @p Use in the basic block that starts at
-    /// @p StartIdx, extend it to be live up to @p Use, and return the value. If
-    /// there is no segment before @p Use, return nullptr.
-    VNInfo *extendInBlock(SlotIndex StartIdx, SlotIndex Use);
+    /// @p StartIdx, and there is no intervening "undef", extend it to be live
+    /// up to @p Use, and return the pair {value, false}. If there is no
+    /// segment before @p Use and there is no "undef" between @p StartIdx and
+    /// @p Use, return {nullptr, false}. If there is an "undef" before @p Use,
+    /// return {nullptr, true}.
+    std::pair<VNInfo*,bool> extendInBlock(ArrayRef<SlotIndex> Undefs,
+        SlotIndex StartIdx, SlotIndex Use);
+
+    /// Simplified version of the above "extendInBlock", which assumes that
+    /// no register lanes are undefined by <def,read-undef> operands.
+    /// If this range is live before @p Use in the basic block that starts
+    /// at @p StartIdx, extend it to be live up to @p Use, and return the
+    /// value. If there is no segment before @p Use, return nullptr.
+    VNInfo *extendInBlock(SlotIndex StartIdx, SlotIndex Kill);
 
     /// join - Join two live ranges (this, and other) together.  This applies
     /// mappings to the value numbers in the LHS/RHS ranges as specified.  If
@@ -555,6 +578,16 @@ namespace llvm {
       return thisIndex < otherIndex;
     }
 
+    /// Returns true if there is an explicit "undef" between @p Begin
+    /// @p End.
+    bool isUndefIn(ArrayRef<SlotIndex> Undefs, SlotIndex Begin,
+                   SlotIndex End) const {
+      return std::any_of(Undefs.begin(), Undefs.end(),
+                [Begin,End] (SlotIndex Idx) -> bool {
+                  return Begin <= Idx && Idx < End;
+                });
+    }
+
     /// Flush segment set into the regular segment vector.
     /// The method is to be called after the live range
     /// has been created, if use of the segment set was
@@ -581,7 +614,6 @@ namespace llvm {
     friend class LiveRangeUpdater;
     void addSegmentToSet(Segment S);
     void markValNoForDeletion(VNInfo *V);
-
   };
 
   inline raw_ostream &operator<<(raw_ostream &OS, const LiveRange &LR) {
@@ -613,6 +645,9 @@ namespace llvm {
                BumpPtrAllocator &Allocator)
         : LiveRange(Other, Allocator), Next(nullptr), LaneMask(LaneMask) {
       }
+
+      void print(raw_ostream &OS) const;
+      void dump() const;
     };
 
   private:
@@ -712,10 +747,6 @@ namespace llvm {
     /// are not considered valid and should only exist temporarily).
     void removeEmptySubRanges();
 
-    /// Construct main live range by merging the SubRanges of @p LI.
-    void constructMainRangeFromSubranges(const SlotIndexes &Indexes,
-                                         VNInfo::Allocator &VNIAllocator);
-
     /// getSize - Returns the sum of sizes of all the LiveRange's.
     ///
     unsigned getSize() const;
@@ -729,6 +760,13 @@ namespace llvm {
     void markNotSpillable() {
       weight = llvm::huge_valf;
     }
+
+    /// For a given lane mask @p LaneMask, compute indexes at which the
+    /// lane is marked undefined by subregister <def,read-undef> definitions.
+    void computeSubRangeUndefs(SmallVectorImpl<SlotIndex> &Undefs,
+                               LaneBitmask LaneMask,
+                               const MachineRegisterInfo &MRI,
+                               const SlotIndexes &Indexes) const;
 
     bool operator<(const LiveInterval& other) const {
       const SlotIndex &thisIndex = beginIndex();
@@ -758,6 +796,12 @@ namespace llvm {
     /// Free memory held by SubRange.
     void freeSubRange(SubRange *S);
   };
+
+  inline raw_ostream &operator<<(raw_ostream &OS,
+                                 const LiveInterval::SubRange &SR) {
+    SR.print(OS);
+    return OS;
+  }
 
   inline raw_ostream &operator<<(raw_ostream &OS, const LiveInterval &LI) {
     LI.print(OS);
@@ -867,76 +911,6 @@ namespace llvm {
     /// left in \p LI.
     void Distribute(LiveInterval &LI, LiveInterval *LIV[],
                     MachineRegisterInfo &MRI);
-  };
-
-  /// Helper class that can divide MachineOperands of a virtual register into
-  /// equivalence classes of connected components.
-  /// MachineOperands belong to the same equivalence class when they are part of
-  /// the same SubRange segment or adjacent segments (adjacent in control
-  /// flow); Different subranges affected by the same MachineOperand belong to
-  /// the same equivalence class.
-  ///
-  /// Example:
-  ///   vreg0:sub0 = ...
-  ///   vreg0:sub1 = ...
-  ///   vreg0:sub2 = ...
-  ///   ...
-  ///   xxx        = op vreg0:sub1
-  ///   vreg0:sub1 = ...
-  ///   store vreg0:sub0_sub1
-  ///
-  /// The example contains 3 different equivalence classes:
-  ///   - One for the (dead) vreg0:sub2 definition
-  ///   - One containing the first vreg0:sub1 definition and its use,
-  ///     but not the second definition!
-  ///   - The remaining class contains all other operands involving vreg0.
-  ///
-  /// We provide a utility function here to rename disjunct classes to different
-  /// virtual registers.
-  class ConnectedSubRegClasses {
-    LiveIntervals &LIS;
-    MachineRegisterInfo &MRI;
-
-  public:
-    ConnectedSubRegClasses(LiveIntervals &LIS, MachineRegisterInfo &MRI)
-      : LIS(LIS), MRI(MRI) {}
-
-    /// Split unrelated subregister components and rename them to new vregs.
-    void renameComponents(LiveInterval &LI) const;
-
-  private:
-    struct SubRangeInfo {
-      ConnectedVNInfoEqClasses ConEQ;
-      LiveInterval::SubRange *SR;
-      unsigned Index;
-
-      SubRangeInfo(LiveIntervals &LIS, LiveInterval::SubRange &SR,
-                   unsigned Index)
-        : ConEQ(LIS), SR(&SR), Index(Index) {}
-    };
-
-    /// \brief Build a vector of SubRange infos and a union find set of
-    /// equivalence classes.
-    /// Returns true if more than 1 equivalence class was found.
-    bool findComponents(IntEqClasses &Classes,
-                        SmallVectorImpl<SubRangeInfo> &SubRangeInfos,
-                        LiveInterval &LI) const;
-
-    /// \brief Distribute the LiveInterval segments into the new LiveIntervals
-    /// belonging to their class.
-    void distribute(const IntEqClasses &Classes,
-                    const SmallVectorImpl<SubRangeInfo> &SubRangeInfos,
-                    const SmallVectorImpl<LiveInterval*> &Intervals) const;
-
-    /// \brief Constructs main liverange and add missing undef+dead flags.
-    void computeMainRangesFixFlags(const IntEqClasses &Classes,
-        const SmallVectorImpl<SubRangeInfo> &SubRangeInfos,
-        const SmallVectorImpl<LiveInterval*> &Intervals) const;
-
-    /// Rewrite Machine Operands to use the new vreg belonging to their class.
-    void rewriteOperands(const IntEqClasses &Classes,
-                         const SmallVectorImpl<SubRangeInfo> &SubRangeInfos,
-                         const SmallVectorImpl<LiveInterval*> &Intervals) const;
   };
 }
 #endif

@@ -60,11 +60,11 @@ struct UnrollAnalyzerTest : public FunctionPass {
 
 char UnrollAnalyzerTest::ID = 0;
 
-std::unique_ptr<Module> makeLLVMModule(UnrollAnalyzerTest *P,
+std::unique_ptr<Module> makeLLVMModule(LLVMContext &Context,
+                                       UnrollAnalyzerTest *P,
                                        const char *ModuleStr) {
-  LLVMContext &C = getGlobalContext();
   SMDiagnostic Err;
-  return parseAssemblyString(ModuleStr, Err, C);
+  return parseAssemblyString(ModuleStr, Err, Context);
 }
 
 TEST(UnrollAnalyzerTest, BasicSimplifications) {
@@ -86,7 +86,8 @@ TEST(UnrollAnalyzerTest, BasicSimplifications) {
       "  ret i64 %x.lcssa\n"
       "}\n";
   UnrollAnalyzerTest *P = new UnrollAnalyzerTest();
-  std::unique_ptr<Module> M = makeLLVMModule(P, ModuleStr);
+  LLVMContext Context;
+  std::unique_ptr<Module> M = makeLLVMModule(Context, P, ModuleStr);
   legacy::PassManager Passes;
   Passes.add(P);
   Passes.run(*M);
@@ -133,6 +134,7 @@ TEST(UnrollAnalyzerTest, OuterLoopSimplification) {
       "  br label %outer.loop\n"
       "outer.loop:\n"
       "  %iv.outer = phi i64 [ 0, %entry ], [ %iv.outer.next, %outer.loop.latch ]\n"
+      "  %iv.outer.next = add nuw nsw i64 %iv.outer, 1\n"
       "  br label %inner.loop\n"
       "inner.loop:\n"
       "  %iv.inner = phi i64 [ 0, %outer.loop ], [ %iv.inner.next, %inner.loop ]\n"
@@ -140,7 +142,6 @@ TEST(UnrollAnalyzerTest, OuterLoopSimplification) {
       "  %exitcond.inner = icmp eq i64 %iv.inner.next, 1000\n"
       "  br i1 %exitcond.inner, label %outer.loop.latch, label %inner.loop\n"
       "outer.loop.latch:\n"
-      "  %iv.outer.next = add nuw nsw i64 %iv.outer, 1\n"
       "  %exitcond.outer = icmp eq i64 %iv.outer.next, 40\n"
       "  br i1 %exitcond.outer, label %exit, label %outer.loop\n"
       "exit:\n"
@@ -148,7 +149,8 @@ TEST(UnrollAnalyzerTest, OuterLoopSimplification) {
       "}\n";
 
   UnrollAnalyzerTest *P = new UnrollAnalyzerTest();
-  std::unique_ptr<Module> M = makeLLVMModule(P, ModuleStr);
+  LLVMContext Context;
+  std::unique_ptr<Module> M = makeLLVMModule(Context, P, ModuleStr);
   legacy::PassManager Passes;
   Passes.add(P);
   Passes.run(*M);
@@ -161,11 +163,15 @@ TEST(UnrollAnalyzerTest, OuterLoopSimplification) {
   BasicBlock *InnerBody = &*FI++;
 
   BasicBlock::iterator BBI = Header->begin();
-  Instruction *Y1 = &*BBI++;
+  BBI++;
+  Instruction *Y1 = &*BBI;
   BBI = InnerBody->begin();
-  Instruction *Y2 = &*BBI++;
+  BBI++;
+  Instruction *Y2 = &*BBI;
   // Check that we can simplify IV of the outer loop, but can't simplify the IV
   // of the inner loop if we only know the iteration number of the outer loop.
+  //
+  //  Y1 is %iv.outer.next, Y2 is %iv.inner.next
   auto I1 = SimplifiedValuesVector[0].find(Y1);
   EXPECT_TRUE(I1 != SimplifiedValuesVector[0].end());
   auto I2 = SimplifiedValuesVector[0].find(Y2);
@@ -188,7 +194,8 @@ TEST(UnrollAnalyzerTest, CmpSimplifications) {
       "  ret void\n"
       "}\n";
   UnrollAnalyzerTest *P = new UnrollAnalyzerTest();
-  std::unique_ptr<Module> M = makeLLVMModule(P, ModuleStr);
+  LLVMContext Context;
+  std::unique_ptr<Module> M = makeLLVMModule(Context, P, ModuleStr);
   legacy::PassManager Passes;
   Passes.add(P);
   Passes.run(*M);
@@ -234,7 +241,8 @@ TEST(UnrollAnalyzerTest, PtrCmpSimplifications) {
       "  ret void\n"
       "}\n";
   UnrollAnalyzerTest *P = new UnrollAnalyzerTest();
-  std::unique_ptr<Module> M = makeLLVMModule(P, ModuleStr);
+  LLVMContext Context;
+  std::unique_ptr<Module> M = makeLLVMModule(Context, P, ModuleStr);
   legacy::PassManager Passes;
   Passes.add(P);
   Passes.run(*M);
@@ -279,7 +287,8 @@ TEST(UnrollAnalyzerTest, CastSimplifications) {
       "}\n";
 
   UnrollAnalyzerTest *P = new UnrollAnalyzerTest();
-  std::unique_ptr<Module> M = makeLLVMModule(P, ModuleStr);
+  LLVMContext Context;
+  std::unique_ptr<Module> M = makeLLVMModule(Context, P, ModuleStr);
   legacy::PassManager Passes;
   Passes.add(P);
   Passes.run(*M);

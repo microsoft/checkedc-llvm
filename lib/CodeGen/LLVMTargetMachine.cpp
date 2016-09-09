@@ -15,9 +15,9 @@
 #include "llvm/Analysis/Passes.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/BasicTTIImpl.h"
-#include "llvm/CodeGen/MachineFunctionAnalysis.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Verifier.h"
@@ -69,8 +69,15 @@ void LLVMTargetMachine::initAsmInfo() {
   if (Options.DisableIntegratedAS)
     TmpAsmInfo->setUseIntegratedAssembler(false);
 
+  TmpAsmInfo->setPreserveAsmComments(Options.MCOptions.PreserveAsmComments);
+
   if (Options.CompressDebugSections)
-    TmpAsmInfo->setCompressDebugSections(true);
+    TmpAsmInfo->setCompressDebugSections(DebugCompressionType::DCT_ZlibGnu);
+
+  TmpAsmInfo->setRelaxELFRelocations(Options.RelaxELFRelocations);
+
+  if (Options.ExceptionModel != ExceptionHandling::None)
+    TmpAsmInfo->setExceptionsType(Options.ExceptionModel);
 
   AsmInfo = TmpAsmInfo;
 }
@@ -82,7 +89,10 @@ LLVMTargetMachine::LLVMTargetMachine(const Target &T,
                                      Reloc::Model RM, CodeModel::Model CM,
                                      CodeGenOpt::Level OL)
     : TargetMachine(T, DataLayoutString, TT, CPU, FS, Options) {
-  CodeGenInfo = T.createMCCodeGenInfo(TT.str(), RM, CM, OL);
+  T.adjustCodeGenOpts(TT, RM, CM);
+  this->RM = RM;
+  this->CMModel = CM;
+  this->OptLevel = OL;
 }
 
 TargetIRAnalysis LLVMTargetMachine::getTargetIRAnalysis() {
@@ -101,6 +111,8 @@ addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM,
   // When in emulated TLS mode, add the LowerEmuTLS pass.
   if (TM->Options.EmulatedTLS)
     PM.add(createLowerEmuTLSPass(TM));
+
+  PM.add(createPreISelIntrinsicLoweringPass());
 
   // Add internal analysis passes from the target machine.
   PM.add(createTargetTransformInfoWrapperPass(TM->getTargetIRAnalysis()));
@@ -123,14 +135,9 @@ addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM,
 
   PassConfig->addISelPrepare();
 
-  // Install a MachineModuleInfo class, which is an immutable pass that holds
-  // all the per-module stuff we're generating, including MCContext.
-  MachineModuleInfo *MMI = new MachineModuleInfo(
-      *TM->getMCAsmInfo(), *TM->getMCRegisterInfo(), TM->getObjFileLowering());
+  MachineModuleInfo *MMI = new MachineModuleInfo(TM);
+  MMI->setMachineFunctionInitializer(MFInitializer);
   PM.add(MMI);
-
-  // Set up a MachineFunction for the rest of CodeGen to work on.
-  PM.add(new MachineFunctionAnalysis(*TM, MFInitializer));
 
   // Enable FastISel with -fast, but allow that to be overridden.
   TM->setO0WantsFastISel(EnableFastISelOption != cl::BOU_FALSE);
@@ -144,11 +151,31 @@ addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM,
     if (PassConfig->addIRTranslator())
       return nullptr;
 
+    PassConfig->addPreLegalizeMachineIR();
+
+    if (PassConfig->addLegalizeMachineIR())
+      return nullptr;
+
     // Before running the register bank selector, ask the target if it
     // wants to run some passes.
     PassConfig->addPreRegBankSelect();
 
     if (PassConfig->addRegBankSelect())
+      return nullptr;
+
+    PassConfig->addPreGlobalInstructionSelect();
+
+    if (PassConfig->addGlobalInstructionSelect())
+      return nullptr;
+
+    // Pass to reset the MachineFunction if the ISel failed.
+    PM.add(createResetMachineFunctionPass(
+        PassConfig->reportDiagnosticWhenGlobalISelFallback()));
+
+    // Provide a fallback path when we do not want to abort on
+    // not-yet-supported input.
+    if (LLVM_UNLIKELY(!PassConfig->isGlobalISelAbortEnabled()) &&
+        PassConfig->addInstSelector())
       return nullptr;
 
   } else if (PassConfig->addInstSelector())
@@ -173,7 +200,7 @@ bool LLVMTargetMachine::addPassesToEmitFile(
     return true;
 
   if (StopAfter) {
-    PM.add(createPrintMIRPass(errs()));
+    PM.add(createPrintMIRPass(Out));
     return false;
   }
 
@@ -198,7 +225,8 @@ bool LLVMTargetMachine::addPassesToEmitFile(
       MCE = getTarget().createMCCodeEmitter(MII, MRI, *Context);
 
     MCAsmBackend *MAB =
-        getTarget().createMCAsmBackend(MRI, getTargetTriple().str(), TargetCPU);
+        getTarget().createMCAsmBackend(MRI, getTargetTriple().str(), TargetCPU,
+                                       Options.MCOptions);
     auto FOut = llvm::make_unique<formatted_raw_ostream>(Out);
     MCStreamer *S = getTarget().createAsmStreamer(
         *Context, std::move(FOut), Options.MCOptions.AsmVerbose,
@@ -212,7 +240,8 @@ bool LLVMTargetMachine::addPassesToEmitFile(
     // emission fails.
     MCCodeEmitter *MCE = getTarget().createMCCodeEmitter(MII, MRI, *Context);
     MCAsmBackend *MAB =
-        getTarget().createMCAsmBackend(MRI, getTargetTriple().str(), TargetCPU);
+        getTarget().createMCAsmBackend(MRI, getTargetTriple().str(), TargetCPU,
+                                       Options.MCOptions);
     if (!MCE || !MAB)
       return true;
 
@@ -240,6 +269,7 @@ bool LLVMTargetMachine::addPassesToEmitFile(
     return true;
 
   PM.add(Printer);
+  PM.add(createFreeMachineFunctionPass());
 
   return false;
 }
@@ -267,7 +297,8 @@ bool LLVMTargetMachine::addPassesToEmitMC(PassManagerBase &PM, MCContext *&Ctx,
   MCCodeEmitter *MCE =
       getTarget().createMCCodeEmitter(*getMCInstrInfo(), MRI, *Ctx);
   MCAsmBackend *MAB =
-      getTarget().createMCAsmBackend(MRI, getTargetTriple().str(), TargetCPU);
+      getTarget().createMCAsmBackend(MRI, getTargetTriple().str(), TargetCPU,
+                                     Options.MCOptions);
   if (!MCE || !MAB)
     return true;
 
@@ -285,6 +316,7 @@ bool LLVMTargetMachine::addPassesToEmitMC(PassManagerBase &PM, MCContext *&Ctx,
     return true;
 
   PM.add(Printer);
+  PM.add(createFreeMachineFunctionPass());
 
   return false; // success!
 }

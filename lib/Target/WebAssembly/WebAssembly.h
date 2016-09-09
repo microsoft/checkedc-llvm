@@ -16,24 +16,33 @@
 #ifndef LLVM_LIB_TARGET_WEBASSEMBLY_WEBASSEMBLY_H
 #define LLVM_LIB_TARGET_WEBASSEMBLY_WEBASSEMBLY_H
 
+#include "llvm/PassRegistry.h"
 #include "llvm/Support/CodeGen.h"
 
 namespace llvm {
 
 class WebAssemblyTargetMachine;
+class ModulePass;
 class FunctionPass;
 
+// LLVM IR passes.
+ModulePass *createWebAssemblyLowerEmscriptenEHSjLj(bool DoEH, bool DoSjLj);
+void initializeWebAssemblyLowerEmscriptenEHSjLjPass(PassRegistry &);
 FunctionPass *createWebAssemblyOptimizeReturned();
 
+// ISel and immediate followup passes.
 FunctionPass *createWebAssemblyISelDag(WebAssemblyTargetMachine &TM,
                                        CodeGenOpt::Level OptLevel);
 FunctionPass *createWebAssemblyArgumentMove();
 FunctionPass *createWebAssemblySetP2AlignOperands();
 
+// Late passes.
+FunctionPass *createWebAssemblyReplacePhysRegs();
+FunctionPass *createWebAssemblyPrepareForLiveIntervals();
+FunctionPass *createWebAssemblyOptimizeLiveIntervals();
 FunctionPass *createWebAssemblyStoreResults();
 FunctionPass *createWebAssemblyRegStackify();
 FunctionPass *createWebAssemblyRegColoring();
-FunctionPass *createWebAssemblyPEI();
 FunctionPass *createWebAssemblyFixIrreducibleControlFlow();
 FunctionPass *createWebAssemblyCFGStackify();
 FunctionPass *createWebAssemblyLowerBrUnless();

@@ -7,14 +7,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/IR/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/PassManager.h"
 
 using namespace llvm;
 
 // Explicit template instantiations for core template typedefs.
 namespace llvm {
+template class AllAnalysesOn<Module>;
+template class AllAnalysesOn<Function>;
 template class PassManager<Module>;
 template class PassManager<Function>;
 template class AnalysisManager<Module>;

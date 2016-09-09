@@ -48,6 +48,47 @@
 # CHECK-LE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14abs
             bcla 4, 10, target
 
+# CHECK-BE: bc+ 12, 28, target              # encoding: [0x41,0xfc,A,0bAAAAAA00]
+# CHECK-LE: bc+ 12, 28, target              # encoding: [0bAAAAAA00,A,0xfc,0x41]
+# CHECK-BE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14
+# CHECK-LE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14
+            bc+ 12, 28, target
+# CHECK-BE: bc- 12, 28, target              # encoding: [0x41,0xdc,A,0bAAAAAA00]
+# CHECK-LE: bc- 12, 28, target              # encoding: [0bAAAAAA00,A,0xdc,0x41]
+# CHECK-BE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14
+# CHECK-LE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14
+            bc- 12, 28, target
+# CHECK-BE: bca+ 12, 28, target             # encoding: [0x41,0xfc,A,0bAAAAAA10]
+# CHECK-LE: bca+ 12, 28, target             # encoding: [0bAAAAAA10,A,0xfc,0x41]
+# CHECK-BE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14abs
+# CHECK-LE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14abs
+            bca+ 12, 28, target
+# CHECK-BE: bca- 12, 28, target             # encoding: [0x41,0xdc,A,0bAAAAAA10]
+# CHECK-LE: bca- 12, 28, target             # encoding: [0bAAAAAA10,A,0xdc,0x41]
+# CHECK-BE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14abs
+# CHECK-LE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14abs
+            bca- 12, 28, target
+# CHECK-BE: bcl+ 12, 28, target             # encoding: [0x41,0xfc,A,0bAAAAAA01]
+# CHECK-LE: bcl+ 12, 28, target             # encoding: [0bAAAAAA01,A,0xfc,0x41]
+# CHECK-BE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14
+# CHECK-LE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14
+            bcl+ 12, 28, target
+# CHECK-BE: bcl- 12, 28, target             # encoding: [0x41,0xdc,A,0bAAAAAA01]
+# CHECK-LE: bcl- 12, 28, target             # encoding: [0bAAAAAA01,A,0xdc,0x41]
+# CHECK-BE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14
+# CHECK-LE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14
+            bcl- 12, 28, target
+# CHECK-BE: bcla+ 12, 28, target            # encoding: [0x41,0xfc,A,0bAAAAAA11]
+# CHECK-LE: bcla+ 12, 28, target            # encoding: [0bAAAAAA11,A,0xfc,0x41]
+# CHECK-BE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14abs
+# CHECK-LE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14abs
+            bcla+ 12, 28, target
+# CHECK-BE: bcla- 12, 28, target            # encoding: [0x41,0xdc,A,0bAAAAAA11]
+# CHECK-LE: bcla- 12, 28, target            # encoding: [0bAAAAAA11,A,0xdc,0x41]
+# CHECK-BE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14abs
+# CHECK-LE-NEXT:                            #   fixup A - offset: 0, value: target, kind: fixup_ppc_brcond14abs
+            bcla- 12, 28, target
+
 # CHECK-BE: bclr 4, 10, 3                   # encoding: [0x4c,0x8a,0x18,0x20]
 # CHECK-LE: bclr 4, 10, 3                   # encoding: [0x20,0x18,0x8a,0x4c]
             bclr 4, 10, 3
@@ -533,6 +574,24 @@
 # CHECK-BE: cmplw 2, 3, 4                   # encoding: [0x7d,0x03,0x20,0x40]
 # CHECK-LE: cmplw 2, 3, 4                   # encoding: [0x40,0x20,0x03,0x7d]
             cmpl 2, 0, 3, 4
+# CHECK-BE: cmprb 3, 1, 7, 17               # encoding: [0x7d,0xa7,0x89,0x80]
+# CHECK-LE: cmprb 3, 1, 7, 17               # encoding: [0x80,0x89,0xa7,0x7d]
+            cmprb 3, 1, 7, 17
+# CHECK-BE: cmpeqb 3, 7, 17                 # encoding: [0x7d,0x87,0x89,0xc0]
+# CHECK-LE: cmpeqb 3, 7, 17                 # encoding: [0xc0,0x89,0x87,0x7d]
+            cmpeqb 3, 7, 17
+# CHECK-BE: cnttzw 7, 17                    # encoding: [0x7e,0x27,0x04,0x34]
+# CHECK-LE: cnttzw 7, 17                    # encoding: [0x34,0x04,0x27,0x7e]
+            cnttzw 7, 17
+# CHECK-BE: cnttzw. 7, 17                   # encoding: [0x7e,0x27,0x04,0x35]
+# CHECK-LE: cnttzw. 7, 17                   # encoding: [0x35,0x04,0x27,0x7e]
+            cnttzw. 7, 17
+# CHECK-BE: cnttzd 7, 17                    # encoding: [0x7e,0x27,0x04,0x74]
+# CHECK-LE: cnttzd 7, 17                    # encoding: [0x74,0x04,0x27,0x7e]
+            cnttzd 7, 17
+# CHECK-BE: cnttzd. 7, 17                   # encoding: [0x7e,0x27,0x04,0x75]
+# CHECK-LE: cnttzd. 7, 17                   # encoding: [0x75,0x04,0x27,0x7e]
+            cnttzd. 7, 17
 
 # Fixed-point trap instructions
 
@@ -854,64 +913,6 @@
 # CHECK-BE: mfsrin  10, 12                    # encoding: [0x7d,0x40,0x65,0x26]
 # CHECK-LE: mfsrin  10, 12                    # encoding: [0x26,0x65,0x40,0x7d]
             mfsrin  %r10,%r12
-
-# ISA3.0 Instructions:
-
-# Add PC Immediate Shifted
-# CHECK-BE: addpcis 1, -12345                  # encoding: [0x4c,0x23,0xcf,0xc5]
-# CHECK-LE: addpcis 1, -12345                  # encoding: [0xc5,0xcf,0x23,0x4c]
-            addpcis 1, -12345
-
-# 64-bit Fixed-Point Multiply-Add High-DWord/High-DWord-Unsigned/Low-DWord
-# CHECK-BE: maddhd 30, 27, 7, 2                # encoding: [0x13,0xdb,0x38,0xb0]
-# CHECK-LE: maddhd 30, 27, 7, 2                # encoding: [0xb0,0x38,0xdb,0x13]
-            maddhd 30, 27, 7, 2
-# CHECK-BE: maddhdu 15, 12, 1, 3               # encoding: [0x11,0xec,0x08,0xf1]
-# CHECK-LE: maddhdu 15, 12, 1, 3               # encoding: [0xf1,0x08,0xec,0x11]
-            maddhdu 15, 12, 1, 3
-# CHECK-BE: maddld 13, 10, 6, 4                # encoding: [0x11,0xaa,0x31,0x33]
-# CHECK-LE: maddld 13, 10, 6, 4                # encoding: [0x33,0x31,0xaa,0x11]
-            maddld 13, 10, 6, 4
-
-# Modulo {Signed/Unsigned}-{Word/DWord}
-# CHECK-BE: modsw 2, 3, 4                      # encoding: [0x7c,0x43,0x26,0x16]
-# CHECK-LE: modsw 2, 3, 4                      # encoding: [0x16,0x26,0x43,0x7c]
-            modsw 2, 3, 4
-# CHECK-BE: moduw 3, 7, 5                      # encoding: [0x7c,0x67,0x2a,0x16]
-# CHECK-LE: moduw 3, 7, 5                      # encoding: [0x16,0x2a,0x67,0x7c]
-            moduw 3, 7, 5
-# CHECK-BE: modsd 10, 13, 14                   # encoding: [0x7d,0x4d,0x76,0x12]
-# CHECK-LE: modsd 10, 13, 14                   # encoding: [0x12,0x76,0x4d,0x7d]
-            modsd 10, 13, 14
-# CHECK-BE: modud 21, 15, 27                   # encoding: [0x7e,0xaf,0xda,0x12]
-# CHECK-LE: modud 21, 15, 27                   # encoding: [0x12,0xda,0xaf,0x7e]
-            modud 21, 15, 27
-
-# Deliver A Random Number
-# CHECK-BE: darn 31, 2                         # encoding: [0x7f,0xe2,0x05,0xe6]
-# CHECK-LE: darn 31, 2                         # encoding: [0xe6,0x05,0xe2,0x7f]
-            darn 31, 2
-
-# Extend-Sign Word and Shift Left Immediate
-# CHECK-BE: extswsli 15, 18, 63                # encoding: [0x7e,0x4f,0xfe,0xf6]
-# CHECK-LE: extswsli 15, 18, 63                # encoding: [0xf6,0xfe,0x4f,0x7e]
-            extswsli 15, 18, 63
-# CHECK-BE: extswsli. 11, 27, 31               # encoding: [0x7f,0x6b,0xfe,0xf5]
-# CHECK-LE: extswsli. 11, 27, 31               # encoding: [0xf5,0xfe,0x6b,0x7f]
-            extswsli. 11, 27, 31
-
-# Set Boolean
-# CHECK-BE: setb 2, 7                          # encoding: [0x7c,0x5c,0x01,0x00]
-# CHECK-LE: setb 2, 7                          # encoding: [0x00,0x01,0x5c,0x7c]
-            setb 2, 7
-
-# DFP Test Significance Immediate [Quad]
-# CHECK-BE: dtstsfi 7, 63, 1                   # encoding: [0xef,0xbf,0x0d,0x46]
-# CHECK-LE: dtstsfi 7, 63, 1                   # encoding: [0x46,0x0d,0xbf,0xef]
-            dtstsfi 7, 63, 1
-# CHECK-BE: dtstsfiq 4, 63, 4                  # encoding: [0xfe,0x3f,0x25,0x46]
-# CHECK-LE: dtstsfiq 4, 63, 4                  # encoding: [0x46,0x25,0x3f,0xfe]
-            dtstsfiq 4, 63, 4
 
 # Copy-Paste Facility
 # CHECK-BE: copy 2, 19, 1                      # encoding: [0x7c,0x22,0x9e,0x0c]

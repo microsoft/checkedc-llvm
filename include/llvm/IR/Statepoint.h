@@ -34,11 +34,19 @@ enum class StatepointFlags {
   None = 0,
   GCTransition = 1, ///< Indicates that this statepoint is a transition from
                     ///< GC-aware code to code that is not GC-aware.
+  /// Mark the deopt arguments associated with the statepoint as only being
+  /// "live-in". By default, deopt arguments are "live-through".  "live-through"
+  /// requires that they the value be live on entry, on exit, and at any point
+  /// during the call.  "live-in" only requires the value be available at the
+  /// start of the call.  In particular, "live-in" values can be placed in
+  /// unused argument registers or other non-callee saved registers.
+  DeoptLiveIn = 2,
 
-  MaskAll = GCTransition ///< A bitmask that includes all valid flags.
+  MaskAll = 3 ///< A bitmask that includes all valid flags.
 };
 
 class GCRelocateInst;
+class GCResultInst;
 class ImmutableStatepoint;
 
 bool isStatepoint(ImmutableCallSite CS);
@@ -46,16 +54,14 @@ bool isStatepoint(const Value *V);
 bool isStatepoint(const Value &V);
 
 bool isGCRelocate(ImmutableCallSite CS);
-
-bool isGCResult(const Value *V);
 bool isGCResult(ImmutableCallSite CS);
 
 /// Analogous to CallSiteBase, this provides most of the actual
 /// functionality for Statepoint and ImmutableStatepoint.  It is
 /// templatized to allow easily specializing of const and non-const
 /// concrete subtypes.  This is structured analogous to CallSite
-/// rather than the IntrinsicInst.h helpers since we want to support
-/// invokable statepoints in the near future.
+/// rather than the IntrinsicInst.h helpers since we need to support
+/// invokable statepoints.
 template <typename FunTy, typename InstructionTy, typename ValueTy,
           typename CallSiteTy>
 class StatepointBase {
@@ -253,11 +259,10 @@ public:
   /// Get the experimental_gc_result call tied to this statepoint.  Can be
   /// nullptr if there isn't a gc_result tied to this statepoint.  Guaranteed to
   /// be a CallInst if non-null.
-  InstructionTy *getGCResult() const {
+  const GCResultInst *getGCResult() const {
     for (auto *U : getInstruction()->users())
-      if (isGCResult(U))
-        return cast<CallInst>(U);
-
+      if (auto *GRI = dyn_cast<GCResultInst>(U))
+        return GRI;
     return nullptr;
   }
 
@@ -306,11 +311,13 @@ public:
   explicit Statepoint(CallSite CS) : Base(CS) {}
 };
 
-/// This represents the gc.relocate intrinsic.
-class GCRelocateInst : public IntrinsicInst {
+/// Common base class for representing values projected from a statepoint.  
+/// Currently, the only projections available are gc.result and gc.relocate.
+class GCProjectionInst : public IntrinsicInst {
 public:
   static inline bool classof(const IntrinsicInst *I) {
-    return I->getIntrinsicID() == Intrinsic::experimental_gc_relocate;
+    return I->getIntrinsicID() == Intrinsic::experimental_gc_relocate ||
+      I->getIntrinsicID() == Intrinsic::experimental_gc_result;
   }
   static inline bool classof(const Value *V) {
     return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
@@ -331,6 +338,7 @@ public:
     // This takes care both of relocates for call statepoints and relocates
     // on normal path of invoke statepoint.
     if (!isa<LandingPadInst>(Token)) {
+      assert(isStatepoint(Token));
       return cast<Instruction>(Token);
     }
 
@@ -344,6 +352,17 @@ public:
     assert(isStatepoint(InvokeBB->getTerminator()));
 
     return InvokeBB->getTerminator();
+  }
+};
+
+/// Represents calls to the gc.relocate intrinsic.
+class GCRelocateInst : public GCProjectionInst {
+public:
+  static inline bool classof(const IntrinsicInst *I) {
+    return I->getIntrinsicID() == Intrinsic::experimental_gc_relocate;
+  }
+  static inline bool classof(const Value *V) {
+    return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
   }
 
   /// The index into the associate statepoint's argument list
@@ -367,6 +386,17 @@ public:
   Value *getDerivedPtr() const {
     ImmutableCallSite CS(getStatepoint());
     return *(CS.arg_begin() + getDerivedPtrIndex());
+  }
+};
+
+/// Represents calls to the gc.result intrinsic.
+class GCResultInst : public GCProjectionInst {
+public:
+  static inline bool classof(const IntrinsicInst *I) {
+    return I->getIntrinsicID() == Intrinsic::experimental_gc_result;
+  }
+  static inline bool classof(const Value *V) {
+    return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
   }
 };
 

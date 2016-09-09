@@ -66,8 +66,6 @@
 //
 // void <SubTarget>Subtarget::
 // overrideSchedPolicy(MachineSchedPolicy &Policy,
-//                     MachineInstr *begin,
-//                     MachineInstr *end,
 //                     unsigned NumRegionInstrs) const {
 //   Policy.<Flag> = true;
 // }
@@ -461,6 +459,10 @@ protected:
   /// bottom of the DAG region without covereing any unscheduled instruction.
   void buildDAGWithRegPressure();
 
+  /// Release ExitSU predecessors and setup scheduler queues. Re-position
+  /// the Top RP tracker in case the region beginning has changed.
+  void initQueues(ArrayRef<SUnit*> TopRoots, ArrayRef<SUnit*> BotRoots);
+
   /// Move an instruction and update register pressure.
   void scheduleMI(SUnit *SU, bool IsTopNode);
 
@@ -516,9 +518,7 @@ public:
 
   ArrayRef<SUnit*> elements() { return Queue; }
 
-  iterator find(SUnit *SU) {
-    return std::find(Queue.begin(), Queue.end(), SU);
-  }
+  iterator find(SUnit *SU) { return llvm::find(Queue, SU); }
 
   void push(SUnit *SU) {
     Queue.push_back(SU);
@@ -759,9 +759,9 @@ class GenericSchedulerBase : public MachineSchedStrategy {
 public:
   /// Represent the type of SchedCandidate found within a single queue.
   /// pickNodeBidirectional depends on these listed by decreasing priority.
-  enum CandReason {
-    NoCand, PhysRegCopy, RegExcess, RegCritical, Stall, Cluster, Weak, RegMax,
-    ResourceReduce, ResourceDemand, BotHeightReduce, BotPathReduce,
+  enum CandReason : uint8_t {
+    NoCand, Only1, PhysRegCopy, RegExcess, RegCritical, Stall, Cluster, Weak,
+    RegMax, ResourceReduce, ResourceDemand, BotHeightReduce, BotPathReduce,
     TopDepthReduce, TopPathReduce, NextDefUse, NodeOrder};
 
 #ifndef NDEBUG
@@ -775,6 +775,15 @@ public:
     unsigned DemandResIdx;
 
     CandPolicy(): ReduceLatency(false), ReduceResIdx(0), DemandResIdx(0) {}
+
+    bool operator==(const CandPolicy &RHS) const {
+      return ReduceLatency == RHS.ReduceLatency &&
+             ReduceResIdx == RHS.ReduceResIdx &&
+             DemandResIdx == RHS.DemandResIdx;
+    }
+    bool operator!=(const CandPolicy &RHS) const {
+      return !(*this == RHS);
+    }
   };
 
   /// Status of an instruction's critical resource consumption.
@@ -807,8 +816,8 @@ public:
     // The reason for this candidate.
     CandReason Reason;
 
-    // Set of reasons that apply to multiple candidates.
-    uint32_t RepeatReasonSet;
+    // Whether this candidate should be scheduled at top/bottom.
+    bool AtTop;
 
     // Register pressure values for the best candidate.
     RegPressureDelta RPDelta;
@@ -816,8 +825,17 @@ public:
     // Critical resource consumption of the best candidate.
     SchedResourceDelta ResDelta;
 
-    SchedCandidate(const CandPolicy &policy)
-      : Policy(policy), SU(nullptr), Reason(NoCand), RepeatReasonSet(0) {}
+    SchedCandidate() { reset(CandPolicy()); }
+    SchedCandidate(const CandPolicy &Policy) { reset(Policy); }
+
+    void reset(const CandPolicy &NewPolicy) {
+      Policy = NewPolicy;
+      SU = nullptr;
+      Reason = NoCand;
+      AtTop = false;
+      RPDelta = RegPressureDelta();
+      ResDelta = SchedResourceDelta();
+    }
 
     bool isValid() const { return SU; }
 
@@ -826,12 +844,10 @@ public:
       assert(Best.Reason != NoCand && "uninitialized Sched candidate");
       SU = Best.SU;
       Reason = Best.Reason;
+      AtTop = Best.AtTop;
       RPDelta = Best.RPDelta;
       ResDelta = Best.ResDelta;
     }
-
-    bool isRepeat(CandReason R) { return RepeatReasonSet & (1 << R); }
-    void setRepeat(CandReason R) { RepeatReasonSet |= (1 << R); }
 
     void initResourceDelta(const ScheduleDAGMI *DAG,
                            const TargetSchedModel *SchedModel);
@@ -858,13 +874,6 @@ protected:
 /// GenericScheduler shrinks the unscheduled zone using heuristics to balance
 /// the schedule.
 class GenericScheduler : public GenericSchedulerBase {
-  ScheduleDAGMILive *DAG;
-
-  // State of the top and bottom scheduled instruction boundaries.
-  SchedBoundary Top;
-  SchedBoundary Bot;
-
-  MachineSchedPolicy RegionPolicy;
 public:
   GenericScheduler(const MachineSchedContext *C):
     GenericSchedulerBase(C), DAG(nullptr), Top(SchedBoundary::TopQID, "TopQ"),
@@ -892,26 +901,45 @@ public:
 
   void releaseTopNode(SUnit *SU) override {
     Top.releaseTopNode(SU);
+    TopCand.SU = nullptr;
   }
 
   void releaseBottomNode(SUnit *SU) override {
     Bot.releaseBottomNode(SU);
+    BotCand.SU = nullptr;
   }
 
   void registerRoots() override;
 
 protected:
+  ScheduleDAGMILive *DAG;
+
+  MachineSchedPolicy RegionPolicy;
+
+  // State of the top and bottom scheduled instruction boundaries.
+  SchedBoundary Top;
+  SchedBoundary Bot;
+
+  /// Candidate last picked from Top boundary.
+  SchedCandidate TopCand;
+  /// Candidate last picked from Bot boundary.
+  SchedCandidate BotCand;
+
+
   void checkAcyclicLatency();
+
+  void initCandidate(SchedCandidate &Cand, SUnit *SU, bool AtTop,
+                     const RegPressureTracker &RPTracker,
+                     RegPressureTracker &TempTracker);
 
   void tryCandidate(SchedCandidate &Cand,
                     SchedCandidate &TryCand,
-                    SchedBoundary &Zone,
-                    const RegPressureTracker &RPTracker,
-                    RegPressureTracker &TempTracker);
+                    SchedBoundary *Zone);
 
   SUnit *pickNodeBidirectional(bool &IsTopNode);
 
   void pickNodeFromQueue(SchedBoundary &Zone,
+                         const CandPolicy &ZonePolicy,
                          const RegPressureTracker &RPTracker,
                          SchedCandidate &Candidate);
 
@@ -968,6 +996,22 @@ protected:
 
   void pickNodeFromQueue(SchedCandidate &Cand);
 };
+
+std::unique_ptr<ScheduleDAGMutation>
+createLoadClusterDAGMutation(const TargetInstrInfo *TII,
+                             const TargetRegisterInfo *TRI);
+
+std::unique_ptr<ScheduleDAGMutation>
+createStoreClusterDAGMutation(const TargetInstrInfo *TII,
+                              const TargetRegisterInfo *TRI);
+
+std::unique_ptr<ScheduleDAGMutation>
+createMacroFusionDAGMutation(const TargetInstrInfo *TII,
+                             const TargetRegisterInfo *TRI);
+
+std::unique_ptr<ScheduleDAGMutation>
+createCopyConstrainDAGMutation(const TargetInstrInfo *TII,
+                               const TargetRegisterInfo *TRI);
 
 } // namespace llvm
 

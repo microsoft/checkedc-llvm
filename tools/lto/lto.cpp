@@ -14,13 +14,14 @@
 
 #include "llvm-c/lto.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/LTO/LTOCodeGenerator.h"
-#include "llvm/LTO/LTOModule.h"
-#include "llvm/LTO/ThinLTOCodeGenerator.h"
+#include "llvm/LTO/legacy/LTOCodeGenerator.h"
+#include "llvm/LTO/legacy/LTOModule.h"
+#include "llvm/LTO/legacy/ThinLTOCodeGenerator.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/TargetSelect.h"
@@ -101,7 +102,8 @@ static void lto_initialize() {
     InitializeAllAsmPrinters();
     InitializeAllDisassemblers();
 
-    LTOContext = &getGlobalContext();
+    static LLVMContext Context;
+    LTOContext = &Context;
     LTOContext->setDiagnosticHandler(diagnosticHandler, nullptr, true);
     initialized = true;
   }
@@ -118,15 +120,17 @@ static void handleLibLTODiagnostic(lto_codegen_diagnostic_severity_t Severity,
 // libLTO API semantics, which require that the code generator owns the object
 // file.
 struct LibLTOCodeGenerator : LTOCodeGenerator {
-  LibLTOCodeGenerator() : LTOCodeGenerator(*LTOContext) {
-    setDiagnosticHandler(handleLibLTODiagnostic, nullptr); }
+  LibLTOCodeGenerator() : LTOCodeGenerator(*LTOContext) { init(); }
   LibLTOCodeGenerator(std::unique_ptr<LLVMContext> Context)
       : LTOCodeGenerator(*Context), OwnedContext(std::move(Context)) {
-    setDiagnosticHandler(handleLibLTODiagnostic, nullptr); }
+    init();
+  }
 
   // Reset the module first in case MergedModule is created in OwnedContext.
   // Module must be destructed before its context gets destructed.
   ~LibLTOCodeGenerator() { resetMergedModule(); }
+
+  void init() { setDiagnosticHandler(handleLibLTODiagnostic, nullptr); }
 
   std::unique_ptr<MemoryBuffer> NativeObjectFile;
   std::unique_ptr<LLVMContext> OwnedContext;
@@ -175,6 +179,14 @@ bool lto_module_is_object_file_for_target(const char* path,
   if (!Buffer)
     return false;
   return LTOModule::isBitcodeForTarget(Buffer->get(), target_triplet_prefix);
+}
+
+bool lto_module_has_objc_category(const void *mem, size_t length) {
+  std::unique_ptr<MemoryBuffer> Buffer(LTOModule::makeBuffer(mem, length));
+  if (!Buffer)
+    return false;
+  LLVMContext Ctx;
+  return llvm::isBitcodeContainingObjCCategory(*Buffer, Ctx);
 }
 
 bool lto_module_is_object_file_in_memory(const void* mem, size_t length) {
@@ -354,7 +366,7 @@ bool lto_codegen_set_pic_model(lto_code_gen_t cg, lto_codegen_model model) {
     unwrap(cg)->setCodePICModel(Reloc::DynamicNoPIC);
     return false;
   case LTO_CODEGEN_PIC_MODEL_DEFAULT:
-    unwrap(cg)->setCodePICModel(Reloc::Default);
+    unwrap(cg)->setCodePICModel(None);
     return false;
   }
   sLastErrorString = "Unknown PIC model";
@@ -549,7 +561,7 @@ lto_bool_t thinlto_codegen_set_pic_model(thinlto_code_gen_t cg,
     unwrap(cg)->setCodePICModel(Reloc::DynamicNoPIC);
     return false;
   case LTO_CODEGEN_PIC_MODEL_DEFAULT:
-    unwrap(cg)->setCodePICModel(Reloc::Default);
+    unwrap(cg)->setCodePICModel(None);
     return false;
   }
   sLastErrorString = "Unknown PIC model";

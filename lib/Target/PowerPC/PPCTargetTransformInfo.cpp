@@ -131,12 +131,12 @@ int PPCTTIImpl::getIntImmCost(unsigned Opcode, unsigned Idx, const APInt &Imm,
     return TTI::TCC_Free;
   case Instruction::And:
     RunFree = true; // (for the rotate-and-mask instructions)
-    // Fallthrough...
+    LLVM_FALLTHROUGH;
   case Instruction::Add:
   case Instruction::Or:
   case Instruction::Xor:
     ShiftedFree = true;
-    // Fallthrough...
+    LLVM_FALLTHROUGH;
   case Instruction::Sub:
   case Instruction::Mul:
   case Instruction::Shl:
@@ -147,7 +147,8 @@ int PPCTTIImpl::getIntImmCost(unsigned Opcode, unsigned Idx, const APInt &Imm,
   case Instruction::ICmp:
     UnsignedFree = true;
     ImmIdx = 1;
-    // Fallthrough... (zero comparisons can use record-form instructions)
+    // Zero comparisons can use record-form instructions.
+    LLVM_FALLTHROUGH;
   case Instruction::Select:
     ZeroFree = true;
     break;
@@ -267,8 +268,9 @@ unsigned PPCTTIImpl::getMaxInterleaveFactor(unsigned VF) {
 
   // For P7 and P8, floating-point instructions have a 6-cycle latency and
   // there are two execution units, so unroll by 12x for latency hiding.
-  if (Directive == PPC::DIR_PWR7 ||
-      Directive == PPC::DIR_PWR8)
+  // FIXME: the same for P9 as previous gen until POWER9 scheduling is ready
+  if (Directive == PPC::DIR_PWR7 || Directive == PPC::DIR_PWR8 ||
+      Directive == PPC::DIR_PWR9)
     return 12;
 
   // For most things, modern systems have two execution units (and

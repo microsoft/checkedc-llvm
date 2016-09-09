@@ -15,45 +15,38 @@
 #include "FuzzerInternal.h"
 
 namespace fuzzer {
-static const size_t kMapSizeInBits        = 65371; // Prime.
-static const size_t kMapSizeInBitsAligned = 65536;  // 2^16
-static const size_t kBitsInWord =(sizeof(uintptr_t) * 8);
-static const size_t kMapSizeInWords = kMapSizeInBitsAligned / kBitsInWord;
-static uintptr_t CurrentMap[kMapSizeInWords] __attribute__((aligned(512)));
-static uintptr_t CombinedMap[kMapSizeInWords] __attribute__((aligned(512)));
-static size_t CombinedMapSize;
-static thread_local uintptr_t Prev;
 
-void PcMapResetCurrent() {
-  if (Prev) {
-    Prev = 0;
-    memset(CurrentMap, 0, sizeof(CurrentMap));
-  }
+static size_t PreviouslyComputedPCHash;
+static ValueBitMap CurrentPCMap;
+
+// Merges CurrentPCMap into M, returns the number of new bits.
+size_t PCMapMergeFromCurrent(ValueBitMap &M) {
+  if (!PreviouslyComputedPCHash)
+    return 0;
+  PreviouslyComputedPCHash = 0;
+  return M.MergeFrom(CurrentPCMap);
 }
-
-void PcMapMergeCurrentToCombined() {
-  if (!Prev) return;
-  uintptr_t Res = 0;
-  for (size_t i = 0; i < kMapSizeInWords; i++)
-    Res += __builtin_popcountl(CombinedMap[i] |= CurrentMap[i]);
-  CombinedMapSize = Res;
-}
-
-size_t PcMapCombinedSize() { return CombinedMapSize; }
 
 static void HandlePC(uint32_t PC) {
   // We take 12 bits of PC and mix it with the previous PCs.
-  uintptr_t Next = (Prev << 5) ^ (PC & 4095);
-  uintptr_t Idx = Next % kMapSizeInBits;
-  uintptr_t WordIdx = Idx / kBitsInWord;
-  uintptr_t BitIdx  = Idx % kBitsInWord;
-  CurrentMap[WordIdx] |= 1UL << BitIdx;
-  Prev = Next;
+  uintptr_t Next = (PreviouslyComputedPCHash << 5) ^ (PC & 4095);
+  CurrentPCMap.AddValue(Next);
+  PreviouslyComputedPCHash = Next;
 }
 
 } // namespace fuzzer
 
-extern "C" void __sanitizer_cov_trace_pc() {
+extern "C" {
+__attribute__((visibility("default")))
+void __sanitizer_cov_trace_pc() {
   fuzzer::HandlePC(static_cast<uint32_t>(
       reinterpret_cast<uintptr_t>(__builtin_return_address(0))));
+}
+
+__attribute__((visibility("default")))
+void __sanitizer_cov_trace_pc_indir(int *) {
+  // Stub to allow linking with code built with
+  // -fsanitize=indirect-calls,trace-pc.
+  // This isn't used currently.
+}
 }

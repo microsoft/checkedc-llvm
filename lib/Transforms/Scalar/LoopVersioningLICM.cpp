@@ -121,28 +121,6 @@ static MDNode *createStringMetadata(Loop *TheLoop, StringRef Name, unsigned V) {
   return MDNode::get(Context, MDs);
 }
 
-/// \brief Check string metadata in loop, if it exist return true,
-/// else return false.
-bool llvm::checkStringMetadataIntoLoop(Loop *TheLoop, StringRef Name) {
-  MDNode *LoopID = TheLoop->getLoopID();
-  // Return false if LoopID is false.
-  if (!LoopID)
-    return false;
-  // Iterate over LoopID operands and look for MDString Metadata
-  for (unsigned i = 1, e = LoopID->getNumOperands(); i < e; ++i) {
-    MDNode *MD = dyn_cast<MDNode>(LoopID->getOperand(i));
-    if (!MD)
-      continue;
-    MDString *S = dyn_cast<MDString>(MD->getOperand(0));
-    if (!S)
-      continue;
-    // Return true if MDString holds expected MetaData.
-    if (Name.equals(S->getString()))
-      return true;
-  }
-  return false;
-}
-
 /// \brief Set input string into loop metadata by keeping other values intact.
 void llvm::addStringMetadataToLoop(Loop *TheLoop, const char *MDString,
                                    unsigned V) {
@@ -176,7 +154,7 @@ struct LoopVersioningLICM : public LoopPass {
     AU.addRequired<AAResultsWrapperPass>();
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequiredID(LCSSAID);
-    AU.addRequired<LoopAccessAnalysis>();
+    AU.addRequired<LoopAccessLegacyAnalysis>();
     AU.addRequired<LoopInfoWrapperPass>();
     AU.addRequiredID(LoopSimplifyID);
     AU.addRequired<ScalarEvolutionWrapperPass>();
@@ -184,10 +162,6 @@ struct LoopVersioningLICM : public LoopPass {
     AU.addPreserved<AAResultsWrapperPass>();
     AU.addPreserved<GlobalsAAWrapperPass>();
   }
-
-  using llvm::Pass::doFinalization;
-
-  bool doFinalization() override { return false; }
 
   LoopVersioningLICM()
       : LoopPass(ID), AA(nullptr), SE(nullptr), LI(nullptr), DT(nullptr),
@@ -204,7 +178,7 @@ struct LoopVersioningLICM : public LoopPass {
   LoopInfo *LI;              // Current LoopInfo
   DominatorTree *DT;         // Dominator Tree for the current Loop.
   TargetLibraryInfo *TLI;    // TargetLibraryInfo for constant folding.
-  LoopAccessAnalysis *LAA;   // Current LoopAccessAnalysis
+  LoopAccessLegacyAnalysis *LAA;   // Current LoopAccessAnalysis
   const LoopAccessInfo *LAI; // Current Loop's LoopAccessInfo
 
   bool Changed;            // Set to true when we change anything.
@@ -223,31 +197,11 @@ struct LoopVersioningLICM : public LoopPass {
   bool legalLoopStructure();
   bool legalLoopInstructions();
   bool legalLoopMemoryAccesses();
-  void collectStridedAccess(Value *LoadOrStoreInst);
   bool isLoopAlreadyVisited();
   void setNoAliasToLoop(Loop *);
   bool instructionSafeForVersioning(Instruction *);
   const char *getPassName() const override { return "Loop Versioning"; }
 };
-}
-
-/// \brief Collects stride access from a given value.
-void LoopVersioningLICM::collectStridedAccess(Value *MemAccess) {
-  Value *Ptr = nullptr;
-  if (LoadInst *LI = dyn_cast<LoadInst>(MemAccess))
-    Ptr = LI->getPointerOperand();
-  else if (StoreInst *SI = dyn_cast<StoreInst>(MemAccess))
-    Ptr = SI->getPointerOperand();
-  else
-    return;
-
-  Value *Stride = getStrideFromPointer(Ptr, SE, CurLoop);
-  if (!Stride)
-    return;
-
-  DEBUG(dbgs() << "Found a strided access that we can version");
-  DEBUG(dbgs() << "  Ptr: " << *Ptr << " Stride: " << *Stride << "\n");
-  Strides[Ptr] = Stride;
 }
 
 /// \brief Check loop structure and confirms it's good for LoopVersioningLICM.
@@ -391,7 +345,6 @@ bool LoopVersioningLICM::instructionSafeForVersioning(Instruction *I) {
       return false;
     }
     LoadAndStoreCounter++;
-    collectStridedAccess(Ld);
     Value *Ptr = Ld->getPointerOperand();
     // Check loop invariant.
     if (SE->isLoopInvariant(SE->getSCEV(Ptr), CurLoop))
@@ -406,7 +359,6 @@ bool LoopVersioningLICM::instructionSafeForVersioning(Instruction *I) {
       return false;
     }
     LoadAndStoreCounter++;
-    collectStridedAccess(St);
     Value *Ptr = St->getPointerOperand();
     // Check loop invariant.
     if (SE->isLoopInvariant(SE->getSCEV(Ptr), CurLoop))
@@ -433,7 +385,7 @@ bool LoopVersioningLICM::legalLoopInstructions() {
         return false;
     }
   // Get LoopAccessInfo from current loop.
-  LAI = &LAA->getInfo(CurLoop, Strides);
+  LAI = &LAA->getInfo(CurLoop);
   // Check LoopAccessInfo for need of runtime check.
   if (LAI->getRuntimePointerChecking()->getChecks().empty()) {
     DEBUG(dbgs() << "    LAA: Runtime check not found !!\n");
@@ -474,7 +426,7 @@ bool LoopVersioningLICM::legalLoopInstructions() {
 /// else false.
 bool LoopVersioningLICM::isLoopAlreadyVisited() {
   // Check LoopVersioningLICM metadata into loop
-  if (checkStringMetadataIntoLoop(CurLoop, LICMVersioningMetaData)) {
+  if (findStringMetadataForLoop(CurLoop, LICMVersioningMetaData)) {
     return true;
   }
   return false;
@@ -553,7 +505,7 @@ void LoopVersioningLICM::setNoAliasToLoop(Loop *VerLoop) {
 }
 
 bool LoopVersioningLICM::runOnLoop(Loop *L, LPPassManager &LPM) {
-  if (skipOptnoneFunction(L))
+  if (skipLoop(L))
     return false;
   Changed = false;
   // Get Analysis information.
@@ -562,7 +514,7 @@ bool LoopVersioningLICM::runOnLoop(Loop *L, LPPassManager &LPM) {
   SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
   DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
-  LAA = &getAnalysis<LoopAccessAnalysis>();
+  LAA = &getAnalysis<LoopAccessLegacyAnalysis>();
   LAI = nullptr;
   // Set Current Loop
   CurLoop = L;
@@ -607,8 +559,8 @@ INITIALIZE_PASS_BEGIN(LoopVersioningLICM, "loop-versioning-licm",
 INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(GlobalsAAWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(LCSSA)
-INITIALIZE_PASS_DEPENDENCY(LoopAccessAnalysis)
+INITIALIZE_PASS_DEPENDENCY(LCSSAWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(LoopAccessLegacyAnalysis)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)

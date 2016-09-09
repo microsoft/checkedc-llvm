@@ -22,6 +22,8 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
@@ -39,6 +41,7 @@
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/IR/ValueMap.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/BranchProbability.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -210,7 +213,7 @@ FunctionPass *llvm::createCodeGenPreparePass(const TargetMachine *TM) {
 }
 
 bool CodeGenPrepare::runOnFunction(Function &F) {
-  if (skipOptnoneFunction(F))
+  if (skipFunction(F))
     return false;
 
   DL = &F.getParent()->getDataLayout();
@@ -755,6 +758,11 @@ static bool SinkCast(CastInst *CI) {
 
     // Preincrement use iterator so we don't invalidate it.
     ++UI;
+
+    // The first insertion point of a block containing an EH pad is after the
+    // pad.  If the pad is the user, we cannot sink the cast past the pad.
+    if (User->isEHPad())
+      continue;
 
     // If the block selected to receive the cast is an EH pad that does not
     // allow non-PHI instructions before the terminator, we can't sink the
@@ -1683,7 +1691,7 @@ static bool despeculateCountZeros(IntrinsicInst *CountZeros,
   // Only handle legal scalar cases. Anything else requires too much work.
   Type *Ty = CountZeros->getType();
   unsigned SizeInBits = Ty->getPrimitiveSizeInBits();
-  if (Ty->isVectorTy() || SizeInBits > DL->getLargestLegalIntTypeSize())
+  if (Ty->isVectorTy() || SizeInBits > DL->getLargestLegalIntTypeSizeInBits())
     return false;
 
   // The intrinsic will be sunk behind a compare against zero and branch.
@@ -1773,7 +1781,7 @@ bool CodeGenPrepare::optimizeCallInst(CallInst *CI, bool& ModifiedDT) {
       // forbidden.
       GlobalVariable *GV;
       if ((GV = dyn_cast<GlobalVariable>(Val)) && GV->canIncreaseAlignment() &&
-          GV->getAlignment() < PrefAlign &&
+          GV->getPointerAlignment(*DL) < PrefAlign &&
           DL->getTypeAllocSize(GV->getValueType()) >=
               MinSize + Offset2)
         GV->setAlignment(PrefAlign);
@@ -1807,10 +1815,18 @@ bool CodeGenPrepare::optimizeCallInst(CallInst *CI, bool& ModifiedDT) {
     default: break;
     case Intrinsic::objectsize: {
       // Lower all uses of llvm.objectsize.*
-      bool Min = (cast<ConstantInt>(II->getArgOperand(1))->getZExtValue() == 1);
+      uint64_t Size;
       Type *ReturnTy = CI->getType();
-      Constant *RetVal = ConstantInt::get(ReturnTy, Min ? 0 : -1ULL);
-
+      Constant *RetVal = nullptr;
+      ConstantInt *Op1 = cast<ConstantInt>(II->getArgOperand(1));
+      ObjSizeMode Mode = Op1->isZero() ? ObjSizeMode::Max : ObjSizeMode::Min;
+      if (getObjectSize(II->getArgOperand(0),
+                        Size, *DL, TLInfo, false, Mode)) {
+        RetVal = ConstantInt::get(ReturnTy, Size);
+      } else {
+        RetVal = ConstantInt::get(ReturnTy,
+                                  Mode == ObjSizeMode::Min ? 0 : -1ULL);
+      }
       // Substituting this can cause recursive simplifications, which can
       // invalidate our iterator.  Use a WeakVH to hold onto it in case this
       // happens.
@@ -1948,13 +1964,13 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB) {
   if (!TLI)
     return false;
 
-  ReturnInst *RI = dyn_cast<ReturnInst>(BB->getTerminator());
-  if (!RI)
+  ReturnInst *RetI = dyn_cast<ReturnInst>(BB->getTerminator());
+  if (!RetI)
     return false;
 
   PHINode *PN = nullptr;
   BitCastInst *BCI = nullptr;
-  Value *V = RI->getReturnValue();
+  Value *V = RetI->getReturnValue();
   if (V) {
     BCI = dyn_cast<BitCastInst>(V);
     if (BCI)
@@ -1968,14 +1984,6 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB) {
   if (PN && PN->getParent() != BB)
     return false;
 
-  // It's not safe to eliminate the sign / zero extension of the return value.
-  // See llvm::isInTailCallPosition().
-  const Function *F = BB->getParent();
-  AttributeSet CallerAttrs = F->getAttributes();
-  if (CallerAttrs.hasAttribute(AttributeSet::ReturnIndex, Attribute::ZExt) ||
-      CallerAttrs.hasAttribute(AttributeSet::ReturnIndex, Attribute::SExt))
-    return false;
-
   // Make sure there are no instructions between the PHI and return, or that the
   // return is the first instruction in the block.
   if (PN) {
@@ -1984,24 +1992,26 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB) {
     if (&*BI == BCI)
       // Also skip over the bitcast.
       ++BI;
-    if (&*BI != RI)
+    if (&*BI != RetI)
       return false;
   } else {
     BasicBlock::iterator BI = BB->begin();
     while (isa<DbgInfoIntrinsic>(BI)) ++BI;
-    if (&*BI != RI)
+    if (&*BI != RetI)
       return false;
   }
 
   /// Only dup the ReturnInst if the CallInst is likely to be emitted as a tail
   /// call.
+  const Function *F = BB->getParent();
   SmallVector<CallInst*, 4> TailCalls;
   if (PN) {
     for (unsigned I = 0, E = PN->getNumIncomingValues(); I != E; ++I) {
       CallInst *CI = dyn_cast<CallInst>(PN->getIncomingValue(I));
       // Make sure the phi value is indeed produced by the tail call.
       if (CI && CI->hasOneUse() && CI->getParent() == PN->getIncomingBlock(I) &&
-          TLI->mayBeEmittedAsTailCall(CI))
+          TLI->mayBeEmittedAsTailCall(CI) &&
+          attributesPermitTailCall(F, CI, RetI, *TLI))
         TailCalls.push_back(CI);
     }
   } else {
@@ -2018,7 +2028,8 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB) {
         continue;
 
       CallInst *CI = dyn_cast<CallInst>(&*RI);
-      if (CI && CI->use_empty() && TLI->mayBeEmittedAsTailCall(CI))
+      if (CI && CI->use_empty() && TLI->mayBeEmittedAsTailCall(CI) &&
+          attributesPermitTailCall(F, CI, RetI, *TLI))
         TailCalls.push_back(CI);
     }
   }
@@ -2045,7 +2056,7 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB) {
       continue;
 
     // Duplicate the return into CallBB.
-    (void)FoldReturnIntoUncondBranch(RI, BB, CallBB);
+    (void)FoldReturnIntoUncondBranch(RetI, BB, CallBB);
     ModifiedDT = Changed = true;
     ++NumRetsDup;
   }
@@ -3650,8 +3661,7 @@ isProfitableToFoldIntoAddressingMode(Instruction *I, ExtAddrMode &AMBefore,
     TPT.rollback(LastKnownGood);
 
     // If the match didn't cover I, then it won't be shared by it.
-    if (std::find(MatchedAddrModeInsts.begin(), MatchedAddrModeInsts.end(),
-                  I) == MatchedAddrModeInsts.end())
+    if (!is_contained(MatchedAddrModeInsts, I))
       return false;
 
     MatchedAddrModeInsts.clear();
@@ -4529,11 +4539,27 @@ static bool sinkSelectOperand(const TargetTransformInfo *TTI, Value *V) {
 
 /// Returns true if a SelectInst should be turned into an explicit branch.
 static bool isFormingBranchFromSelectProfitable(const TargetTransformInfo *TTI,
+                                                const TargetLowering *TLI,
                                                 SelectInst *SI) {
+  // If even a predictable select is cheap, then a branch can't be cheaper.
+  if (!TLI->isPredictableSelectExpensive())
+    return false;
+
   // FIXME: This should use the same heuristics as IfConversion to determine
-  // whether a select is better represented as a branch.  This requires that
-  // branch probability metadata is preserved for the select, which is not the
-  // case currently.
+  // whether a select is better represented as a branch.
+
+  // If metadata tells us that the select condition is obviously predictable,
+  // then we want to replace the select with a branch.
+  uint64_t TrueWeight, FalseWeight;
+  if (SI->extractProfMetadata(TrueWeight, FalseWeight)) {
+    uint64_t Max = std::max(TrueWeight, FalseWeight);
+    uint64_t Sum = TrueWeight + FalseWeight;
+    if (Sum != 0) {
+      auto Probability = BranchProbability::getBranchProbability(Max, Sum);
+      if (Probability > TLI->getPredictableBranchThreshold())
+        return true;
+    }
+  }
 
   CmpInst *Cmp = dyn_cast<CmpInst>(SI->getCondition());
 
@@ -4559,7 +4585,8 @@ bool CodeGenPrepare::optimizeSelectInst(SelectInst *SI) {
   bool VectorCond = !SI->getCondition()->getType()->isIntegerTy(1);
 
   // Can we convert the 'select' to CF ?
-  if (DisableSelectToBranch || OptSize || !TLI || VectorCond)
+  if (DisableSelectToBranch || OptSize || !TLI || VectorCond ||
+      SI->getMetadata(LLVMContext::MD_unpredictable))
     return false;
 
   TargetLowering::SelectSupportKind SelectKind;
@@ -4570,14 +4597,9 @@ bool CodeGenPrepare::optimizeSelectInst(SelectInst *SI) {
   else
     SelectKind = TargetLowering::ScalarValSelect;
 
-  // Do we have efficient codegen support for this kind of 'selects' ?
-  if (TLI->isSelectSupported(SelectKind)) {
-    // We have efficient codegen support for the select instruction.
-    // Check if it is profitable to keep this 'select'.
-    if (!TLI->isPredictableSelectExpensive() ||
-        !isFormingBranchFromSelectProfitable(TTI, SI))
-      return false;
-  }
+  if (TLI->isSelectSupported(SelectKind) &&
+      !isFormingBranchFromSelectProfitable(TTI, TLI, SI))
+    return false;
 
   ModifiedDT = true;
 
@@ -4650,15 +4672,20 @@ bool CodeGenPrepare::optimizeSelectInst(SelectInst *SI) {
   // of the condition, it means that side of the branch goes to the end block
   // directly and the path originates from the start block from the point of
   // view of the new PHI.
+  BasicBlock *TT, *FT;
   if (TrueBlock == nullptr) {
-    BranchInst::Create(EndBlock, FalseBlock, SI->getCondition(), SI);
+    TT = EndBlock;
+    FT = FalseBlock;
     TrueBlock = StartBlock;
   } else if (FalseBlock == nullptr) {
-    BranchInst::Create(TrueBlock, EndBlock, SI->getCondition(), SI);
+    TT = TrueBlock;
+    FT = EndBlock;
     FalseBlock = StartBlock;
   } else {
-    BranchInst::Create(TrueBlock, FalseBlock, SI->getCondition(), SI);
+    TT = TrueBlock;
+    FT = FalseBlock;
   }
+  IRBuilder<>(SI).CreateCondBr(SI->getCondition(), TT, FT, SI);
 
   // The select itself is replaced with a PHI Node.
   PHINode *PN = PHINode::Create(SI->getType(), 2, "", &EndBlock->front());
@@ -5278,7 +5305,7 @@ static bool makeBitReverse(Instruction &I, const DataLayout &DL,
     return false;
 
   SmallVector<Instruction*, 4> Insts;
-  if (!recognizeBitReverseOrBSwapIdiom(&I, false, true, Insts))
+  if (!recognizeBSwapOrBitReverseIdiom(&I, false, true, Insts))
     return false;
   Instruction *LastInst = Insts.back();
   I.replaceAllUsesWith(LastInst);
@@ -5368,43 +5395,38 @@ bool CodeGenPrepare::sinkAndCmp(Function &F) {
   if (!TLI || !TLI->isMaskAndBranchFoldingLegal())
     return false;
   bool MadeChange = false;
-  for (Function::iterator I = F.begin(), E = F.end(); I != E; ) {
-    BasicBlock *BB = &*I++;
-
+  for (BasicBlock &BB : F) {
     // Does this BB end with the following?
     //   %andVal = and %val, #single-bit-set
     //   %icmpVal = icmp %andResult, 0
     //   br i1 %cmpVal label %dest1, label %dest2"
-    BranchInst *Brcc = dyn_cast<BranchInst>(BB->getTerminator());
+    BranchInst *Brcc = dyn_cast<BranchInst>(BB.getTerminator());
     if (!Brcc || !Brcc->isConditional())
       continue;
     ICmpInst *Cmp = dyn_cast<ICmpInst>(Brcc->getOperand(0));
-    if (!Cmp || Cmp->getParent() != BB)
+    if (!Cmp || Cmp->getParent() != &BB)
       continue;
     ConstantInt *Zero = dyn_cast<ConstantInt>(Cmp->getOperand(1));
     if (!Zero || !Zero->isZero())
       continue;
     Instruction *And = dyn_cast<Instruction>(Cmp->getOperand(0));
-    if (!And || And->getOpcode() != Instruction::And || And->getParent() != BB)
+    if (!And || And->getOpcode() != Instruction::And || And->getParent() != &BB)
       continue;
     ConstantInt* Mask = dyn_cast<ConstantInt>(And->getOperand(1));
     if (!Mask || !Mask->getUniqueInteger().isPowerOf2())
       continue;
-    DEBUG(dbgs() << "found and; icmp ?,0; brcc\n"); DEBUG(BB->dump());
+    DEBUG(dbgs() << "found and; icmp ?,0; brcc\n"); DEBUG(BB.dump());
 
     // Push the "and; icmp" for any users that are conditional branches.
     // Since there can only be one branch use per BB, we don't need to keep
     // track of which BBs we insert into.
-    for (Value::use_iterator UI = Cmp->use_begin(), E = Cmp->use_end();
-         UI != E; ) {
-      Use &TheUse = *UI;
+    for (Use &TheUse : Cmp->uses()) {
       // Find brcc use.
-      BranchInst *BrccUser = dyn_cast<BranchInst>(*UI);
-      ++UI;
+      BranchInst *BrccUser = dyn_cast<BranchInst>(TheUse);
       if (!BrccUser || !BrccUser->isConditional())
         continue;
       BasicBlock *UserBB = BrccUser->getParent();
-      if (UserBB == BB) continue;
+      if (UserBB == &BB) continue;
       DEBUG(dbgs() << "found Brcc use\n");
 
       // Sink the "and; icmp" to use.
@@ -5421,29 +5443,6 @@ bool CodeGenPrepare::sinkAndCmp(Function &F) {
     }
   }
   return MadeChange;
-}
-
-/// \brief Retrieve the probabilities of a conditional branch. Returns true on
-/// success, or returns false if no or invalid metadata was found.
-static bool extractBranchMetadata(BranchInst *BI,
-                                  uint64_t &ProbTrue, uint64_t &ProbFalse) {
-  assert(BI->isConditional() &&
-         "Looking for probabilities on unconditional branch?");
-  auto *ProfileData = BI->getMetadata(LLVMContext::MD_prof);
-  if (!ProfileData || ProfileData->getNumOperands() != 3)
-    return false;
-
-  const auto *CITrue =
-      mdconst::dyn_extract<ConstantInt>(ProfileData->getOperand(1));
-  const auto *CIFalse =
-      mdconst::dyn_extract<ConstantInt>(ProfileData->getOperand(2));
-  if (!CITrue || !CIFalse)
-    return false;
-
-  ProbTrue = CITrue->getValue().getZExtValue();
-  ProbFalse = CIFalse->getValue().getZExtValue();
-
-  return true;
 }
 
 /// \brief Scale down both weights to fit into uint32_t.
@@ -5591,7 +5590,7 @@ bool CodeGenPrepare::splitBranchCondition(Function &F) {
       // Another choice is to assume TrueProb for BB1 equals to TrueProb for
       // TmpBB, but the math is more complicated.
       uint64_t TrueWeight, FalseWeight;
-      if (extractBranchMetadata(Br1, TrueWeight, FalseWeight)) {
+      if (Br1->extractProfMetadata(TrueWeight, FalseWeight)) {
         uint64_t NewTrueWeight = TrueWeight;
         uint64_t NewFalseWeight = TrueWeight + 2 * FalseWeight;
         scaleWeights(NewTrueWeight, NewFalseWeight);
@@ -5624,7 +5623,7 @@ bool CodeGenPrepare::splitBranchCondition(Function &F) {
       // assumes that
       //   FalseProb for BB1 == TrueProb for BB1 * FalseProb for TmpBB.
       uint64_t TrueWeight, FalseWeight;
-      if (extractBranchMetadata(Br1, TrueWeight, FalseWeight)) {
+      if (Br1->extractProfMetadata(TrueWeight, FalseWeight)) {
         uint64_t NewTrueWeight = 2 * TrueWeight + FalseWeight;
         uint64_t NewFalseWeight = FalseWeight;
         scaleWeights(NewTrueWeight, NewFalseWeight);

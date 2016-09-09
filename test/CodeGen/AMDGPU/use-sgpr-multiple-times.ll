@@ -1,4 +1,4 @@
-; RUN: llc -march=amdgcn -mcpu=SI -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=GCN %s
+; RUN: llc -march=amdgcn -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=GCN %s
 ; RUN: llc -march=amdgcn -mcpu=tonga -verify-machineinstrs < %s | FileCheck -check-prefix=VI -check-prefix=GCN %s
 
 declare float @llvm.fma.f32(float, float, float) #1
@@ -42,16 +42,17 @@ define void @test_sgpr_use_twice_ternary_op_a_a_b(float addrspace(1)* %out, floa
 }
 
 ; GCN-LABEL: {{^}}test_use_s_v_s:
-; GCN: buffer_load_dword [[VA0:v[0-9]+]]
-; GCN-NOT: v_mov_b32
-; GCN: buffer_load_dword [[VA1:v[0-9]+]]
-
 ; GCN-DAG: s_load_dword [[SA:s[0-9]+]], s{{\[[0-9]+:[0-9]+\]}}, {{0xb|0x2c}}
 ; GCN-DAG: s_load_dword [[SB:s[0-9]+]], s{{\[[0-9]+:[0-9]+\]}}, {{0xc|0x30}}
+; SI: buffer_load_dword [[VA0:v[0-9]+]]
+; SI: buffer_load_dword [[VA1:v[0-9]+]]
 
 ; GCN-NOT: v_mov_b32
 ; GCN: v_mov_b32_e32 [[VB:v[0-9]+]], [[SB]]
 ; GCN-NOT: v_mov_b32
+
+; VI: buffer_load_dword [[VA0:v[0-9]+]]
+; VI: buffer_load_dword [[VA1:v[0-9]+]]
 
 ; GCN-DAG: v_fma_f32 [[RESULT0:v[0-9]+]], [[VA0]], [[SA]], [[VB]]
 ; GCN-DAG: v_fma_f32 [[RESULT1:v[0-9]+]], [[VA1]], [[SA]], [[VB]]
@@ -107,7 +108,7 @@ define void @test_sgpr_use_twice_ternary_op_a_a_imm(float addrspace(1)* %out, fl
 
 ; GCN-LABEL: {{^}}test_sgpr_use_twice_ternary_op_a_imm_a:
 ; GCN: s_load_dword [[SGPR:s[0-9]+]]
-; GCN: v_fma_f32 [[RESULT:v[0-9]+]], 2.0, [[SGPR]], [[SGPR]]
+; GCN: v_fma_f32 [[RESULT:v[0-9]+]], [[SGPR]], 2.0, [[SGPR]]
 ; GCN: buffer_store_dword [[RESULT]]
 define void @test_sgpr_use_twice_ternary_op_a_imm_a(float addrspace(1)* %out, float %a) #0 {
   %fma = call float @llvm.fma.f32(float %a, float 2.0, float %a) #1
@@ -227,7 +228,7 @@ define void @test_literal_use_twice_ternary_op_s_k_k_x2(float addrspace(1)* %out
 ; GCN-DAG: v_mov_b32_e32 [[VK0:v[0-9]+]], 0x44800000
 ; GCN-DAG: v_mov_b32_e32 [[VS1:v[0-9]+]], [[SGPR1]]
 
-; GCN-DAG: v_fma_f32 [[RESULT0:v[0-9]+]], [[SGPR0]], [[VS1]], [[VK0]]
+; GCN-DAG: v_fma_f32 [[RESULT0:v[0-9]+]], [[VS1]], [[SGPR0]], [[VK0]]
 ; GCN-DAG: v_mov_b32_e32 [[VK1:v[0-9]+]], 0x45800000
 ; GCN-DAG: v_fma_f32 [[RESULT1:v[0-9]+]], [[SGPR0]], [[VS1]], [[VK1]]
 
@@ -254,7 +255,7 @@ define void @test_s0_s1_k_f32(float addrspace(1)* %out, float %a, float %b) #0 {
 
 ; Same zero component is re-used for half of each immediate.
 ; GCN: v_mov_b32_e32 v[[VK1_SUB1:[0-9]+]], 0x40b00000
-; GCN: v_fma_f64 [[RESULT1:v\[[0-9]+:[0-9]+\]]], v{{\[}}[[VS1_SUB0]]:[[VS1_SUB1]]{{\]}}, [[SGPR0]], v{{\[}}[[VZERO]]:[[VK1_SUB1]]{{\]}}
+; GCN: v_fma_f64 [[RESULT1:v\[[0-9]+:[0-9]+\]]], [[SGPR0]], v{{\[}}[[VS1_SUB0]]:[[VS1_SUB1]]{{\]}}, v{{\[}}[[VZERO]]:[[VK1_SUB1]]{{\]}}
 
 ; GCN: buffer_store_dwordx2 [[RESULT0]]
 ; GCN: buffer_store_dwordx2 [[RESULT1]]

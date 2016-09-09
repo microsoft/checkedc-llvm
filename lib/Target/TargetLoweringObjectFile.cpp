@@ -43,7 +43,7 @@ using namespace llvm;
 void TargetLoweringObjectFile::Initialize(MCContext &ctx,
                                           const TargetMachine &TM) {
   Ctx = &ctx;
-  InitMCObjectFileInfo(TM.getTargetTriple(), TM.getRelocationModel(),
+  InitMCObjectFileInfo(TM.getTargetTriple(), TM.isPositionIndependent(),
                        TM.getCodeModel(), *Ctx);
 }
 
@@ -173,7 +173,7 @@ SectionKind TargetLoweringObjectFile::getKindForGlobal(const GlobalValue *GV,
       // If the global is required to have a unique address, it can't be put
       // into a mergable section: just drop it into the general read-only
       // section instead.
-      if (!GVar->hasUnnamedAddr())
+      if (!GVar->hasGlobalUnnamedAddr())
         return SectionKind::getReadOnly();
 
       // If initializer is a null-terminated string, put it in a "cstring"
@@ -208,12 +208,13 @@ SectionKind TargetLoweringObjectFile::getKindForGlobal(const GlobalValue *GV,
       }
 
     } else {
-      // In static relocation model, the linker will resolve all addresses, so
-      // the relocation entries will actually be constants by the time the app
-      // starts up.  However, we can't put this into a mergable section, because
-      // the linker doesn't take relocations into consideration when it tries to
-      // merge entries in the section.
-      if (ReloModel == Reloc::Static)
+      // In static, ROPI and RWPI relocation models, the linker will resolve
+      // all addresses, so the relocation entries will actually be constants by
+      // the time the app starts up.  However, we can't put this into a
+      // mergable section, because the linker doesn't take relocations into
+      // consideration when it tries to merge entries in the section.
+      if (ReloModel == Reloc::Static || ReloModel == Reloc::ROPI ||
+          ReloModel == Reloc::RWPI || ReloModel == Reloc::ROPI_RWPI)
         return SectionKind::getReadOnly();
 
       // Otherwise, the dynamic linker needs to fix it up, put it in the
@@ -222,16 +223,7 @@ SectionKind TargetLoweringObjectFile::getKindForGlobal(const GlobalValue *GV,
     }
   }
 
-  // Okay, this isn't a constant.  If the initializer for the global is going
-  // to require a runtime relocation by the dynamic linker, put it into a more
-  // specific section to improve startup time of the app.  This coalesces these
-  // globals together onto fewer pages, improving the locality of the dynamic
-  // linker.
-  if (ReloModel == Reloc::Static)
-    return SectionKind::getData();
-
-  if (C->needsRelocation())
-    return SectionKind::getData();
+  // Okay, this isn't a constant.
   return SectionKind::getData();
 }
 

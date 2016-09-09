@@ -3,9 +3,8 @@
 
 ; STOP: -loop-reduce
 ; STOP: Loop Strength Reduction
-; STOP-NEXT: Machine Function Analysis
 ; STOP-NEXT: MIR Printing Pass
 
-; START: -machine-branch-prob -gc-lowering
+; START: -machine-branch-prob -pre-isel-intrinsic-lowering
 ; START: FunctionPass Manager
 ; START-NEXT: Lower Garbage Collection Instructions

@@ -124,10 +124,10 @@ bool Value::isUsedInBasicBlock(const BasicBlock *BB) const {
   const_user_iterator UI = user_begin(), UE = user_end();
   for (; BI != BE && UI != UE; ++BI, ++UI) {
     // Scan basic block: Check if this Value is used by the instruction at BI.
-    if (std::find(BI->op_begin(), BI->op_end(), this) != BI->op_end())
+    if (is_contained(BI->operands(), this))
       return true;
     // Scan use list: Check if the use at UI is in BB.
-    const Instruction *User = dyn_cast<Instruction>(*UI);
+    const auto *User = dyn_cast<Instruction>(*UI);
     if (User && User->getParent() == BB)
       return true;
   }
@@ -449,7 +449,7 @@ static Value *stripPointerCastsAndOffsets(Value *V) {
       case PSK_InBoundsConstantIndices:
         if (!GEP->hasAllConstantIndices())
           return V;
-        // fallthrough
+        LLVM_FALLTHROUGH;
       case PSK_InBounds:
         if (!GEP->isInBounds())
           return V;
@@ -464,6 +464,12 @@ static Value *stripPointerCastsAndOffsets(Value *V) {
         return V;
       V = GA->getAliasee();
     } else {
+      if (auto CS = CallSite(V))
+        if (Value *RV = CS.getReturnedArgOperand()) {
+          V = RV;
+          continue;
+        }
+
       return V;
     }
     assert(V->getType()->isPointerTy() && "Unexpected operand type!");
@@ -513,6 +519,12 @@ Value *Value::stripAndAccumulateInBoundsConstantOffsets(const DataLayout &DL,
     } else if (GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
       V = GA->getAliasee();
     } else {
+      if (auto CS = CallSite(V))
+        if (Value *RV = CS.getReturnedArgOperand()) {
+          V = RV;
+          continue;
+        }
+
       return V;
     }
     assert(V->getType()->isPointerTy() && "Unexpected operand type!");
@@ -523,6 +535,57 @@ Value *Value::stripAndAccumulateInBoundsConstantOffsets(const DataLayout &DL,
 
 Value *Value::stripInBoundsOffsets() {
   return stripPointerCastsAndOffsets<PSK_InBounds>(this);
+}
+
+unsigned Value::getPointerDereferenceableBytes(const DataLayout &DL,
+                                               bool &CanBeNull) const {
+  assert(getType()->isPointerTy() && "must be pointer");
+
+  unsigned DerefBytes = 0;
+  CanBeNull = false;
+  if (const Argument *A = dyn_cast<Argument>(this)) {
+    DerefBytes = A->getDereferenceableBytes();
+    if (DerefBytes == 0 && A->hasByValAttr() && A->getType()->isSized()) {
+      DerefBytes = DL.getTypeStoreSize(A->getType());
+      CanBeNull = false;
+    }
+    if (DerefBytes == 0) {
+      DerefBytes = A->getDereferenceableOrNullBytes();
+      CanBeNull = true;
+    }
+  } else if (auto CS = ImmutableCallSite(this)) {
+    DerefBytes = CS.getDereferenceableBytes(0);
+    if (DerefBytes == 0) {
+      DerefBytes = CS.getDereferenceableOrNullBytes(0);
+      CanBeNull = true;
+    }
+  } else if (const LoadInst *LI = dyn_cast<LoadInst>(this)) {
+    if (MDNode *MD = LI->getMetadata(LLVMContext::MD_dereferenceable)) {
+      ConstantInt *CI = mdconst::extract<ConstantInt>(MD->getOperand(0));
+      DerefBytes = CI->getLimitedValue();
+    }
+    if (DerefBytes == 0) {
+      if (MDNode *MD =
+              LI->getMetadata(LLVMContext::MD_dereferenceable_or_null)) {
+        ConstantInt *CI = mdconst::extract<ConstantInt>(MD->getOperand(0));
+        DerefBytes = CI->getLimitedValue();
+      }
+      CanBeNull = true;
+    }
+  } else if (auto *AI = dyn_cast<AllocaInst>(this)) {
+    if (AI->getAllocatedType()->isSized()) {
+      DerefBytes = DL.getTypeStoreSize(AI->getAllocatedType());
+      CanBeNull = false;
+    }
+  } else if (auto *GV = dyn_cast<GlobalVariable>(this)) {
+    if (GV->getValueType()->isSized() && !GV->hasExternalWeakLinkage()) {
+      // TODO: Don't outright reject hasExternalWeakLinkage but set the
+      // CanBeNull flag.
+      DerefBytes = DL.getTypeStoreSize(GV->getValueType());
+      CanBeNull = false;
+    }
+  }
+  return DerefBytes;
 }
 
 unsigned Value::getPointerAlignment(const DataLayout &DL) const {
@@ -554,9 +617,14 @@ unsigned Value::getPointerAlignment(const DataLayout &DL) const {
       if (EltTy->isSized())
         Align = DL.getABITypeAlignment(EltTy);
     }
-  } else if (const AllocaInst *AI = dyn_cast<AllocaInst>(this))
+  } else if (const AllocaInst *AI = dyn_cast<AllocaInst>(this)) {
     Align = AI->getAlignment();
-  else if (auto CS = ImmutableCallSite(this))
+    if (Align == 0) {
+      Type *AllocatedType = AI->getAllocatedType();
+      if (AllocatedType->isSized())
+        Align = DL.getPrefTypeAlignment(AllocatedType);
+    }
+  } else if (auto CS = ImmutableCallSite(this))
     Align = CS.getAttributes().getParamAlignment(AttributeSet::ReturnIndex);
   else if (const LoadInst *LI = dyn_cast<LoadInst>(this))
     if (MDNode *MD = LI->getMetadata(LLVMContext::MD_align)) {
@@ -780,7 +848,7 @@ void ValueHandleBase::ValueIsRAUWd(Value *Old, Value *New) {
       // virtual (or inline) interface to handle this though, so instead we make
       // the TrackingVH accessors guarantee that a client never sees this value.
 
-      // FALLTHROUGH
+      LLVM_FALLTHROUGH;
     case Weak:
       // Weak goes to the new value, which will unlink it from Old's list.
       Entry->operator=(New);

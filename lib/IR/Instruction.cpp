@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
@@ -92,8 +93,37 @@ void Instruction::insertAfter(Instruction *InsertPos) {
 /// Unlink this instruction from its current basic block and insert it into the
 /// basic block that MovePos lives in, right before MovePos.
 void Instruction::moveBefore(Instruction *MovePos) {
-  MovePos->getParent()->getInstList().splice(
-      MovePos->getIterator(), getParent()->getInstList(), getIterator());
+  moveBefore(*MovePos->getParent(), MovePos->getIterator());
+}
+
+void Instruction::moveBefore(BasicBlock &BB,
+                             SymbolTableList<Instruction>::iterator I) {
+  assert(I == BB.end() || I->getParent() == &BB);
+  BB.getInstList().splice(I, getParent()->getInstList(), getIterator());
+}
+
+void Instruction::setHasNoUnsignedWrap(bool b) {
+  cast<OverflowingBinaryOperator>(this)->setHasNoUnsignedWrap(b);
+}
+
+void Instruction::setHasNoSignedWrap(bool b) {
+  cast<OverflowingBinaryOperator>(this)->setHasNoSignedWrap(b);
+}
+
+void Instruction::setIsExact(bool b) {
+  cast<PossiblyExactOperator>(this)->setIsExact(b);
+}
+
+bool Instruction::hasNoUnsignedWrap() const {
+  return cast<OverflowingBinaryOperator>(this)->hasNoUnsignedWrap();
+}
+
+bool Instruction::hasNoSignedWrap() const {
+  return cast<OverflowingBinaryOperator>(this)->hasNoSignedWrap();
+}
+
+bool Instruction::isExact() const {
+  return cast<PossiblyExactOperator>(this)->isExact();
 }
 
 /// Set or clear the unsafe-algebra flag on this instruction, which must be an
@@ -190,6 +220,54 @@ void Instruction::copyFastMathFlags(const Instruction *I) {
   copyFastMathFlags(I->getFastMathFlags());
 }
 
+void Instruction::copyIRFlags(const Value *V) {
+  // Copy the wrapping flags.
+  if (auto *OB = dyn_cast<OverflowingBinaryOperator>(V)) {
+    if (isa<OverflowingBinaryOperator>(this)) {
+      setHasNoSignedWrap(OB->hasNoSignedWrap());
+      setHasNoUnsignedWrap(OB->hasNoUnsignedWrap());
+    }
+  }
+
+  // Copy the exact flag.
+  if (auto *PE = dyn_cast<PossiblyExactOperator>(V))
+    if (isa<PossiblyExactOperator>(this))
+      setIsExact(PE->isExact());
+
+  // Copy the fast-math flags.
+  if (auto *FP = dyn_cast<FPMathOperator>(V))
+    if (isa<FPMathOperator>(this))
+      copyFastMathFlags(FP->getFastMathFlags());
+
+  if (auto *SrcGEP = dyn_cast<GetElementPtrInst>(V))
+    if (auto *DestGEP = dyn_cast<GetElementPtrInst>(this))
+      DestGEP->setIsInBounds(SrcGEP->isInBounds() | DestGEP->isInBounds());
+}
+
+void Instruction::andIRFlags(const Value *V) {
+  if (auto *OB = dyn_cast<OverflowingBinaryOperator>(V)) {
+    if (isa<OverflowingBinaryOperator>(this)) {
+      setHasNoSignedWrap(hasNoSignedWrap() & OB->hasNoSignedWrap());
+      setHasNoUnsignedWrap(hasNoUnsignedWrap() & OB->hasNoUnsignedWrap());
+    }
+  }
+
+  if (auto *PE = dyn_cast<PossiblyExactOperator>(V))
+    if (isa<PossiblyExactOperator>(this))
+      setIsExact(isExact() & PE->isExact());
+
+  if (auto *FP = dyn_cast<FPMathOperator>(V)) {
+    if (isa<FPMathOperator>(this)) {
+      FastMathFlags FM = getFastMathFlags();
+      FM &= FP->getFastMathFlags();
+      copyFastMathFlags(FM);
+    }
+  }
+
+  if (auto *SrcGEP = dyn_cast<GetElementPtrInst>(V))
+    if (auto *DestGEP = dyn_cast<GetElementPtrInst>(this))
+      DestGEP->setIsInBounds(SrcGEP->isInBounds() & DestGEP->isInBounds());
+}
 
 const char *Instruction::getOpcodeName(unsigned OpCode) {
   switch (OpCode) {
@@ -271,13 +349,18 @@ const char *Instruction::getOpcodeName(unsigned OpCode) {
   }
 }
 
-/// Return true if both instructions have the same special state
-/// This must be kept in sync with lib/Transforms/IPO/MergeFunctions.cpp.
+/// Return true if both instructions have the same special state This must be
+/// kept in sync with FunctionComparator::cmpOperations in
+/// lib/Transforms/IPO/MergeFunctions.cpp.
 static bool haveSameSpecialState(const Instruction *I1, const Instruction *I2,
                                  bool IgnoreAlignment = false) {
   assert(I1->getOpcode() == I2->getOpcode() &&
          "Can not compare special state of different instructions");
 
+  if (const AllocaInst *AI = dyn_cast<AllocaInst>(I1))
+    return AI->getAllocatedType() == cast<AllocaInst>(I2)->getAllocatedType() &&
+           (AI->getAlignment() == cast<AllocaInst>(I2)->getAlignment() ||
+            IgnoreAlignment);
   if (const LoadInst *LI = dyn_cast<LoadInst>(I1))
     return LI->isVolatile() == cast<LoadInst>(I2)->isVolatile() &&
            (LI->getAlignment() == cast<LoadInst>(I2)->getAlignment() ||
@@ -360,8 +443,7 @@ bool Instruction::isIdenticalToWhenDefined(const Instruction *I) const {
   return haveSameSpecialState(this, I);
 }
 
-// isSameOperationAs
-// This should be kept in sync with isEquivalentOperation in
+// Keep this in sync with FunctionComparator::cmpOperations in
 // lib/Transforms/IPO/MergeFunctions.cpp.
 bool Instruction::isSameOperationAs(const Instruction *I,
                                     unsigned flags) const {
@@ -477,12 +559,6 @@ bool Instruction::mayThrow() const {
   return isa<ResumeInst>(this);
 }
 
-bool Instruction::mayReturn() const {
-  if (const CallInst *CI = dyn_cast<CallInst>(this))
-    return !CI->doesNotReturn();
-  return true;
-}
-
 /// isAssociative - Return true if the instruction is associative:
 ///
 ///   Associative operators satisfy:  x op (y op z) === (x op y) op z
@@ -557,6 +633,47 @@ Instruction *Instruction::cloneImpl() const {
   llvm_unreachable("Subclass of Instruction failed to implement cloneImpl");
 }
 
+void Instruction::swapProfMetadata() {
+  MDNode *ProfileData = getMetadata(LLVMContext::MD_prof);
+  if (!ProfileData || ProfileData->getNumOperands() != 3 ||
+      !isa<MDString>(ProfileData->getOperand(0)))
+    return;
+
+  MDString *MDName = cast<MDString>(ProfileData->getOperand(0));
+  if (MDName->getString() != "branch_weights")
+    return;
+
+  // The first operand is the name. Fetch them backwards and build a new one.
+  Metadata *Ops[] = {ProfileData->getOperand(0), ProfileData->getOperand(2),
+                     ProfileData->getOperand(1)};
+  setMetadata(LLVMContext::MD_prof,
+              MDNode::get(ProfileData->getContext(), Ops));
+}
+
+/// Copy meta data from \p SrcInst to this instruction. If WL is empty, all
+/// data will be copied, otherwise only ones specified in WL will be copied.
+void Instruction::copyMetadata(const Instruction &SrcInst,
+                               ArrayRef<unsigned> WL) {
+  if (!SrcInst.hasMetadata())
+    return;
+
+  DenseSet<unsigned> WLS;
+  for (unsigned M : WL)
+    WLS.insert(M);
+
+  // Otherwise, enumerate and copy over metadata from the old instruction to the
+  // new one.
+  SmallVector<std::pair<unsigned, MDNode *>, 4> TheMDs;
+  SrcInst.getAllMetadataOtherThanDebugLoc(TheMDs);
+  for (const auto &MD : TheMDs) {
+    if (WL.empty() || WLS.count(MD.first))
+      setMetadata(MD.first, MD.second);
+  }
+  if (WL.empty() || WLS.count(LLVMContext::MD_dbg))
+    setDebugLoc(SrcInst.getDebugLoc());
+  return;
+}
+
 Instruction *Instruction::clone() const {
   Instruction *New = nullptr;
   switch (getOpcode()) {
@@ -571,16 +688,6 @@ Instruction *Instruction::clone() const {
   }
 
   New->SubclassOptionalData = SubclassOptionalData;
-  if (!hasMetadata())
-    return New;
-
-  // Otherwise, enumerate and copy over metadata from the old instruction to the
-  // new one.
-  SmallVector<std::pair<unsigned, MDNode *>, 4> TheMDs;
-  getAllMetadataOtherThanDebugLoc(TheMDs);
-  for (const auto &MD : TheMDs)
-    New->setMetadata(MD.first, MD.second);
-
-  New->setDebugLoc(getDebugLoc());
+  New->copyMetadata(*this);
   return New;
 }

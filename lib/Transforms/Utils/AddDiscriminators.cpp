@@ -52,7 +52,9 @@
 // http://wiki.dwarfstd.org/index.php?title=Path_Discriminators
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Transforms/Utils/AddDiscriminators.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DIBuilder.h"
@@ -72,20 +74,22 @@ using namespace llvm;
 #define DEBUG_TYPE "add-discriminators"
 
 namespace {
-struct AddDiscriminators : public FunctionPass {
+// The legacy pass of AddDiscriminators.
+struct AddDiscriminatorsLegacyPass : public FunctionPass {
   static char ID; // Pass identification, replacement for typeid
-  AddDiscriminators() : FunctionPass(ID) {
-    initializeAddDiscriminatorsPass(*PassRegistry::getPassRegistry());
+  AddDiscriminatorsLegacyPass() : FunctionPass(ID) {
+    initializeAddDiscriminatorsLegacyPassPass(*PassRegistry::getPassRegistry());
   }
 
   bool runOnFunction(Function &F) override;
 };
+
 } // end anonymous namespace
 
-char AddDiscriminators::ID = 0;
-INITIALIZE_PASS_BEGIN(AddDiscriminators, "add-discriminators",
+char AddDiscriminatorsLegacyPass::ID = 0;
+INITIALIZE_PASS_BEGIN(AddDiscriminatorsLegacyPass, "add-discriminators",
                       "Add DWARF path discriminators", false, false)
-INITIALIZE_PASS_END(AddDiscriminators, "add-discriminators",
+INITIALIZE_PASS_END(AddDiscriminatorsLegacyPass, "add-discriminators",
                     "Add DWARF path discriminators", false, false)
 
 // Command line option to disable discriminator generation even in the
@@ -95,8 +99,9 @@ static cl::opt<bool> NoDiscriminators(
     "no-discriminators", cl::init(false),
     cl::desc("Disable generation of discriminator information."));
 
+// Create the legacy AddDiscriminatorsPass.
 FunctionPass *llvm::createAddDiscriminatorsPass() {
-  return new AddDiscriminators();
+  return new AddDiscriminatorsLegacyPass();
 }
 
 /// \brief Assign DWARF discriminators.
@@ -150,7 +155,7 @@ FunctionPass *llvm::createAddDiscriminatorsPass() {
 /// lexical block for I2 and all the instruction in B2 that share the same
 /// file and line location as I2. This new lexical block will have a
 /// different discriminator number than I1.
-bool AddDiscriminators::runOnFunction(Function &F) {
+static bool addDiscriminators(Function &F) {
   // If the function has debug information, but the user has disabled
   // discriminators, do nothing.
   // Simlarly, if the function has no debug info, do nothing.
@@ -169,6 +174,7 @@ bool AddDiscriminators::runOnFunction(Function &F) {
   typedef DenseMap<const BasicBlock *, Metadata *> BBScopeMap;
   typedef DenseMap<Location, BBScopeMap> LocationBBMap;
   typedef DenseMap<Location, unsigned> LocationDiscriminatorMap;
+  typedef DenseSet<Location> LocationSet;
 
   LocationBBMap LBM;
   LocationDiscriminatorMap LDM;
@@ -178,7 +184,7 @@ bool AddDiscriminators::runOnFunction(Function &F) {
   // discriminator for this instruction.
   for (BasicBlock &B : F) {
     for (auto &I : B.getInstList()) {
-      if (isa<DbgInfoIntrinsic>(&I))
+      if (isa<IntrinsicInst>(&I))
         continue;
       const DILocation *DIL = I.getDebugLoc();
       if (!DIL)
@@ -213,34 +219,40 @@ bool AddDiscriminators::runOnFunction(Function &F) {
   // Sample base profile needs to distinguish different function calls within
   // a same source line for correct profile annotation.
   for (BasicBlock &B : F) {
-    const DILocation *FirstDIL = nullptr;
+    LocationSet CallLocations;
     for (auto &I : B.getInstList()) {
       CallInst *Current = dyn_cast<CallInst>(&I);
-      if (!Current || isa<DbgInfoIntrinsic>(&I))
+      if (!Current || isa<IntrinsicInst>(&I))
         continue;
 
       DILocation *CurrentDIL = Current->getDebugLoc();
-      if (FirstDIL) {
-        if (CurrentDIL && CurrentDIL->getLine() == FirstDIL->getLine() &&
-            CurrentDIL->getFilename() == FirstDIL->getFilename()) {
-          auto *Scope = FirstDIL->getScope();
-          auto *File = Builder.createFile(FirstDIL->getFilename(),
-                                          Scope->getDirectory());
-          Location L =
-              std::make_pair(FirstDIL->getFilename(), FirstDIL->getLine());
-          auto *NewScope =
-              Builder.createLexicalBlockFile(Scope, File, ++LDM[L]);
-          Current->setDebugLoc(DILocation::get(
-              Ctx, CurrentDIL->getLine(), CurrentDIL->getColumn(), NewScope,
-              CurrentDIL->getInlinedAt()));
-          Changed = true;
-        } else {
-          FirstDIL = CurrentDIL;
-        }
-      } else {
-        FirstDIL = CurrentDIL;
+      if (!CurrentDIL)
+        continue;
+      Location L =
+          std::make_pair(CurrentDIL->getFilename(), CurrentDIL->getLine());
+      if (!CallLocations.insert(L).second) {
+        auto *Scope = CurrentDIL->getScope();
+        auto *File = Builder.createFile(CurrentDIL->getFilename(),
+                                        Scope->getDirectory());
+        auto *NewScope = Builder.createLexicalBlockFile(Scope, File, ++LDM[L]);
+        Current->setDebugLoc(DILocation::get(Ctx, CurrentDIL->getLine(),
+                                             CurrentDIL->getColumn(), NewScope,
+                                             CurrentDIL->getInlinedAt()));
+        Changed = true;
       }
     }
   }
   return Changed;
+}
+
+bool AddDiscriminatorsLegacyPass::runOnFunction(Function &F) {
+  return addDiscriminators(F);
+}
+PreservedAnalyses AddDiscriminatorsPass::run(Function &F,
+                                             FunctionAnalysisManager &AM) {
+  if (!addDiscriminators(F))
+    return PreservedAnalyses::all();
+
+  // FIXME: should be all()
+  return PreservedAnalyses::none();
 }

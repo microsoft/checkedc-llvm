@@ -26,6 +26,8 @@ def HasCrypto        : Predicate<"Subtarget->hasCrypto()">,
                                  AssemblerPredicate<"FeatureCrypto", "crypto">;
 def HasCRC           : Predicate<"Subtarget->hasCRC()">,
                                  AssemblerPredicate<"FeatureCRC", "crc">;
+def HasRAS           : Predicate<"Subtarget->hasRAS()">,
+                                 AssemblerPredicate<"FeatureRAS", "ras">;
 def HasPerfMon       : Predicate<"Subtarget->hasPerfMon()">;
 def HasFullFP16      : Predicate<"Subtarget->hasFullFP16()">,
                                  AssemblerPredicate<"FeatureFullFP16", "fullfp16">;
@@ -34,7 +36,8 @@ def HasSPE           : Predicate<"Subtarget->hasSPE()">,
 
 def IsLE             : Predicate<"Subtarget->isLittleEndian()">;
 def IsBE             : Predicate<"!Subtarget->isLittleEndian()">;
-def IsCyclone        : Predicate<"Subtarget->isCyclone()">;
+def UseAlternateSExtLoadCVTF32
+    : Predicate<"Subtarget->useAlternateSExtLoadCVTF32Pattern()">;
 
 //===----------------------------------------------------------------------===//
 // AArch64-specific DAG Nodes.
@@ -283,6 +286,9 @@ def SDT_AArch64mull : SDTypeProfile<1, 2, [SDTCisInt<0>, SDTCisInt<1>,
 def AArch64smull    : SDNode<"AArch64ISD::SMULL", SDT_AArch64mull>;
 def AArch64umull    : SDNode<"AArch64ISD::UMULL", SDT_AArch64mull>;
 
+def AArch64frecpe   : SDNode<"AArch64ISD::FRECPE", SDTFPUnaryOp>;
+def AArch64frsqrte  : SDNode<"AArch64ISD::FRSQRTE", SDTFPUnaryOp>;
+
 def AArch64saddv    : SDNode<"AArch64ISD::SADDV", SDT_AArch64UnaryVec>;
 def AArch64uaddv    : SDNode<"AArch64ISD::UADDV", SDT_AArch64UnaryVec>;
 def AArch64sminv    : SDNode<"AArch64ISD::SMINV", SDT_AArch64UnaryVec>;
@@ -295,9 +301,6 @@ def AArch64umaxv    : SDNode<"AArch64ISD::UMAXV", SDT_AArch64UnaryVec>;
 //===----------------------------------------------------------------------===//
 
 // AArch64 Instruction Predicate Definitions.
-//
-def HasZCZ    : Predicate<"Subtarget->hasZeroCycleZeroing()">;
-def NoZCZ     : Predicate<"!Subtarget->hasZeroCycleZeroing()">;
 def IsDarwin  : Predicate<"Subtarget->isTargetDarwin()">;
 def IsNotDarwin: Predicate<"!Subtarget->isTargetDarwin()">;
 def ForCodeSize   : Predicate<"ForCodeSize">;
@@ -386,6 +389,7 @@ def : InstAlias<"wfe",  (HINT 0b010)>;
 def : InstAlias<"wfi",  (HINT 0b011)>;
 def : InstAlias<"sev",  (HINT 0b100)>;
 def : InstAlias<"sevl", (HINT 0b101)>;
+def : InstAlias<"esb",  (HINT 0b10000)>, Requires<[HasRAS]>;
 
 // v8.2a Statistical Profiling extension
 def : InstAlias<"psb $op",  (HINT psbhint_op:$op)>, Requires<[HasSPE]>;
@@ -1129,6 +1133,14 @@ def : Pat<(AArch64csel (i32 0), (i32 1), (i32 imm:$cc), NZCV),
           (CSINCWr WZR, WZR, (i32 imm:$cc))>;
 def : Pat<(AArch64csel (i64 0), (i64 1), (i32 imm:$cc), NZCV),
           (CSINCXr XZR, XZR, (i32 imm:$cc))>;
+def : Pat<(AArch64csel GPR32:$tval, (i32 1), (i32 imm:$cc), NZCV),
+          (CSINCWr GPR32:$tval, WZR, (i32 imm:$cc))>;
+def : Pat<(AArch64csel GPR64:$tval, (i64 1), (i32 imm:$cc), NZCV),
+          (CSINCXr GPR64:$tval, XZR, (i32 imm:$cc))>;
+def : Pat<(AArch64csel (i32 1), GPR32:$fval, (i32 imm:$cc), NZCV),
+          (CSINCWr GPR32:$fval, WZR, (i32 (inv_cond_XFORM imm:$cc)))>;
+def : Pat<(AArch64csel (i64 1), GPR64:$fval, (i32 imm:$cc), NZCV),
+          (CSINCXr GPR64:$fval, XZR, (i32 (inv_cond_XFORM imm:$cc)))>;
 def : Pat<(AArch64csel (i32 0), (i32 -1), (i32 imm:$cc), NZCV),
           (CSINVWr WZR, WZR, (i32 imm:$cc))>;
 def : Pat<(AArch64csel (i64 0), (i64 -1), (i32 imm:$cc), NZCV),
@@ -2541,8 +2553,8 @@ defm : FPToIntegerPats<fp_to_sint, ffloor, "FCVTMS">;
 defm : FPToIntegerPats<fp_to_uint, ffloor, "FCVTMU">;
 defm : FPToIntegerPats<fp_to_sint, ftrunc, "FCVTZS">;
 defm : FPToIntegerPats<fp_to_uint, ftrunc, "FCVTZU">;
-defm : FPToIntegerPats<fp_to_sint, frnd,   "FCVTAS">;
-defm : FPToIntegerPats<fp_to_uint, frnd,   "FCVTAU">;
+defm : FPToIntegerPats<fp_to_sint, fround, "FCVTAS">;
+defm : FPToIntegerPats<fp_to_uint, fround, "FCVTAU">;
 
 //===----------------------------------------------------------------------===//
 // Scaled integer to floating point conversion instructions.
@@ -2558,15 +2570,11 @@ defm UCVTF : IntegerToFP<1, "ucvtf", uint_to_fp>;
 defm FMOV : UnscaledConversion<"fmov">;
 
 // Add pseudo ops for FMOV 0 so we can mark them as isReMaterializable
-let isReMaterializable = 1, isCodeGenOnly = 1 in {
+let isReMaterializable = 1, isCodeGenOnly = 1, isAsCheapAsAMove = 1 in {
 def FMOVS0 : Pseudo<(outs FPR32:$Rd), (ins), [(set f32:$Rd, (fpimm0))]>,
-    PseudoInstExpansion<(FMOVWSr FPR32:$Rd, WZR)>,
-    Sched<[WriteF]>,
-    Requires<[NoZCZ]>;
+    Sched<[WriteF]>;
 def FMOVD0 : Pseudo<(outs FPR64:$Rd), (ins), [(set f64:$Rd, (fpimm0))]>,
-    PseudoInstExpansion<(FMOVXDr FPR64:$Rd, XZR)>,
-    Sched<[WriteF]>,
-    Requires<[NoZCZ]>;
+    Sched<[WriteF]>;
 }
 
 //===----------------------------------------------------------------------===//
@@ -2582,7 +2590,7 @@ defm FCVT : FPConversion<"fcvt">;
 defm FABS   : SingleOperandFPData<0b0001, "fabs", fabs>;
 defm FMOV   : SingleOperandFPData<0b0000, "fmov">;
 defm FNEG   : SingleOperandFPData<0b0010, "fneg", fneg>;
-defm FRINTA : SingleOperandFPData<0b1100, "frinta", frnd>;
+defm FRINTA : SingleOperandFPData<0b1100, "frinta", fround>;
 defm FRINTI : SingleOperandFPData<0b1111, "frinti", fnearbyint>;
 defm FRINTM : SingleOperandFPData<0b1010, "frintm", ffloor>;
 defm FRINTN : SingleOperandFPData<0b1000, "frintn", int_aarch64_neon_frintn>;
@@ -2788,13 +2796,13 @@ def : Pat<(v4f32 (int_aarch64_neon_vcvthf2fp (v4i16 V64:$Rn))),
 def : Pat<(v4f32 (int_aarch64_neon_vcvthf2fp (extract_subvector (v8i16 V128:$Rn),
                                                               (i64 4)))),
           (FCVTLv8i16 V128:$Rn)>;
-def : Pat<(v2f64 (fextend (v2f32 V64:$Rn))), (FCVTLv2i32 V64:$Rn)>;
-def : Pat<(v2f64 (fextend (v2f32 (extract_subvector (v4f32 V128:$Rn),
+def : Pat<(v2f64 (fpextend (v2f32 V64:$Rn))), (FCVTLv2i32 V64:$Rn)>;
+def : Pat<(v2f64 (fpextend (v2f32 (extract_subvector (v4f32 V128:$Rn),
                                                     (i64 2))))),
           (FCVTLv4i32 V128:$Rn)>;
 
-def : Pat<(v4f32 (fextend (v4f16 V64:$Rn))), (FCVTLv4i16 V64:$Rn)>;
-def : Pat<(v4f32 (fextend (v4f16 (extract_subvector (v8f16 V128:$Rn),
+def : Pat<(v4f32 (fpextend (v4f16 V64:$Rn))), (FCVTLv4i16 V64:$Rn)>;
+def : Pat<(v4f32 (fpextend (v4f16 (extract_subvector (v8f16 V128:$Rn),
                                                     (i64 4))))),
           (FCVTLv8i16 V128:$Rn)>;
 
@@ -2808,9 +2816,9 @@ def : Pat<(v4i16 (int_aarch64_neon_vcvtfp2hf (v4f32 V128:$Rn))),
 def : Pat<(concat_vectors V64:$Rd,
                           (v4i16 (int_aarch64_neon_vcvtfp2hf (v4f32 V128:$Rn)))),
           (FCVTNv8i16 (INSERT_SUBREG (IMPLICIT_DEF), V64:$Rd, dsub), V128:$Rn)>;
-def : Pat<(v2f32 (fround (v2f64 V128:$Rn))), (FCVTNv2i32 V128:$Rn)>;
-def : Pat<(v4f16 (fround (v4f32 V128:$Rn))), (FCVTNv4i16 V128:$Rn)>;
-def : Pat<(concat_vectors V64:$Rd, (v2f32 (fround (v2f64 V128:$Rn)))),
+def : Pat<(v2f32 (fpround (v2f64 V128:$Rn))), (FCVTNv2i32 V128:$Rn)>;
+def : Pat<(v4f16 (fpround (v4f32 V128:$Rn))), (FCVTNv4i16 V128:$Rn)>;
+def : Pat<(concat_vectors V64:$Rd, (v2f32 (fpround (v2f64 V128:$Rn)))),
           (FCVTNv4i32 (INSERT_SUBREG (IMPLICIT_DEF), V64:$Rd, dsub), V128:$Rn)>;
 defm FCVTPS : SIMDTwoVectorFPToInt<0,1,0b11010, "fcvtps",int_aarch64_neon_fcvtps>;
 defm FCVTPU : SIMDTwoVectorFPToInt<1,1,0b11010, "fcvtpu",int_aarch64_neon_fcvtpu>;
@@ -2833,7 +2841,7 @@ def : Pat<(v2i64 (int_aarch64_neon_fcvtzu v2f64:$Rn)), (FCVTZUv2f64 $Rn)>;
 
 defm FNEG   : SIMDTwoVectorFP<1, 1, 0b01111, "fneg", fneg>;
 defm FRECPE : SIMDTwoVectorFP<0, 1, 0b11101, "frecpe", int_aarch64_neon_frecpe>;
-defm FRINTA : SIMDTwoVectorFP<1, 0, 0b11000, "frinta", frnd>;
+defm FRINTA : SIMDTwoVectorFP<1, 0, 0b11000, "frinta", fround>;
 defm FRINTI : SIMDTwoVectorFP<1, 1, 0b11001, "frinti", fnearbyint>;
 defm FRINTM : SIMDTwoVectorFP<0, 0, 0b11001, "frintm", ffloor>;
 defm FRINTN : SIMDTwoVectorFP<0, 0, 0b11000, "frintn", int_aarch64_neon_frintn>;
@@ -3401,6 +3409,19 @@ def : Pat<(f64 (int_aarch64_neon_frecpe (f64 FPR64:$Rn))),
 def : Pat<(v1f64 (int_aarch64_neon_frecpe (v1f64 FPR64:$Rn))),
           (FRECPEv1i64 FPR64:$Rn)>;
 
+def : Pat<(f32 (AArch64frecpe (f32 FPR32:$Rn))),
+          (FRECPEv1i32 FPR32:$Rn)>;
+def : Pat<(v2f32 (AArch64frecpe (v2f32 V64:$Rn))),
+          (FRECPEv2f32 V64:$Rn)>;
+def : Pat<(v4f32 (AArch64frecpe (v4f32 FPR128:$Rn))),
+          (FRECPEv4f32 FPR128:$Rn)>;
+def : Pat<(f64 (AArch64frecpe (f64 FPR64:$Rn))),
+          (FRECPEv1i64 FPR64:$Rn)>;
+def : Pat<(v1f64 (AArch64frecpe (v1f64 FPR64:$Rn))),
+          (FRECPEv1i64 FPR64:$Rn)>;
+def : Pat<(v2f64 (AArch64frecpe (v2f64 FPR128:$Rn))),
+          (FRECPEv2f64 FPR128:$Rn)>;
+
 def : Pat<(f32 (int_aarch64_neon_frecpx (f32 FPR32:$Rn))),
           (FRECPXv1i32 FPR32:$Rn)>;
 def : Pat<(f64 (int_aarch64_neon_frecpx (f64 FPR64:$Rn))),
@@ -3412,6 +3433,19 @@ def : Pat<(f64 (int_aarch64_neon_frsqrte (f64 FPR64:$Rn))),
           (FRSQRTEv1i64 FPR64:$Rn)>;
 def : Pat<(v1f64 (int_aarch64_neon_frsqrte (v1f64 FPR64:$Rn))),
           (FRSQRTEv1i64 FPR64:$Rn)>;
+
+def : Pat<(f32 (AArch64frsqrte (f32 FPR32:$Rn))),
+          (FRSQRTEv1i32 FPR32:$Rn)>;
+def : Pat<(v2f32 (AArch64frsqrte (v2f32 V64:$Rn))),
+          (FRSQRTEv2f32 V64:$Rn)>;
+def : Pat<(v4f32 (AArch64frsqrte (v4f32 FPR128:$Rn))),
+          (FRSQRTEv4f32 FPR128:$Rn)>;
+def : Pat<(f64 (AArch64frsqrte (f64 FPR64:$Rn))),
+          (FRSQRTEv1i64 FPR64:$Rn)>;
+def : Pat<(v1f64 (AArch64frsqrte (v1f64 FPR64:$Rn))),
+          (FRSQRTEv1i64 FPR64:$Rn)>;
+def : Pat<(v2f64 (AArch64frsqrte (v2f64 FPR128:$Rn))),
+          (FRSQRTEv2f64 FPR128:$Rn)>;
 
 // If an integer is about to be converted to a floating point value,
 // just load it on the floating point unit.
@@ -4402,18 +4436,6 @@ def MOVIv2d_ns   : SIMDModifiedImmVectorNoShift<1, 1, 0, 0b1110, V128,
                                                 "movi", ".2d",
                    [(set (v2i64 V128:$Rd), (AArch64movi_edit imm0_255:$imm8))]>;
 
-
-// Use movi.2d to materialize 0.0 if the HW does zero-cycle zeroing.
-// Complexity is added to break a tie with a plain MOVI.
-let AddedComplexity = 1 in {
-def : Pat<(f32   fpimm0),
-          (f32 (EXTRACT_SUBREG (v2i64 (MOVIv2d_ns (i32 0))), ssub))>,
-      Requires<[HasZCZ]>;
-def : Pat<(f64   fpimm0),
-          (f64 (EXTRACT_SUBREG (v2i64 (MOVIv2d_ns (i32 0))), dsub))>,
-      Requires<[HasZCZ]>;
-}
-
 def : Pat<(v2i64 immAllZerosV), (MOVIv2d_ns (i32 0))>;
 def : Pat<(v4i32 immAllZerosV), (MOVIv2d_ns (i32 0))>;
 def : Pat<(v8i16 immAllZerosV), (MOVIv2d_ns (i32 0))>;
@@ -4928,7 +4950,8 @@ class SExtLoadi8CVTf32Pat<dag addrmode, dag INST>
                                     0),
                                   dsub)),
                                0),
-                             ssub)))>, Requires<[NotForCodeSize, IsCyclone]>;
+                             ssub)))>,
+    Requires<[NotForCodeSize, UseAlternateSExtLoadCVTF32]>;
 
 def : SExtLoadi8CVTf32Pat<(ro8.Wpat GPR64sp:$Rn, GPR32:$Rm, ro8.Wext:$ext),
                           (LDRBroW  GPR64sp:$Rn, GPR32:$Rm, ro8.Wext:$ext)>;
@@ -4981,7 +5004,8 @@ class SExtLoadi16CVTf64Pat<dag addrmode, dag INST>
                                      0),
                                    dsub)),
                                0),
-                             dsub)))>, Requires<[NotForCodeSize, IsCyclone]>;
+                             dsub)))>,
+    Requires<[NotForCodeSize, UseAlternateSExtLoadCVTF32]>;
  
 def : SExtLoadi16CVTf64Pat<(ro16.Wpat GPR64sp:$Rn, GPR32:$Rm, ro16.Wext:$ext),
                            (LDRHroW GPR64sp:$Rn, GPR32:$Rm, ro16.Wext:$ext)>;

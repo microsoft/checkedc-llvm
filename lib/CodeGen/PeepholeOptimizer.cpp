@@ -70,17 +70,28 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineDominators.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
+#include <cassert>
+#include <cstdint>
+#include <memory>
 #include <utility>
+
 using namespace llvm;
 
 #define DEBUG_TYPE "peephole-opt"
@@ -118,6 +129,7 @@ STATISTIC(NumRewrittenCopies, "Number of copies rewritten");
 STATISTIC(NumNAPhysCopies, "Number of non-allocatable physical copies removed");
 
 namespace {
+
   class ValueTrackerResult;
 
   class PeepholeOptimizer : public MachineFunctionPass {
@@ -128,6 +140,7 @@ namespace {
 
   public:
     static char ID; // Pass identification
+
     PeepholeOptimizer() : MachineFunctionPass(ID) {
       initializePeepholeOptimizerPass(*PassRegistry::getPassRegistry());
     }
@@ -390,14 +403,16 @@ namespace {
     /// register of the last source.
     unsigned getReg() const { return Reg; }
   };
-}
+
+} // end anonymous namespace
 
 char PeepholeOptimizer::ID = 0;
 char &llvm::PeepholeOptimizerID = PeepholeOptimizer::ID;
-INITIALIZE_PASS_BEGIN(PeepholeOptimizer, "peephole-opts",
+
+INITIALIZE_PASS_BEGIN(PeepholeOptimizer, DEBUG_TYPE,
                 "Peephole Optimizations", false, false)
 INITIALIZE_PASS_DEPENDENCY(MachineDominatorTree)
-INITIALIZE_PASS_END(PeepholeOptimizer, "peephole-opts",
+INITIALIZE_PASS_END(PeepholeOptimizer, DEBUG_TYPE,
                 "Peephole Optimizations", false, false)
 
 /// If instruction is a copy-like instruction, i.e. it reads a single register
@@ -564,13 +579,13 @@ bool PeepholeOptimizer::optimizeCmpInstr(MachineInstr *MI,
   // physical register, we can try to optimize it.
   unsigned SrcReg, SrcReg2;
   int CmpMask, CmpValue;
-  if (!TII->analyzeCompare(MI, SrcReg, SrcReg2, CmpMask, CmpValue) ||
+  if (!TII->analyzeCompare(*MI, SrcReg, SrcReg2, CmpMask, CmpValue) ||
       TargetRegisterInfo::isPhysicalRegister(SrcReg) ||
       (SrcReg2 != 0 && TargetRegisterInfo::isPhysicalRegister(SrcReg2)))
     return false;
 
   // Attempt to optimize the comparison instruction.
-  if (TII->optimizeCompareInstr(MI, SrcReg, SrcReg2, CmpMask, CmpValue, MRI)) {
+  if (TII->optimizeCompareInstr(*MI, SrcReg, SrcReg2, CmpMask, CmpValue, MRI)) {
     ++NumCmps;
     return true;
   }
@@ -585,11 +600,11 @@ bool PeepholeOptimizer::optimizeSelect(MachineInstr *MI,
   unsigned FalseOp = 0;
   bool Optimizable = false;
   SmallVector<MachineOperand, 4> Cond;
-  if (TII->analyzeSelect(MI, Cond, TrueOp, FalseOp, Optimizable))
+  if (TII->analyzeSelect(*MI, Cond, TrueOp, FalseOp, Optimizable))
     return false;
   if (!Optimizable)
     return false;
-  if (!TII->optimizeSelect(MI, LocalMIs))
+  if (!TII->optimizeSelect(*MI, LocalMIs))
     return false;
   MI->eraseFromParent();
   ++NumSelects;
@@ -599,7 +614,7 @@ bool PeepholeOptimizer::optimizeSelect(MachineInstr *MI,
 /// \brief Check if a simpler conditional branch can be
 // generated
 bool PeepholeOptimizer::optimizeCondBranch(MachineInstr *MI) {
-  return TII->optimizeCondBranch(MI);
+  return TII->optimizeCondBranch(*MI);
 }
 
 /// \brief Try to find the next source that share the same register file
@@ -737,6 +752,7 @@ insertPHI(MachineRegisterInfo *MRI, const TargetInstrInfo *TII,
 }
 
 namespace {
+
 /// \brief Helper class to rewrite the arguments of a copy-like instruction.
 class CopyRewriter {
 protected:
@@ -820,7 +836,6 @@ public:
                TargetInstrInfo::RegSubRegPair Def,
                PeepholeOptimizer::RewriteMapTy &RewriteMap,
                bool HandleMultipleSources = true) {
-
     TargetInstrInfo::RegSubRegPair LookupSrc(Def.Reg, Def.SubReg);
     do {
       ValueTrackerResult Res = RewriteMap.lookup(LookupSrc);
@@ -859,7 +874,7 @@ public:
       const MachineOperand &MODef = NewPHI->getOperand(0);
       return TargetInstrInfo::RegSubRegPair(MODef.getReg(), MODef.getSubReg());
 
-    } while (1);
+    } while (true);
 
     return TargetInstrInfo::RegSubRegPair(0, 0);
   }
@@ -1001,6 +1016,7 @@ public:
     TrackSubReg = (unsigned)CopyLike.getOperand(3).getImm();
     return true;
   }
+
   bool RewriteCurrentSource(unsigned NewReg, unsigned NewSubReg) override {
     if (CurrentSrcIdx != 2)
       return false;
@@ -1141,7 +1157,8 @@ public:
     return true;
   }
 };
-} // End namespace.
+
+}  // end anonymous namespace
 
 /// \brief Get the appropriated CopyRewriter for \p MI.
 /// \return A pointer to a dynamically allocated CopyRewriter or nullptr
@@ -1351,7 +1368,7 @@ bool PeepholeOptimizer::foldImmediate(
       continue;
     DenseMap<unsigned, MachineInstr*>::iterator II = ImmDefMIs.find(Reg);
     assert(II != ImmDefMIs.end() && "couldn't find immediate definition");
-    if (TII->FoldImmediate(MI, II->second, Reg, MRI)) {
+    if (TII->FoldImmediate(*MI, *II->second, Reg, MRI)) {
       ++NumImmFold;
       return true;
     }
@@ -1471,7 +1488,7 @@ bool PeepholeOptimizer::foldRedundantNAPhysCopy(
 }
 
 bool PeepholeOptimizer::runOnMachineFunction(MachineFunction &MF) {
-  if (skipOptnoneFunction(*MF.getFunction()))
+  if (skipFunction(*MF.getFunction()))
     return false;
 
   DEBUG(dbgs() << "********** PEEPHOLE OPTIMIZER **********\n");
@@ -1636,10 +1653,8 @@ bool PeepholeOptimizer::runOnMachineFunction(MachineFunction &MF) {
             // we need it for markUsesInDebugValueAsUndef().
             unsigned FoldedReg = FoldAsLoadDefReg;
             MachineInstr *DefMI = nullptr;
-            MachineInstr *FoldMI = TII->optimizeLoadInstr(MI, MRI,
-                                                          FoldAsLoadDefReg,
-                                                          DefMI);
-            if (FoldMI) {
+            if (MachineInstr *FoldMI =
+                    TII->optimizeLoadInstr(*MI, MRI, FoldAsLoadDefReg, DefMI)) {
               // Update LocalMIs since we replaced MI with FoldMI and deleted
               // DefMI.
               DEBUG(dbgs() << "Replacing: " << *MI);
@@ -1888,9 +1903,11 @@ ValueTrackerResult ValueTracker::getNextSourceFromPHI() {
 ValueTrackerResult ValueTracker::getNextSourceImpl() {
   assert(Def && "This method needs a valid definition");
 
-  assert(
-      (DefIdx < Def->getDesc().getNumDefs() || Def->getDesc().isVariadic()) &&
-      Def->getOperand(DefIdx).isDef() && "Invalid DefIdx");
+  assert(((Def->getOperand(DefIdx).isDef() &&
+           (DefIdx < Def->getDesc().getNumDefs() ||
+            Def->getDesc().isVariadic())) ||
+          Def->getOperand(DefIdx).isImplicit()) &&
+         "Invalid DefIdx");
   if (Def->isCopy())
     return getNextSourceFromCopy();
   if (Def->isBitcast())

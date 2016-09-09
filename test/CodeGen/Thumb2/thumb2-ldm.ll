@@ -3,7 +3,7 @@
 
 @X = external global [0 x i32]          ; <[0 x i32]*> [#uses=5]
 
-define i32 @t1() {
+define i32 @t1() "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: t1:
 ; ALL: push {r7, lr}
 ; CHECK: ldrd
@@ -16,7 +16,7 @@ define i32 @t1() {
         ret i32 %tmp4
 }
 
-define i32 @t2() {
+define i32 @t2() "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: t2:
 ; ALL: push {r7, lr}
 ; CHECK: ldm
@@ -30,7 +30,7 @@ define i32 @t2() {
         ret i32 %tmp6
 }
 
-define i32 @t3() {
+define i32 @t3() "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: t3:
 ; ALL: push {r7, lr}
 ; CHECK: ldm
@@ -46,12 +46,12 @@ define i32 @t3() {
 
 @g = common global i32* null
 
-define void @t4(i32 %a0, i32 %a1, i32 %a2) {
+define void @t4(i32 %a0, i32 %a1, i32 %a2) "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: t4:
 ; ALL: stm.w sp, {r0, r1, r2}
-; ALL: blx _ext
+; ALL: bl _ext
 ; ALL: ldm.w sp, {r0, r1, r2}
-; ALL: blx _f2
+; ALL: bl _f2
   %arr = alloca [4 x i32], align 4
   %p0 = getelementptr inbounds [4 x i32], [4 x i32]* %arr, i64 0, i64 0
   %p1 = getelementptr inbounds [4 x i32], [4 x i32]* %arr, i64 0, i64 1

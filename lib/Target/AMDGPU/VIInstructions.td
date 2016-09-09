@@ -75,6 +75,14 @@ defm V_MIN_I16 : VOP2Inst <vop2<0,0x32>, "v_min_i16", VOP_I16_I16_I16>;
 } // End isCommutable = 1
 defm V_LDEXP_F16 : VOP2Inst <vop2<0,0x33>, "v_ldexp_f16", VOP_F16_F16_I16>;
 
+//===----------------------------------------------------------------------===//
+// VOP3 Instructions
+//===----------------------------------------------------------------------===//
+let isCommutable = 1 in {
+    defm V_MAD_F16 : VOP3Inst <vop3<0, 0x1ea>, "v_mad_f16", VOP_F16_F16_F16_F16>;
+    defm V_MAD_U16 : VOP3Inst <vop3<0, 0x1eb>, "v_mad_u16", VOP_I16_I16_I16_I16>;
+    defm V_MAD_I16 : VOP3Inst <vop3<0, 0x1ec>, "v_mad_i16", VOP_I16_I16_I16_I16>;
+}
 } // let DisableSIDecoder = 1
 
 // Aliases to simplify matching of floating-point instructions that
@@ -82,9 +90,10 @@ defm V_LDEXP_F16 : VOP2Inst <vop2<0,0x33>, "v_ldexp_f16", VOP_F16_F16_I16>;
 
 class SI2_VI3Alias <string name, Instruction inst> : InstAlias <
   name#" $dst, $src0, $src1",
-  (inst VGPR_32:$dst, 0, VCSrc_32:$src0, 0, VCSrc_32:$src1, 0, 0)
+  (inst VGPR_32:$dst, 0, VCSrc_f32:$src0, 0, VCSrc_f32:$src1, 0, 0)
 >, PredicateControl {
   let UseInstAsmMatchConverter = 0;
+  let AsmVariantName = AMDGPUAsmVariants.VOP3;
 }
 
 def : SI2_VI3Alias <"v_ldexp_f32", V_LDEXP_F32_e64_vi>;
@@ -93,35 +102,16 @@ def : SI2_VI3Alias <"v_cvt_pknorm_i16_f32", V_CVT_PKNORM_I16_F32_e64_vi>;
 def : SI2_VI3Alias <"v_cvt_pknorm_u16_f32", V_CVT_PKNORM_U16_F32_e64_vi>;
 def : SI2_VI3Alias <"v_cvt_pkrtz_f16_f32", V_CVT_PKRTZ_F16_F32_e64_vi>;
 
-//===----------------------------------------------------------------------===//
-// SMEM Instructions
-//===----------------------------------------------------------------------===//
-
-def S_DCACHE_WB : SMEM_Inval <0x21,
-  "s_dcache_wb", int_amdgcn_s_dcache_wb>;
-
-def S_DCACHE_WB_VOL : SMEM_Inval <0x23,
-  "s_dcache_wb_vol", int_amdgcn_s_dcache_wb_vol>;
-
-def S_MEMREALTIME : SMEM_Ret<0x25,
-  "s_memrealtime", int_amdgcn_s_memrealtime>;
-
 } // End SIAssemblerPredicate = DisableInst, SubtargetPredicate = isVI
 
 let Predicates = [isVI] in {
-
-// 1. Offset as 20bit DWORD immediate
-def : Pat <
-  (SIload_constant v4i32:$sbase, IMM20bit:$offset),
-  (S_BUFFER_LOAD_DWORD_IMM $sbase, (as_i32imm $offset))
->;
 
 //===----------------------------------------------------------------------===//
 // DPP Patterns
 //===----------------------------------------------------------------------===//
 
 def : Pat <
-  (int_amdgcn_mov_dpp i32:$src, imm:$dpp_ctrl, imm:$row_mask, imm:$bank_mask, 
+  (int_amdgcn_mov_dpp i32:$src, imm:$dpp_ctrl, imm:$row_mask, imm:$bank_mask,
                       imm:$bound_ctrl),
   (V_MOV_B32_dpp $src, (as_i32imm $dpp_ctrl), (as_i32imm $row_mask),
                        (as_i32imm $bank_mask), (as_i1imm $bound_ctrl))
@@ -130,21 +120,5 @@ def : Pat <
 //===----------------------------------------------------------------------===//
 // Misc Patterns
 //===----------------------------------------------------------------------===//
-
-def : Pat <
-  (i64 (readcyclecounter)),
-  (S_MEMREALTIME)
->;
-
-//===----------------------------------------------------------------------===//
-// DS_PERMUTE/DS_BPERMUTE Instructions.
-//===----------------------------------------------------------------------===//
-
-let Uses = [EXEC] in {
-defm DS_PERMUTE_B32 : DS_1A1D_PERMUTE <0x3e, "ds_permute_b32", VGPR_32,
-                                       int_amdgcn_ds_permute>;
-defm DS_BPERMUTE_B32 : DS_1A1D_PERMUTE <0x3f, "ds_bpermute_b32", VGPR_32,
-                                       int_amdgcn_ds_bpermute>;
-}
 
 } // End Predicates = [isVI]

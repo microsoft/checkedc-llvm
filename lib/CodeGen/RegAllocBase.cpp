@@ -22,9 +22,6 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
 #include "llvm/Target/TargetRegisterInfo.h"
-#ifndef NDEBUG
-#include "llvm/ADT/SparseBitVector.h"
-#endif
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -146,10 +143,20 @@ void RegAllocBase::allocatePhysRegs() {
         continue;
       }
       DEBUG(dbgs() << "queuing new interval: " << *SplitVirtReg << "\n");
+      assert(!SplitVirtReg->empty() && "expecting non-empty interval");
       assert(TargetRegisterInfo::isVirtualRegister(SplitVirtReg->reg) &&
              "expect split value in virtual register");
       enqueue(SplitVirtReg);
       ++NumNewQueued;
     }
   }
+}
+
+void RegAllocBase::postOptimization() {
+  spiller().postOptimization();
+  for (auto DeadInst : DeadRemats) {
+    LIS->RemoveMachineInstrFromMaps(*DeadInst);
+    DeadInst->eraseFromParent();
+  }
+  DeadRemats.clear();
 }

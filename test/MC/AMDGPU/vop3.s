@@ -1,5 +1,7 @@
-// RUN: llvm-mc -arch=amdgcn -show-encoding %s | FileCheck %s --check-prefix=SICI
-// RUN: llvm-mc -arch=amdgcn -mcpu=SI -show-encoding %s | FileCheck %s --check-prefix=SICI
+// RUN: not llvm-mc -arch=amdgcn -show-encoding %s 2>&1 | FileCheck %s --check-prefix=NOSI
+// RUN: not llvm-mc -arch=amdgcn -show-encoding %s | FileCheck %s --check-prefix=SICI
+
+// RUN: llvm-mc -arch=amdgcn -mcpu=hawaii -show-encoding %s | FileCheck %s --check-prefix=CI
 // RUN: not llvm-mc -arch=amdgcn -mcpu=tonga -show-encoding %s | FileCheck %s --check-prefix=VI
 // RUN: not llvm-mc -arch=amdgcn -mcpu=tonga -show-encoding %s 2>&1 | FileCheck %s -check-prefix=NOVI
 
@@ -202,6 +204,14 @@ v_cndmask_b32 v1, v3, v5, s[4:5]
 // SICI: v_cndmask_b32_e64 v1, v3, v5, s[4:5] ; encoding: [0x01,0x00,0x00,0xd2,0x03,0x0b,0x12,0x00]
 // VI:   v_cndmask_b32_e64 v1, v3, v5, s[4:5] ; encoding: [0x01,0x00,0x00,0xd1,0x03,0x0b,0x12,0x00]
 
+v_cndmask_b32_e64 v1, v3, v5, s[4:5]
+// SICI: v_cndmask_b32_e64 v1, v3, v5, s[4:5] ; encoding: [0x01,0x00,0x00,0xd2,0x03,0x0b,0x12,0x00]
+// VI:   v_cndmask_b32_e64 v1, v3, v5, s[4:5] ; encoding: [0x01,0x00,0x00,0xd1,0x03,0x0b,0x12,0x00]
+
+v_cndmask_b32_e64 v1, v3, v5, vcc
+// SICI: v_cndmask_b32_e64 v1, v3, v5, vcc ; encoding: [0x01,0x00,0x00,0xd2,0x03,0x0b,0xaa,0x01]
+// VI:   v_cndmask_b32_e64 v1, v3, v5, vcc ; encoding: [0x01,0x00,0x00,0xd1,0x03,0x0b,0xaa,0x01]
+
 //TODO: readlane, writelane
 
 v_add_f32 v1, v3, s5
@@ -339,8 +349,8 @@ v_div_scale_f32  v24, vcc, v22, 1.0, v22
 // VI:   v_div_scale_f32 v24, vcc, v22, 1.0, v22 ; encoding: [0x18,0x6a,0xe0,0xd1,0x16,0xe5,0x59,0x04]
 
 v_div_scale_f32  v24, vcc, v22, v22, -2.0
-// SICI: v_div_scale_f32 v24, vcc, v22, v22, -2.0 ; encoding: [0x18,0x6a,0xda,0xd2,0x16,0x2d,0xd6,0x03]
-// VI:   v_div_scale_f32 v24, vcc, v22, v22, -2.0 ; encoding: [0x18,0x6a,0xe0,0xd1,0x16,0x2d,0xd6,0x03]
+// SICI: v_div_scale_f32 v24, vcc, v22, v22, -2.0 ; encoding: [0x18,0x6a,0xda,0xd2,0x16,0x2d,0xd2,0x83]
+// VI:   v_div_scale_f32 v24, vcc, v22, v22, -2.0 ; encoding: [0x18,0x6a,0xe0,0xd1,0x16,0x2d,0xd2,0x83]
 
 v_div_scale_f32 v24, vcc, v22, v22, 0xc0000000
 // SICI: v_div_scale_f32 v24, vcc, v22, v22, -2.0 ; encoding: [0x18,0x6a,0xda,0xd2,0x16,0x2d,0xd6,0x03]
@@ -349,3 +359,8 @@ v_div_scale_f32 v24, vcc, v22, v22, 0xc0000000
 v_mad_f32 v9, 0.5, v5, -v8
 // SICI: v_mad_f32 v9, 0.5, v5, -v8      ; encoding: [0x09,0x00,0x82,0xd2,0xf0,0x0a,0x22,0x84]
 // VI:   v_mad_f32 v9, 0.5, v5, -v8      ; encoding: [0x09,0x00,0xc1,0xd1,0xf0,0x0a,0x22,0x84]
+
+v_mqsad_u32_u8 v[0:3], s[2:3], v4, v[0:3]
+// CI: v_mqsad_u32_u8 v[0:3], s[2:3], v4, v[0:3] ; encoding: [0x00,0x00,0xe8,0xd2,0x02,0x08,0x02,0x04]
+// VI: v_mqsad_u32_u8 v[0:3], s[2:3], v4, v[0:3] ; encoding: [0x00,0x00,0xe7,0xd1,0x02,0x08,0x02,0x04]
+// NOSI: error: instruction not supported on this GPU

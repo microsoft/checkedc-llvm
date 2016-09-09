@@ -10,8 +10,10 @@ add_llvm_library(LLVMCodeGen
   CallingConvLower.cpp
   CodeGen.cpp
   CodeGenPrepare.cpp
+  CountingFunctionInserter.cpp
   CriticalAntiDepBreaker.cpp
   DeadMachineInstructionElim.cpp
+  DetectDeadLanes.cpp
   DFAPacketizer.cpp
   DwarfEHPrepare.cpp
   EarlyIfConversion.cpp
@@ -47,6 +49,7 @@ add_llvm_library(LLVMCodeGen
   LiveVariables.cpp
   LLVMTargetMachine.cpp
   LocalStackSlotAllocation.cpp
+  LowLevelType.cpp
   LowerEmuTLS.cpp
   MachineBasicBlock.cpp
   MachineBlockFrequencyInfo.cpp
@@ -57,7 +60,6 @@ add_llvm_library(LLVMCodeGen
   MachineCSE.cpp
   MachineDominanceFrontier.cpp
   MachineDominators.cpp
-  MachineFunctionAnalysis.cpp
   MachineFunction.cpp
   MachineFunctionPass.cpp
   MachineFunctionPrinterPass.cpp
@@ -68,6 +70,7 @@ add_llvm_library(LLVMCodeGen
   MachineModuleInfo.cpp
   MachineModuleInfoImpls.cpp
   MachinePassRegistry.cpp
+  MachinePipeliner.cpp
   MachinePostDominators.cpp
   MachineRegionInfo.cpp
   MachineRegisterInfo.cpp
@@ -76,15 +79,17 @@ add_llvm_library(LLVMCodeGen
   MachineSSAUpdater.cpp
   MachineTraceMetrics.cpp
   MachineVerifier.cpp
+  PatchableFunction.cpp
   MIRPrinter.cpp
   MIRPrintingPass.cpp
   OptimizePHIs.cpp
   ParallelCG.cpp
-  Passes.cpp
   PeepholeOptimizer.cpp
   PHIElimination.cpp
   PHIEliminationUtils.cpp
+  PostRAHazardRecognizer.cpp
   PostRASchedulerList.cpp
+  PreISelIntrinsicLowering.cpp
   ProcessImplicitDefs.cpp
   PrologEpilogInserter.cpp
   PseudoSourceValue.cpp
@@ -97,7 +102,14 @@ add_llvm_library(LLVMCodeGen
   RegisterCoalescer.cpp
   RegisterPressure.cpp
   RegisterScavenging.cpp
+  RenameIndependentSubregs.cpp
+  RegisterUsageInfo.cpp
+  RegUsageInfoCollector.cpp
+  RegUsageInfoPropagate.cpp
+  ResetMachineFunctionPass.cpp
   SafeStack.cpp
+  SafeStackColoring.cpp
+  SafeStackLayout.cpp
   ScheduleDAG.cpp
   ScheduleDAGInstrs.cpp
   ScheduleDAGPrinter.cpp
@@ -114,17 +126,20 @@ add_llvm_library(LLVMCodeGen
   StackProtector.cpp
   StackSlotColoring.cpp
   TailDuplication.cpp
+  TailDuplicator.cpp
   TargetFrameLoweringImpl.cpp
   TargetInstrInfo.cpp
   TargetLoweringBase.cpp
   TargetLoweringObjectFileImpl.cpp
   TargetOptionsImpl.cpp
+  TargetPassConfig.cpp
   TargetRegisterInfo.cpp
   TargetSchedule.cpp
   TwoAddressInstructionPass.cpp
   UnreachableBlockElim.cpp
   VirtRegMap.cpp
   WinEHPrepare.cpp
+  XRayInstrumentation.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/CodeGen

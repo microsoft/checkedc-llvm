@@ -162,6 +162,9 @@ def RetCC_X86_64_C : CallingConv<[
 
   // MMX vector types are always returned in XMM0.
   CCIfType<[x86mmx], CCAssignToReg<[XMM0, XMM1]>>,
+
+  CCIfSwiftError<CCIfType<[i64], CCAssignToReg<[R12]>>>,
+
   CCDelegateTo<RetCC_X86Common>
 ]>;
 
@@ -294,8 +297,15 @@ def CC_X86_64_C : CallingConv<[
   CCIfNest<CCIfSubtarget<"isTarget64BitILP32()", CCAssignToReg<[R10D]>>>,
   CCIfNest<CCAssignToReg<[R10]>>,
 
-  // A SwiftSelf is passed in R10.
-  CCIfSwiftSelf<CCIfType<[i64], CCAssignToReg<[R10]>>>,
+  // Pass SwiftSelf in a callee saved register.
+  CCIfSwiftSelf<CCIfType<[i64], CCAssignToReg<[R13]>>>,
+
+  // A SwiftError is passed in R12.
+  CCIfSwiftError<CCIfType<[i64], CCAssignToReg<[R12]>>>,
+
+  // For Swift Calling Convention, pass sret in %RAX.
+  CCIfCC<"CallingConv::Swift",
+    CCIfSRet<CCIfType<[i64], CCAssignToReg<[RAX]>>>>,
 
   // The first 6 integer arguments are passed in integer registers.
   CCIfType<[i32], CCAssignToReg<[EDI, ESI, EDX, ECX, R8D, R9D]>>,
@@ -845,6 +855,8 @@ def CSR_NoRegs : CalleeSavedRegs<(add)>;
 def CSR_32 : CalleeSavedRegs<(add ESI, EDI, EBX, EBP)>;
 def CSR_64 : CalleeSavedRegs<(add RBX, R12, R13, R14, R15, RBP)>;
 
+def CSR_64_SwiftError : CalleeSavedRegs<(sub CSR_64, R12)>;
+
 def CSR_32EHRet : CalleeSavedRegs<(add EAX, EDX, CSR_32)>;
 def CSR_64EHRet : CalleeSavedRegs<(add RAX, RDX, CSR_64)>;
 
@@ -878,15 +890,23 @@ def CSR_64_MostRegs : CalleeSavedRegs<(add RBX, RCX, RDX, RSI, RDI, R8, R9, R10,
                                            (sequence "XMM%u", 0, 15))>;
 
 def CSR_32_AllRegs     : CalleeSavedRegs<(add EAX, EBX, ECX, EDX, EBP, ESI,
-                                              EDI, ESP)>;
+                                              EDI)>;
 def CSR_32_AllRegs_SSE : CalleeSavedRegs<(add CSR_32_AllRegs,
                                               (sequence "XMM%u", 0, 7))>;
+def CSR_32_AllRegs_AVX : CalleeSavedRegs<(add CSR_32_AllRegs,
+                                              (sequence "YMM%u", 0, 7))>;
+def CSR_32_AllRegs_AVX512 : CalleeSavedRegs<(add CSR_32_AllRegs,
+                                                 (sequence "ZMM%u", 0, 7),
+                                                 (sequence "K%u", 0, 7))>;
 
-def CSR_64_AllRegs     : CalleeSavedRegs<(add CSR_64_MostRegs, RAX, RSP,
-                                              (sequence "XMM%u", 16, 31))>;
-def CSR_64_AllRegs_AVX : CalleeSavedRegs<(sub (add CSR_64_MostRegs, RAX, RSP,
-                                                   (sequence "YMM%u", 0, 31)),
+def CSR_64_AllRegs     : CalleeSavedRegs<(add CSR_64_MostRegs, RAX)>;
+def CSR_64_AllRegs_AVX : CalleeSavedRegs<(sub (add CSR_64_MostRegs, RAX,
+                                                   (sequence "YMM%u", 0, 15)),
                                               (sequence "XMM%u", 0, 15))>;
+def CSR_64_AllRegs_AVX512 : CalleeSavedRegs<(sub (add CSR_64_MostRegs, RAX,
+                                                      (sequence "ZMM%u", 0, 31),
+                                                      (sequence "K%u", 0, 7)),
+                                                 (sequence "XMM%u", 0, 15))>;
 
 // Standard C + YMM6-15
 def CSR_Win64_Intel_OCL_BI_AVX : CalleeSavedRegs<(add RBX, RBP, RDI, RSI, R12,

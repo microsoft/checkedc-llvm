@@ -82,13 +82,6 @@ check_include_file(mach/mach.h HAVE_MACH_MACH_H)
 check_include_file(mach-o/dyld.h HAVE_MACH_O_DYLD_H)
 check_include_file(histedit.h HAVE_HISTEDIT_H)
 
-# size_t must be defined before including cxxabi.h on FreeBSD 10.0.
-check_cxx_source_compiles("
-#include <stddef.h>
-#include <cxxabi.h>
-int main() { return 0; }
-" HAVE_CXXABI_H)
-
 # library checks
 if( NOT PURE_WINDOWS )
   check_library_exists(pthread pthread_create "" HAVE_LIBPTHREAD)
@@ -110,7 +103,13 @@ if( NOT PURE_WINDOWS )
 endif()
 
 if(HAVE_LIBPTHREAD)
-  set(PTHREAD_LIB pthread)
+  # We want to find pthreads library and at the moment we do want to
+  # have it reported as '-l<lib>' instead of '-pthread'.
+  # TODO: switch to -pthread once the rest of the build system can deal with it.
+  set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+  set(THREADS_HAVE_PTHREAD_ARG Off)
+  find_package(Threads REQUIRED)
+  set(PTHREAD_LIB ${CMAKE_THREAD_LIBS_INIT})
 endif()
 
 # Don't look for these libraries on Windows. Also don't look for them if we're
@@ -122,7 +121,8 @@ if( NOT PURE_WINDOWS AND NOT LLVM_USE_SANITIZER MATCHES "Memory.*")
   else()
     set(HAVE_LIBZ 0)
   endif()
-  if (HAVE_HISTEDIT_H)
+  # Skip libedit if using ASan as it contains memory leaks.
+  if (HAVE_HISTEDIT_H AND NOT LLVM_USE_SANITIZER MATCHES ".*Address.*")
     check_library_exists(edit el_init "" HAVE_LIBEDIT)
   endif()
   if(LLVM_ENABLE_TERMINFO)
@@ -141,20 +141,31 @@ if( NOT PURE_WINDOWS AND NOT LLVM_USE_SANITIZER MATCHES "Memory.*")
   endif()
 endif()
 
+check_library_exists(xar xar_open "" HAVE_LIBXAR)
+if(HAVE_LIBXAR)
+  set(XAR_LIB xar)
+endif()
+
 # function checks
 check_symbol_exists(arc4random "stdlib.h" HAVE_DECL_ARC4RANDOM)
 check_symbol_exists(backtrace "execinfo.h" HAVE_BACKTRACE)
+check_symbol_exists(_Unwind_Backtrace "unwind.h" HAVE_UNWIND_BACKTRACE)
 check_symbol_exists(getpagesize unistd.h HAVE_GETPAGESIZE)
 check_symbol_exists(getrusage sys/resource.h HAVE_GETRUSAGE)
 check_symbol_exists(setrlimit sys/resource.h HAVE_SETRLIMIT)
 check_symbol_exists(isatty unistd.h HAVE_ISATTY)
 check_symbol_exists(futimens sys/stat.h HAVE_FUTIMENS)
 check_symbol_exists(futimes sys/time.h HAVE_FUTIMES)
+check_symbol_exists(posix_fallocate fcntl.h HAVE_POSIX_FALLOCATE)
 if( HAVE_SETJMP_H )
   check_symbol_exists(longjmp setjmp.h HAVE_LONGJMP)
   check_symbol_exists(setjmp setjmp.h HAVE_SETJMP)
   check_symbol_exists(siglongjmp setjmp.h HAVE_SIGLONGJMP)
   check_symbol_exists(sigsetjmp setjmp.h HAVE_SIGSETJMP)
+endif()
+# AddressSanitizer conflicts with lib/Support/Unix/Signals.inc
+if( HAVE_SIGNAL_H AND NOT LLVM_USE_SANITIZER MATCHES ".*Address.*")
+  check_symbol_exists(sigaltstack signal.h HAVE_SIGALTSTACK)
 endif()
 if( HAVE_SYS_UIO_H )
   check_symbol_exists(writev sys/uio.h HAVE_WRITEV)
@@ -401,12 +412,12 @@ else ()
   set(LLVM_NATIVE_ASMPRINTER LLVMInitialize${LLVM_NATIVE_ARCH}AsmPrinter)
 
   # We don't have an ASM parser for all architectures yet.
-  if (EXISTS ${CMAKE_SOURCE_DIR}/lib/Target/${LLVM_NATIVE_ARCH}/AsmParser/CMakeLists.txt)
+  if (EXISTS ${PROJECT_SOURCE_DIR}/lib/Target/${LLVM_NATIVE_ARCH}/AsmParser/CMakeLists.txt)
     set(LLVM_NATIVE_ASMPARSER LLVMInitialize${LLVM_NATIVE_ARCH}AsmParser)
   endif ()
 
   # We don't have an disassembler for all architectures yet.
-  if (EXISTS ${CMAKE_SOURCE_DIR}/lib/Target/${LLVM_NATIVE_ARCH}/Disassembler/CMakeLists.txt)
+  if (EXISTS ${PROJECT_SOURCE_DIR}/lib/Target/${LLVM_NATIVE_ARCH}/Disassembler/CMakeLists.txt)
     set(LLVM_NATIVE_DISASSEMBLER LLVMInitialize${LLVM_NATIVE_ARCH}Disassembler)
   endif ()
 endif ()
@@ -517,7 +528,7 @@ else()
   if(GO_EXECUTABLE STREQUAL "GO_EXECUTABLE-NOTFOUND")
     message(STATUS "Go bindings disabled.")
   else()
-    execute_process(COMMAND ${GO_EXECUTABLE} run ${CMAKE_SOURCE_DIR}/bindings/go/conftest.go
+    execute_process(COMMAND ${GO_EXECUTABLE} run ${PROJECT_SOURCE_DIR}/bindings/go/conftest.go
                     RESULT_VARIABLE GO_CONFTEST)
     if(GO_CONFTEST STREQUAL "0")
       set(LLVM_BINDINGS "${LLVM_BINDINGS} go")
@@ -532,10 +543,22 @@ find_program(GOLD_EXECUTABLE NAMES ${LLVM_DEFAULT_TARGET_TRIPLE}-ld.gold ld.gold
 set(LLVM_BINUTILS_INCDIR "" CACHE PATH
 	"PATH to binutils/include containing plugin-api.h for gold plugin.")
 
-if(APPLE)
-  find_program(LD64_EXECUTABLE NAMES ld DOC "The ld64 linker")
+if(CMAKE_HOST_APPLE AND APPLE)
+  if(CMAKE_XCRUN)
+    execute_process(COMMAND ${CMAKE_XCRUN} -find ld
+      OUTPUT_VARIABLE LD64_EXECUTABLE
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+  else()
+    find_program(LD64_EXECUTABLE NAMES ld DOC "The ld64 linker")
+  endif()
+
+  if(LD64_EXECUTABLE)
+    set(LD64_EXECUTABLE ${LD64_EXECUTABLE} CACHE PATH "ld64 executable")
+    message(STATUS "Found ld64 - ${LD64_EXECUTABLE}")
+  endif()
 endif()
 
+# Keep the version requirements in sync with bindings/ocaml/README.txt.
 include(FindOCaml)
 include(AddOCaml)
 if(WIN32)

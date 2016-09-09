@@ -1,4 +1,4 @@
-//===- llvm/Support/DiagnosticInfo.h - Diagnostic Declaration ---*- C++ -*-===//
+//===- llvm/IR/DiagnosticInfo.h - Diagnostic Declaration --------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -15,12 +15,14 @@
 #ifndef LLVM_IR_DIAGNOSTICINFO_H
 #define LLVM_IR_DIAGNOSTICINFO_H
 
-#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/IR/DebugLoc.h"
-#include "llvm/IR/Module.h"
-#include "llvm/Support/Casting.h"
+#include "llvm/Support/CBindingWrapping.h"
+#include "llvm-c/Types.h"
 #include <functional>
+#include <string>
 
 namespace llvm {
 
@@ -28,13 +30,12 @@ namespace llvm {
 class DiagnosticPrinter;
 class Function;
 class Instruction;
-class LLVMContextImpl;
-class Value;
-class DebugLoc;
+class LLVMContext;
+class Module;
 class SMDiagnostic;
 
 /// \brief Defines the different supported severity of a diagnostic.
-enum DiagnosticSeverity {
+enum DiagnosticSeverity : char {
   DS_Error,
   DS_Warning,
   DS_Remark,
@@ -48,9 +49,12 @@ enum DiagnosticSeverity {
 enum DiagnosticKind {
   DK_Bitcode,
   DK_InlineAsm,
+  DK_ResourceLimit,
   DK_StackSize,
   DK_Linker,
   DK_DebugMetadataVersion,
+  DK_DebugMetadataInvalid,
+  DK_ISelFallback,
   DK_SampleProfile,
   DK_OptimizationRemark,
   DK_OptimizationRemarkMissed,
@@ -104,8 +108,6 @@ public:
   /// The printed message must not end with '.' nor start with a severity
   /// keyword.
   virtual void print(DiagnosticPrinter &DP) const = 0;
-
-  static const char *AlwaysPrint;
 };
 
 typedef std::function<void(const DiagnosticInfo &)> DiagnosticHandlerFunction;
@@ -159,27 +161,62 @@ public:
   }
 };
 
-/// Diagnostic information for stack size reporting.
+/// Diagnostic information for stack size etc. reporting.
 /// This is basically a function and a size.
-class DiagnosticInfoStackSize : public DiagnosticInfo {
+class DiagnosticInfoResourceLimit : public DiagnosticInfo {
 private:
-  /// The function that is concerned by this stack size diagnostic.
+  /// The function that is concerned by this resource limit diagnostic.
   const Function &Fn;
-  /// The computed stack size.
-  unsigned StackSize;
+
+  /// Description of the resource type (e.g. stack size)
+  const char *ResourceName;
+
+  /// The computed size usage
+  uint64_t ResourceSize;
+
+  // Threshould passed
+  uint64_t ResourceLimit;
 
 public:
   /// \p The function that is concerned by this stack size diagnostic.
   /// \p The computed stack size.
-  DiagnosticInfoStackSize(const Function &Fn, unsigned StackSize,
-                          DiagnosticSeverity Severity = DS_Warning)
-      : DiagnosticInfo(DK_StackSize, Severity), Fn(Fn), StackSize(StackSize) {}
+  DiagnosticInfoResourceLimit(const Function &Fn,
+                              const char *ResourceName,
+                              uint64_t ResourceSize,
+                              DiagnosticSeverity Severity = DS_Warning,
+                              DiagnosticKind Kind = DK_ResourceLimit,
+                              uint64_t ResourceLimit = 0)
+      : DiagnosticInfo(Kind, Severity),
+        Fn(Fn),
+        ResourceName(ResourceName),
+        ResourceSize(ResourceSize),
+        ResourceLimit(ResourceLimit) {}
 
   const Function &getFunction() const { return Fn; }
-  unsigned getStackSize() const { return StackSize; }
+  const char *getResourceName() const { return ResourceName; }
+  uint64_t getResourceSize() const { return ResourceSize; }
+  uint64_t getResourceLimit() const { return ResourceLimit; }
 
   /// \see DiagnosticInfo::print.
   void print(DiagnosticPrinter &DP) const override;
+
+  static bool classof(const DiagnosticInfo *DI) {
+    return DI->getKind() == DK_ResourceLimit ||
+           DI->getKind() == DK_StackSize;
+  }
+};
+
+class DiagnosticInfoStackSize : public DiagnosticInfoResourceLimit {
+public:
+  DiagnosticInfoStackSize(const Function &Fn,
+                          uint64_t StackSize,
+                          DiagnosticSeverity Severity = DS_Warning,
+                          uint64_t StackLimit = 0)
+    : DiagnosticInfoResourceLimit(Fn, "stack size", StackSize,
+                                  Severity, DK_StackSize, StackLimit) {}
+
+  uint64_t getStackSize() const { return getResourceSize(); }
+  uint64_t getStackLimit() const { return getResourceLimit(); }
 
   static bool classof(const DiagnosticInfo *DI) {
     return DI->getKind() == DK_StackSize;
@@ -213,6 +250,29 @@ public:
     return DI->getKind() == DK_DebugMetadataVersion;
   }
 };
+
+/// Diagnostic information for stripping invalid debug metadata.
+class DiagnosticInfoIgnoringInvalidDebugMetadata : public DiagnosticInfo {
+private:
+  /// The module that is concerned by this debug metadata version diagnostic.
+  const Module &M;
+
+public:
+  /// \p The module that is concerned by this debug metadata version diagnostic.
+  DiagnosticInfoIgnoringInvalidDebugMetadata(
+      const Module &M, DiagnosticSeverity Severity = DS_Warning)
+      : DiagnosticInfo(DK_DebugMetadataVersion, Severity), M(M) {}
+
+  const Module &getModule() const { return M; }
+
+  /// \see DiagnosticInfo::print.
+  void print(DiagnosticPrinter &DP) const override;
+
+  static bool classof(const DiagnosticInfo *DI) {
+    return DI->getKind() == DK_DebugMetadataInvalid;
+  }
+};
+
 
 /// Diagnostic information for the sample profiler.
 class DiagnosticInfoSampleProfile : public DiagnosticInfo {
@@ -325,9 +385,10 @@ public:
   DiagnosticInfoOptimizationBase(enum DiagnosticKind Kind,
                                  enum DiagnosticSeverity Severity,
                                  const char *PassName, const Function &Fn,
-                                 const DebugLoc &DLoc, const Twine &Msg)
+                                 const DebugLoc &DLoc, const Twine &Msg,
+                                 Optional<uint64_t> Hotness = None)
       : DiagnosticInfoWithDebugLocBase(Kind, Severity, Fn, DLoc),
-        PassName(PassName), Msg(Msg) {}
+        PassName(PassName), Msg(Msg), Hotness(Hotness) {}
 
   /// \see DiagnosticInfo::print.
   void print(DiagnosticPrinter &DP) const override;
@@ -355,6 +416,10 @@ private:
 
   /// Message to report.
   const Twine &Msg;
+
+  /// If profile information is available, this is the number of times the
+  /// corresponding code was executed in a profile instrumentation run.
+  Optional<uint64_t> Hotness;
 };
 
 /// Diagnostic information for applied optimization remarks.
@@ -369,9 +434,10 @@ public:
   /// Note that this class does not copy this message, so this reference
   /// must be valid for the whole life time of the diagnostic.
   DiagnosticInfoOptimizationRemark(const char *PassName, const Function &Fn,
-                                   const DebugLoc &DLoc, const Twine &Msg)
+                                   const DebugLoc &DLoc, const Twine &Msg,
+                                   Optional<uint64_t> Hotness = None)
       : DiagnosticInfoOptimizationBase(DK_OptimizationRemark, DS_Remark,
-                                       PassName, Fn, DLoc, Msg) {}
+                                       PassName, Fn, DLoc, Msg, Hotness) {}
 
   static bool classof(const DiagnosticInfo *DI) {
     return DI->getKind() == DK_OptimizationRemark;
@@ -395,9 +461,10 @@ public:
   /// must be valid for the whole life time of the diagnostic.
   DiagnosticInfoOptimizationRemarkMissed(const char *PassName,
                                          const Function &Fn,
-                                         const DebugLoc &DLoc, const Twine &Msg)
+                                         const DebugLoc &DLoc, const Twine &Msg,
+                                         Optional<uint64_t> Hotness = None)
       : DiagnosticInfoOptimizationBase(DK_OptimizationRemarkMissed, DS_Remark,
-                                       PassName, Fn, DLoc, Msg) {}
+                                       PassName, Fn, DLoc, Msg, Hotness) {}
 
   static bool classof(const DiagnosticInfo *DI) {
     return DI->getKind() == DK_OptimizationRemarkMissed;
@@ -422,9 +489,10 @@ public:
   DiagnosticInfoOptimizationRemarkAnalysis(const char *PassName,
                                            const Function &Fn,
                                            const DebugLoc &DLoc,
-                                           const Twine &Msg)
+                                           const Twine &Msg,
+                                           Optional<uint64_t> Hotness = None)
       : DiagnosticInfoOptimizationBase(DK_OptimizationRemarkAnalysis, DS_Remark,
-                                       PassName, Fn, DLoc, Msg) {}
+                                       PassName, Fn, DLoc, Msg, Hotness) {}
 
   static bool classof(const DiagnosticInfo *DI) {
     return DI->getKind() == DK_OptimizationRemarkAnalysis;
@@ -433,14 +501,16 @@ public:
   /// \see DiagnosticInfoOptimizationBase::isEnabled.
   bool isEnabled() const override;
 
+  static const char *AlwaysPrint;
+
+  bool shouldAlwaysPrint() const { return getPassName() == AlwaysPrint; }
+
 protected:
-  DiagnosticInfoOptimizationRemarkAnalysis(enum DiagnosticKind Kind,
-                                           const char *PassName,
-                                           const Function &Fn,
-                                           const DebugLoc &DLoc,
-                                           const Twine &Msg)
-      : DiagnosticInfoOptimizationBase(Kind, DS_Remark, PassName, Fn, DLoc,
-                                       Msg) {}
+  DiagnosticInfoOptimizationRemarkAnalysis(
+      enum DiagnosticKind Kind, const char *PassName, const Function &Fn,
+      const DebugLoc &DLoc, const Twine &Msg, Optional<uint64_t> Hotness)
+      : DiagnosticInfoOptimizationBase(Kind, DS_Remark, PassName, Fn, DLoc, Msg,
+                                       Hotness) {}
 };
 
 /// Diagnostic information for optimization analysis remarks related to
@@ -458,12 +528,12 @@ public:
   /// floating-point non-commutativity. Note that this class does not copy this
   /// message, so this reference must be valid for the whole life time of the
   /// diagnostic.
-  DiagnosticInfoOptimizationRemarkAnalysisFPCommute(const char *PassName,
-                                                    const Function &Fn,
-                                                    const DebugLoc &DLoc,
-                                                    const Twine &Msg)
+  DiagnosticInfoOptimizationRemarkAnalysisFPCommute(
+      const char *PassName, const Function &Fn, const DebugLoc &DLoc,
+      const Twine &Msg, Optional<uint64_t> Hotness = None)
       : DiagnosticInfoOptimizationRemarkAnalysis(
-            DK_OptimizationRemarkAnalysisFPCommute, PassName, Fn, DLoc, Msg) {}
+            DK_OptimizationRemarkAnalysisFPCommute, PassName, Fn, DLoc, Msg,
+            Hotness) {}
 
   static bool classof(const DiagnosticInfo *DI) {
     return DI->getKind() == DK_OptimizationRemarkAnalysisFPCommute;
@@ -485,12 +555,12 @@ public:
   /// pointer aliasing legality. Note that this class does not copy this
   /// message, so this reference must be valid for the whole life time of the
   /// diagnostic.
-  DiagnosticInfoOptimizationRemarkAnalysisAliasing(const char *PassName,
-                                                   const Function &Fn,
-                                                   const DebugLoc &DLoc,
-                                                   const Twine &Msg)
+  DiagnosticInfoOptimizationRemarkAnalysisAliasing(
+      const char *PassName, const Function &Fn, const DebugLoc &DLoc,
+      const Twine &Msg, Optional<uint64_t> Hotness = None)
       : DiagnosticInfoOptimizationRemarkAnalysis(
-            DK_OptimizationRemarkAnalysisAliasing, PassName, Fn, DLoc, Msg) {}
+            DK_OptimizationRemarkAnalysisAliasing, PassName, Fn, DLoc, Msg,
+            Hotness) {}
 
   static bool classof(const DiagnosticInfo *DI) {
     return DI->getKind() == DK_OptimizationRemarkAnalysisAliasing;
@@ -512,6 +582,25 @@ public:
 
   static bool classof(const DiagnosticInfo *DI) {
     return DI->getKind() == DK_MIRParser;
+  }
+};
+
+/// Diagnostic information for ISel fallback path.
+class DiagnosticInfoISelFallback : public DiagnosticInfo {
+  /// The function that is concerned by this diagnostic.
+  const Function &Fn;
+
+public:
+  DiagnosticInfoISelFallback(const Function &Fn,
+                             DiagnosticSeverity Severity = DS_Warning)
+      : DiagnosticInfo(DK_ISelFallback, Severity), Fn(Fn) {}
+
+  const Function &getFunction() const { return Fn; }
+
+  void print(DiagnosticPrinter &DP) const override;
+
+  static bool classof(const DiagnosticInfo *DI) {
+    return DI->getKind() == DK_ISelFallback;
   }
 };
 
@@ -608,8 +697,9 @@ public:
   /// copy this message, so this reference must be valid for the whole life time
   /// of the diagnostic.
   DiagnosticInfoUnsupported(const Function &Fn, const Twine &Msg,
-                            DebugLoc DLoc = DebugLoc())
-      : DiagnosticInfoWithDebugLocBase(DK_Unsupported, DS_Error, Fn, DLoc),
+                            DebugLoc DLoc = DebugLoc(),
+                            DiagnosticSeverity Severity = DS_Error)
+      : DiagnosticInfoWithDebugLocBase(DK_Unsupported, Severity, Fn, DLoc),
         Msg(Msg) {}
 
   static bool classof(const DiagnosticInfo *DI) {
@@ -618,7 +708,7 @@ public:
 
   const Twine &getMessage() const { return Msg; }
 
-  void print(DiagnosticPrinter &DP) const;
+  void print(DiagnosticPrinter &DP) const override;
 };
 
 /// Emit a warning when loop vectorization is specified but fails. \p Fn is the
@@ -633,6 +723,6 @@ void emitLoopVectorizeWarning(LLVMContext &Ctx, const Function &Fn,
 void emitLoopInterleaveWarning(LLVMContext &Ctx, const Function &Fn,
                                const DebugLoc &DLoc, const Twine &Msg);
 
-} // End namespace llvm
+} // end namespace llvm
 
-#endif
+#endif // LLVM_IR_DIAGNOSTICINFO_H

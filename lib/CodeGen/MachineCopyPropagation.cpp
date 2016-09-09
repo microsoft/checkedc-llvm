@@ -47,11 +47,16 @@ namespace {
       initializeMachineCopyPropagationPass(*PassRegistry::getPassRegistry());
     }
 
+    void getAnalysisUsage(AnalysisUsage &AU) const override {
+      AU.setPreservesCFG();
+      MachineFunctionPass::getAnalysisUsage(AU);
+    }
+
     bool runOnMachineFunction(MachineFunction &MF) override;
 
     MachineFunctionProperties getRequiredProperties() const override {
       return MachineFunctionProperties().set(
-          MachineFunctionProperties::Property::AllVRegsAllocated);
+          MachineFunctionProperties::Property::NoVRegs);
     }
 
   private:
@@ -240,7 +245,7 @@ void MachineCopyPropagation::CopyPropagateBlock(MachineBasicBlock &MBB) {
       // Remember source that's copied to Def. Once it's clobbered, then
       // it's no longer available for copy propagation.
       RegList &DestList = SrcMap[Src];
-      if (std::find(DestList.begin(), DestList.end(), Def) == DestList.end())
+      if (!is_contained(DestList, Def))
         DestList.push_back(Def);
 
       continue;
@@ -349,7 +354,7 @@ void MachineCopyPropagation::CopyPropagateBlock(MachineBasicBlock &MBB) {
 }
 
 bool MachineCopyPropagation::runOnMachineFunction(MachineFunction &MF) {
-  if (skipOptnoneFunction(*MF.getFunction()))
+  if (skipFunction(*MF.getFunction()))
     return false;
 
   Changed = false;

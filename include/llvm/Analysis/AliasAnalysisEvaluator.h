@@ -52,10 +52,8 @@ public:
   }
   ~AAEvaluator();
 
-  static StringRef name() { return "AAEvaluator"; }
-
   /// \brief Run the pass over the function.
-  PreservedAnalyses run(Function &F, AnalysisManager<Function> &AM);
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 
 private:
   // Allow the legacy pass to run this using an internal API.

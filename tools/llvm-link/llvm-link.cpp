@@ -36,6 +36,7 @@
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
 
 #include <memory>
+#include <utility>
 using namespace llvm;
 
 static cl::list<std::string>
@@ -69,6 +70,10 @@ OutputFilename("o", cl::desc("Override output filename"), cl::init("-"),
 
 static cl::opt<bool>
 Internalize("internalize", cl::desc("Internalize linked symbols"));
+
+static cl::opt<bool>
+    DisableDITypeMap("disable-debug-info-type-map",
+                     cl::desc("Don't use a uniquing type map for debug info"));
 
 static cl::opt<bool>
 OnlyNeeded("only-needed", cl::desc("Link only needed symbols"));
@@ -142,7 +147,7 @@ public:
   ModuleLazyLoaderCache(std::function<std::unique_ptr<Module>(
                             const char *argv0, const std::string &FileName)>
                             createLazyModule)
-      : createLazyModule(createLazyModule) {}
+      : createLazyModule(std::move(createLazyModule)) {}
 
   /// Retrieve a Module from the cache or lazily load it on demand.
   Module &operator()(const char *argv0, const std::string &FileName);
@@ -272,8 +277,10 @@ static bool importFunctions(const char *argv0, LLVMContext &Context,
     if (renameModuleForThinLTO(*SrcModule, *Index, &GlobalsToImport))
       return true;
 
-    if (L.linkInModule(std::move(SrcModule), Linker::Flags::None,
-                       &GlobalsToImport))
+    // Instruct the linker to not automatically import linkonce defintion.
+    unsigned Flags = Linker::Flags::DontForceLinkLinkonceODR;
+
+    if (L.linkInModule(std::move(SrcModule), Flags, &GlobalsToImport))
       return false;
   }
 
@@ -292,7 +299,10 @@ static bool linkFiles(const char *argv0, LLVMContext &Context, Linker &L,
       return false;
     }
 
-    if (verifyModule(*M, &errs())) {
+    // Note that when ODR merging types cannot verify input files in here When
+    // doing that debug metadata in the src module might already be pointing to
+    // the destination.
+    if (DisableDITypeMap && verifyModule(*M, &errs())) {
       errs() << argv0 << ": " << File << ": error: input module is broken!\n";
       return false;
     }
@@ -328,14 +338,17 @@ static bool linkFiles(const char *argv0, LLVMContext &Context, Linker &L,
 
 int main(int argc, char **argv) {
   // Print a stack trace if we signal out.
-  sys::PrintStackTraceOnErrorSignal();
+  sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
 
-  LLVMContext &Context = getGlobalContext();
+  LLVMContext Context;
   Context.setDiagnosticHandler(diagnosticHandlerWithContext, nullptr, true);
 
   llvm_shutdown_obj Y;  // Call llvm_shutdown() on exit.
   cl::ParseCommandLineOptions(argc, argv, "llvm linker\n");
+
+  if (!DisableDITypeMap)
+    Context.enableDebugTypeODRUniquing();
 
   auto Composite = make_unique<Module>("llvm-link", Context);
   Linker L(*Composite);

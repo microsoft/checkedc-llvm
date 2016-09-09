@@ -13,6 +13,10 @@
 #include "AMDGPUFrameLowering.h"
 
 namespace llvm {
+class SIInstrInfo;
+class SIMachineFunctionInfo;
+class SIRegisterInfo;
+class SISubtarget;
 
 class SIFrameLowering final : public AMDGPUFrameLowering {
 public:
@@ -23,10 +27,35 @@ public:
 
   void emitPrologue(MachineFunction &MF,
                     MachineBasicBlock &MBB) const override;
+  void emitEpilogue(MachineFunction &MF,
+                    MachineBasicBlock &MBB) const override;
 
   void processFunctionBeforeFrameFinalized(
     MachineFunction &MF,
     RegScavenger *RS = nullptr) const override;
+
+private:
+  void emitFlatScratchInit(const SIInstrInfo *TII,
+                           const SIRegisterInfo* TRI,
+                           MachineFunction &MF,
+                           MachineBasicBlock &MBB) const;
+
+  unsigned getReservedPrivateSegmentBufferReg(
+    const SISubtarget &ST,
+    const SIInstrInfo *TII,
+    const SIRegisterInfo *TRI,
+    SIMachineFunctionInfo *MFI,
+    MachineFunction &MF) const;
+
+  unsigned getReservedPrivateSegmentWaveByteOffsetReg(
+    const SISubtarget &ST,
+    const SIInstrInfo *TII,
+    const SIRegisterInfo *TRI,
+    SIMachineFunctionInfo *MFI,
+    MachineFunction &MF) const;
+
+  /// \brief Emits debugger prologue.
+  void emitDebuggerPrologue(MachineFunction &MF, MachineBasicBlock &MBB) const;
 };
 
 }

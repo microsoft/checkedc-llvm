@@ -44,10 +44,6 @@ static cl::opt<bool> Force("f", cl::desc("Enable binary output on terminals"));
 static cl::opt<bool> DisableOutput("disable-output", cl::desc("Disable output"),
                                    cl::init(false));
 
-static cl::opt<bool> EmitSummaryIndex("module-summary",
-                                      cl::desc("Emit module summary index"),
-                                      cl::init(false));
-
 static cl::opt<bool> EmitModuleHash("module-hash", cl::desc("Emit module hash"),
                                     cl::init(false));
 
@@ -84,8 +80,8 @@ static void WriteOutputFile(const Module *M) {
   }
 
   if (Force || !CheckBitcodeOutputToConsole(Out->os(), true))
-    WriteBitcodeToFile(M, Out->os(), PreserveBitcodeUseListOrder,
-                       EmitSummaryIndex, EmitModuleHash);
+    WriteBitcodeToFile(M, Out->os(), PreserveBitcodeUseListOrder, nullptr,
+                       EmitModuleHash);
 
   // Declare success.
   Out->keep();
@@ -93,9 +89,9 @@ static void WriteOutputFile(const Module *M) {
 
 int main(int argc, char **argv) {
   // Print a stack trace if we signal out.
-  sys::PrintStackTraceOnErrorSignal();
+  sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
-  LLVMContext &Context = getGlobalContext();
+  LLVMContext Context;
   llvm_shutdown_obj Y; // Call llvm_shutdown() on exit.
   cl::ParseCommandLineOptions(argc, argv, "llvm .ll -> .bc assembler\n");
 

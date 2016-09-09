@@ -1,4 +1,5 @@
 ; RUN: opt -basicaa -print-memoryssa -verify-memoryssa -analyze < %s 2>&1 | FileCheck %s
+; RUN: opt -aa-pipeline=basic-aa -passes='print<memoryssa>,verify<memoryssa>' -disable-output < %s 2>&1 | FileCheck %s
 
 ; %ptr can't alias %local, so we should be able to optimize the use of %local to
 ; point to the store to %local.
@@ -137,8 +138,7 @@ loop.3:
 ; CHECK: 4 = MemoryDef(5)
 ; CHECK-NEXT: store i8 2, i8* %p2
   store i8 2, i8* %p2
-; FIXME: This should be MemoryUse(1)
-; CHECK: MemoryUse(5)
+; CHECK: MemoryUse(1)
 ; CHECK-NEXT: load i8, i8* %p1
   load i8, i8* %p1
   br i1 undef, label %loop.2, label %loop.1

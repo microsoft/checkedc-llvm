@@ -116,6 +116,9 @@ def SDTIntBinOp : SDTypeProfile<1, 2, [     // add, and, or, xor, udiv, etc.
 def SDTIntShiftOp : SDTypeProfile<1, 2, [   // shl, sra, srl
   SDTCisSameAs<0, 1>, SDTCisInt<0>, SDTCisInt<2>
 ]>;
+def SDTIntSatNoShOp : SDTypeProfile<1, 2, [   // ssat with no shift
+  SDTCisSameAs<0, 1>, SDTCisInt<2>
+]>;
 def SDTIntBinHiLoOp : SDTypeProfile<2, 2, [ // mulhi, mullo, sdivrem, udivrem
   SDTCisSameAs<0, 1>, SDTCisSameAs<0, 2>, SDTCisSameAs<0, 3>,SDTCisInt<0>
 ]>;
@@ -167,7 +170,7 @@ def SDTSelect : SDTypeProfile<1, 3, [       // select
 ]>;
 
 def SDTVSelect : SDTypeProfile<1, 3, [       // vselect
-  SDTCisInt<1>, SDTCisSameAs<0, 2>, SDTCisSameAs<2, 3>
+  SDTCisInt<1>, SDTCisSameAs<0, 2>, SDTCisSameAs<2, 3>, SDTCisSameNumEltsAs<0, 1>
 ]>;
 
 def SDTSelectCC : SDTypeProfile<1, 5, [     // select_cc
@@ -434,6 +437,7 @@ def fmaxnum    : SDNode<"ISD::FMAXNUM"    , SDTFPBinOp,
 def fminnan    : SDNode<"ISD::FMINNAN"    , SDTFPBinOp>;
 def fmaxnan    : SDNode<"ISD::FMAXNAN"    , SDTFPBinOp>;
 def fgetsign   : SDNode<"ISD::FGETSIGN"   , SDTFPToIntOp>;
+def fcanonicalize : SDNode<"ISD::FCANONICALIZE", SDTFPUnaryOp>;
 def fneg       : SDNode<"ISD::FNEG"       , SDTFPUnaryOp>;
 def fsqrt      : SDNode<"ISD::FSQRT"      , SDTFPUnaryOp>;
 def fsin       : SDNode<"ISD::FSIN"       , SDTFPUnaryOp>;
@@ -446,10 +450,10 @@ def ftrunc     : SDNode<"ISD::FTRUNC"     , SDTFPUnaryOp>;
 def fceil      : SDNode<"ISD::FCEIL"      , SDTFPUnaryOp>;
 def ffloor     : SDNode<"ISD::FFLOOR"     , SDTFPUnaryOp>;
 def fnearbyint : SDNode<"ISD::FNEARBYINT" , SDTFPUnaryOp>;
-def frnd       : SDNode<"ISD::FROUND"     , SDTFPUnaryOp>;
+def fround     : SDNode<"ISD::FROUND"     , SDTFPUnaryOp>;
 
-def fround     : SDNode<"ISD::FP_ROUND"   , SDTFPRoundOp>;
-def fextend    : SDNode<"ISD::FP_EXTEND"  , SDTFPExtendOp>;
+def fpround    : SDNode<"ISD::FP_ROUND"   , SDTFPRoundOp>;
+def fpextend   : SDNode<"ISD::FP_EXTEND"  , SDTFPExtendOp>;
 def fcopysign  : SDNode<"ISD::FCOPYSIGN"  , SDTFPSignOp>;
 
 def sint_to_fp : SDNode<"ISD::SINT_TO_FP" , SDTIntToFPOp>;
@@ -950,6 +954,18 @@ def unalignednontemporalstore : PatFrag<(ops node:$val, node:$ptr),
                                         (nontemporalstore node:$val, node:$ptr), [{
   StoreSDNode *St = cast<StoreSDNode>(N);
   return St->getAlignment() < St->getMemoryVT().getStoreSize();
+}]>;
+
+// nontemporal load fragments.
+def nontemporalload : PatFrag<(ops node:$ptr),
+                               (load node:$ptr), [{
+  return cast<LoadSDNode>(N)->isNonTemporal();
+}]>;
+
+def alignednontemporalload : PatFrag<(ops node:$ptr),
+                                      (nontemporalload node:$ptr), [{
+  LoadSDNode *Ld = cast<LoadSDNode>(N);
+  return Ld->getAlignment() >= Ld->getMemoryVT().getStoreSize();
 }]>;
 
 // setcc convenience fragments.

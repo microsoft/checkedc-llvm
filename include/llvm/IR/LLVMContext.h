@@ -16,7 +16,6 @@
 #define LLVM_IR_LLVMCONTEXT_H
 
 #include "llvm/Support/CBindingWrapping.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Options.h"
 
 namespace llvm {
@@ -26,11 +25,15 @@ class StringRef;
 class Twine;
 class Instruction;
 class Module;
+class MDString;
+class DICompositeType;
 class SMDiagnostic;
 class DiagnosticInfo;
+enum DiagnosticSeverity : char;
 template <typename T> class SmallVectorImpl;
 class Function;
 class DebugLoc;
+class OptBisect;
 
 /// This is an important class for using LLVM in a threaded context.  It
 /// (opaquely) owns and manages the core "global" data of LLVM's core
@@ -65,6 +68,7 @@ public:
     MD_invariant_group = 16,          // "invariant.group"
     MD_align = 17,                    // "align"
     MD_loop = 18,                     // "llvm.loop"
+    MD_type = 19,                     // "type"
   };
 
   /// Known operand bundle tag IDs, which always have the same value.  All
@@ -95,7 +99,6 @@ public:
   /// tag registered with an LLVMContext has an unique ID.
   uint32_t getOperandBundleTagID(StringRef Tag) const;
 
-
   /// Define the GC for a function
   void setGC(const Function &Fn, std::string GCName);
 
@@ -114,6 +117,12 @@ public:
   /// GlobalValue). Clients can use this flag to save memory and runtime,
   /// especially in release mode.
   void setDiscardValueNames(bool Discard);
+
+  /// Whether there is a string map for uniquing debug info
+  /// identifiers across the context.  Off by default.
+  bool isODRUniquingDebugTypes() const;
+  void enableDebugTypeODRUniquing();
+  void disableDebugTypeODRUniquing();
 
   typedef void (*InlineAsmDiagHandlerTy)(const SMDiagnostic&, void *Context,
                                          unsigned LocCookie);
@@ -164,6 +173,17 @@ public:
   /// getDiagnosticContext - Return the diagnostic context set by
   /// setDiagnosticContext.
   void *getDiagnosticContext() const;
+
+  /// \brief Return if a code hotness metric should be included in optimization
+  /// diagnostics.
+  bool getDiagnosticHotnessRequested() const;
+  /// \brief Set if a code hotness metric should be included in optimization
+  /// diagnostics.
+  void setDiagnosticHotnessRequested(bool Requested);
+
+  /// \brief Get the prefix that should be printed in front of a diagnostic of
+  ///        the given \p Severity
+  static const char *getDiagnosticMessagePrefix(DiagnosticSeverity Severity);
 
   /// \brief Report a message to the currently installed diagnostic handler.
   ///
@@ -220,6 +240,9 @@ public:
     return OptionRegistry::instance().template get<ValT, Base, Mem>();
   }
 
+  /// \brief Access the object which manages optimization bisection for failure
+  /// analysis.
+  OptBisect &getOptBisect();
 private:
   LLVMContext(LLVMContext&) = delete;
   void operator=(LLVMContext&) = delete;
@@ -234,10 +257,6 @@ private:
   // Module needs access to the add/removeModule methods.
   friend class Module;
 };
-
-/// getGlobalContext - Returns a global context.  This is for LLVM clients that
-/// only care about operating on a single thread.
-extern LLVMContext &getGlobalContext();
 
 // Create wrappers for C Binding types (see CBindingWrapping.h).
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(LLVMContext, LLVMContextRef)

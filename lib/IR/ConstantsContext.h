@@ -23,8 +23,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include <map>
-#include <tuple>
 
 #define DEBUG_TYPE "ir"
 
@@ -559,7 +557,7 @@ private:
       return ConstantClassInfo::getTombstoneKey();
     }
     static unsigned getHashValue(const ConstantClass *CP) {
-      SmallVector<Constant *, 8> Storage;
+      SmallVector<Constant *, 32> Storage;
       return getHashValue(LookupKey(CP->getType(), ValType(CP, Storage)));
     }
     static bool isEqual(const ConstantClass *LHS, const ConstantClass *RHS) {

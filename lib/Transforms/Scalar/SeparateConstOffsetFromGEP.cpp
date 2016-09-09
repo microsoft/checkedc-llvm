@@ -590,9 +590,9 @@ Value *ConstantOffsetExtractor::rebuildWithoutConstOffset() {
   distributeExtsAndCloneChain(UserChain.size() - 1);
   // Remove all nullptrs (used to be s/zext) from UserChain.
   unsigned NewSize = 0;
-  for (auto I = UserChain.begin(), E = UserChain.end(); I != E; ++I) {
-    if (*I != nullptr) {
-      UserChain[NewSize] = *I;
+  for (User *I : UserChain) {
+    if (I != nullptr) {
+      UserChain[NewSize] = I;
       NewSize++;
     }
   }
@@ -1064,7 +1064,7 @@ bool SeparateConstOffsetFromGEP::splitGEP(GetElementPtrInst *GEP) {
 }
 
 bool SeparateConstOffsetFromGEP::runOnFunction(Function &F) {
-  if (skipOptnoneFunction(F))
+  if (skipFunction(F))
     return false;
 
   if (DisableSeparateConstOffsetFromGEP)
@@ -1075,8 +1075,8 @@ bool SeparateConstOffsetFromGEP::runOnFunction(Function &F) {
   LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
   TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
   bool Changed = false;
-  for (Function::iterator B = F.begin(), BE = F.end(); B != BE; ++B) {
-    for (BasicBlock::iterator I = B->begin(), IE = B->end(); I != IE;)
+  for (BasicBlock &B : F) {
+    for (BasicBlock::iterator I = B.begin(), IE = B.end(); I != IE;)
       if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(I++))
         Changed |= splitGEP(GEP);
     // No need to split GEP ConstantExprs because all its indices are constant
@@ -1150,8 +1150,7 @@ bool SeparateConstOffsetFromGEP::reuniteExts(Instruction *I) {
 bool SeparateConstOffsetFromGEP::reuniteExts(Function &F) {
   bool Changed = false;
   DominatingExprs.clear();
-  for (auto Node = GraphTraits<DominatorTree *>::nodes_begin(DT);
-       Node != GraphTraits<DominatorTree *>::nodes_end(DT); ++Node) {
+  for (const auto Node : depth_first(DT)) {
     BasicBlock *BB = Node->getBlock();
     for (auto I = BB->begin(); I != BB->end(); ) {
       Instruction *Cur = &*I++;
@@ -1162,8 +1161,8 @@ bool SeparateConstOffsetFromGEP::reuniteExts(Function &F) {
 }
 
 void SeparateConstOffsetFromGEP::verifyNoDeadCode(Function &F) {
-  for (auto &B : F) {
-    for (auto &I : B) {
+  for (BasicBlock &B : F) {
+    for (Instruction &I : B) {
       if (isInstructionTriviallyDead(&I)) {
         std::string ErrMessage;
         raw_string_ostream RSO(ErrMessage);

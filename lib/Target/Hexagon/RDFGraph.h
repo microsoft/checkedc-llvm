@@ -175,7 +175,22 @@
 // - Clobbering: applied only to defs, indicates that the value generated
 //   by this def is unspecified. A typical example would be volatile registers
 //   after function calls.
-//
+// - Fixed: the register in this def/use cannot be replaced with any other
+//   register. A typical case would be a parameter register to a call, or
+//   the register with the return value from a function.
+// - Undef: the register in this reference the register is assumed to have
+//   no pre-existing value, even if it appears to be reached by some def.
+//   This is typically used to prevent keeping registers artificially live
+//   in cases when they are defined via predicated instructions. For example:
+//     r0 = add-if-true cond, r10, r11                (1)
+//     r0 = add-if-false cond, r12, r13, r0<imp-use>  (2)
+//     ... = r0                                       (3)
+//   Before (1), r0 is not intended to be live, and the use of r0 in (3) is
+//   not meant to be reached by any def preceding (1). However, since the
+//   defs in (1) and (2) are both preserving, these properties alone would
+//   imply that the use in (3) may indeed be reached by some prior def.
+//   Adding Undef flag to the def in (1) prevents that. The Undef flag
+//   may be applied to both defs and uses.
 //
 // *** Shadow references
 //
@@ -202,7 +217,6 @@
 #ifndef RDF_GRAPH_H
 #define RDF_GRAPH_H
 
-#include "llvm/ADT/BitVector.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -211,9 +225,8 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <vector>
-
-using namespace llvm;
 
 namespace llvm {
   class MachineBasicBlock;
@@ -224,7 +237,6 @@ namespace llvm {
   class MachineDominatorTree;
   class TargetInstrInfo;
   class TargetRegisterInfo;
-}
 
 namespace rdf {
   typedef uint32_t NodeId;
@@ -247,13 +259,14 @@ namespace rdf {
       Block         = 0x0005 << 2,  // 101
       Func          = 0x0006 << 2,  // 110
 
-      // Flags: 5 bits for now
-      FlagMask      = 0x001F << 5,
-      Shadow        = 0x0001 << 5,  // 00001, Has extra reaching defs.
-      Clobbering    = 0x0002 << 5,  // 00010, Produces unspecified values.
-      PhiRef        = 0x0004 << 5,  // 00100, Member of PhiNode.
-      Preserving    = 0x0008 << 5,  // 01000, Def can keep original bits.
-      Fixed         = 0x0010 << 5,  // 10000, Fixed register.
+      // Flags: 6 bits for now
+      FlagMask      = 0x003F << 5,
+      Shadow        = 0x0001 << 5,  // 000001, Has extra reaching defs.
+      Clobbering    = 0x0002 << 5,  // 000010, Produces unspecified values.
+      PhiRef        = 0x0004 << 5,  // 000100, Member of PhiNode.
+      Preserving    = 0x0008 << 5,  // 001000, Def can keep original bits.
+      Fixed         = 0x0010 << 5,  // 010000, Fixed register.
+      Undef         = 0x0020 << 5,  // 100000, Has no pre-existing value.
     };
 
     static uint16_t type(uint16_t T)  { return T & TypeMask; }
@@ -286,6 +299,13 @@ namespace rdf {
       }
       return false;
     }
+  };
+
+  struct BuildOptions {
+    enum : unsigned {
+      None          = 0x00,
+      KeepDeadPhis  = 0x01,   // Do not remove dead phis during build.
+    };
   };
 
   template <typename T> struct NodeAddr {
@@ -676,9 +696,16 @@ namespace rdf {
       StorageType Stack;
     };
 
-    typedef std::map<RegisterRef,DefStack> DefStackMap;
+    struct RegisterRefHasher {
+      unsigned operator() (RegisterRef RR) const {
+        return RR.Reg | (RR.Sub << 24);
+      }
+    };
+    // Make this std::unordered_map for speed of accessing elements.
+    typedef std::unordered_map<RegisterRef,DefStack,RegisterRefHasher>
+          DefStackMap;
 
-    void build();
+    void build(unsigned Options = BuildOptions::None);
     void pushDefs(NodeAddr<InstrNode*> IA, DefStackMap &DM);
     void markBlock(NodeId B, DefStackMap &DefM);
     void releaseBlock(NodeId B, DefStackMap &DefM);
@@ -731,6 +758,10 @@ namespace rdf {
       return BA.Addr->getType() == NodeAttrs::Code &&
              BA.Addr->getKind() == NodeAttrs::Phi;
     }
+    static bool IsPreservingDef(const NodeAddr<DefNode*> DA) {
+      uint16_t Flags = DA.Addr->getFlags();
+      return (Flags & NodeAttrs::Preserving) && !(Flags & NodeAttrs::Undef);
+    }
 
   private:
     void reset();
@@ -780,9 +811,15 @@ namespace rdf {
       IA.Addr->removeMember(RA, *this);
     }
 
+    NodeAddr<BlockNode*> findBlock(MachineBasicBlock *BB) {
+      return BlockNodes[BB];
+    }
+
     TimerGroup TimeG;
     NodeAddr<FuncNode*> Func;
     NodeAllocator Memory;
+    // Local map:  MachineBasicBlock -> NodeAddr<BlockNode*>
+    std::map<MachineBasicBlock*,NodeAddr<BlockNode*>> BlockNodes;
 
     MachineFunction &MF;
     const TargetInstrInfo &TII;
@@ -852,5 +889,6 @@ namespace rdf {
       : Print<NodeAddr<T>>(x, g) {}
   };
 } // namespace rdf
+} // namespace llvm
 
 #endif // RDF_GRAPH_H

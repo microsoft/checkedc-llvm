@@ -12,13 +12,19 @@
 //===----------------------------------------------------------------------===//
 
 #include "TGParser.h"
+#include "llvm/ADT/None.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Record.h"
 #include <algorithm>
-#include <sstream>
+#include <cassert>
+#include <cstdint>
+
 using namespace llvm;
 
 //===----------------------------------------------------------------------===//
@@ -26,10 +32,12 @@ using namespace llvm;
 //===----------------------------------------------------------------------===//
 
 namespace llvm {
+
 struct SubClassReference {
   SMRange RefRange;
   Record *Rec;
   std::vector<Init*> TemplateArgs;
+
   SubClassReference() : Rec(nullptr) {}
 
   bool isInvalid() const { return Rec == nullptr; }
@@ -39,6 +47,7 @@ struct SubMultiClassReference {
   SMRange RefRange;
   MultiClass *MC;
   std::vector<Init*> TemplateArgs;
+
   SubMultiClassReference() : MC(nullptr) {}
 
   bool isInvalid() const { return MC == nullptr; }
@@ -132,7 +141,7 @@ bool TGParser::SetValue(Record *CurRec, SMLoc Loc, Init *ValName,
   }
 
   if (RV->setValue(V)) {
-    std::string InitType = "";
+    std::string InitType;
     if (BitsInit *BI = dyn_cast<BitsInit>(V))
       InitType = (Twine("' of type bit initializer with length ") +
                   Twine(BI->getNumBits())).str();
@@ -646,7 +655,6 @@ bool TGParser::ParseOptionalBitList(std::vector<unsigned> &Ranges) {
   return false;
 }
 
-
 /// ParseType - Parse and return a tblgen type.  This returns null on error.
 ///
 ///   Type ::= STRING                       // string type
@@ -662,7 +670,7 @@ RecTy *TGParser::ParseType() {
   switch (Lex.getCode()) {
   default: TokError("Unknown token when expecting a type"); return nullptr;
   case tgtok::String: Lex.Lex(); return StringRecTy::get();
-  case tgtok::Code:   Lex.Lex(); return StringRecTy::get();
+  case tgtok::Code:   Lex.Lex(); return CodeRecTy::get();
   case tgtok::Bit:    Lex.Lex(); return BitRecTy::get();
   case tgtok::Int:    Lex.Lex(); return IntRecTy::get();
   case tgtok::Dag:    Lex.Lex(); return DagRecTy::get();
@@ -1112,7 +1120,6 @@ RecTy *TGParser::ParseOperatorType() {
   return Type;
 }
 
-
 /// ParseSimpleValue - Parse a tblgen value.  This returns null on error.
 ///
 ///   SimpleValue ::= IDValue
@@ -1166,7 +1173,7 @@ Init *TGParser::ParseSimpleValue(Record *CurRec, RecTy *ItemType,
     break;
   }
   case tgtok::CodeFragment:
-    R = StringInit::get(Lex.getCurStrVal());
+    R = CodeInit::get(Lex.getCurStrVal());
     Lex.Lex();
     break;
   case tgtok::question:
@@ -1467,7 +1474,7 @@ Init *TGParser::ParseValue(Record *CurRec, RecTy *ItemType, IDParseMode Mode) {
   if (!Result) return nullptr;
 
   // Parse the suffixes now if present.
-  while (1) {
+  while (true) {
     switch (Lex.getCode()) {
     default: return Result;
     case tgtok::l_brace: {
@@ -1593,7 +1600,7 @@ std::vector<std::pair<llvm::Init*, std::string> >
 TGParser::ParseDagArgList(Record *CurRec) {
   std::vector<std::pair<llvm::Init*, std::string> > Result;
 
-  while (1) {
+  while (true) {
     // DagArg ::= VARNAME
     if (Lex.getCode() == tgtok::VarName) {
       // A missing value is treated like '?'.
@@ -1624,7 +1631,6 @@ TGParser::ParseDagArgList(Record *CurRec) {
 
   return Result;
 }
-
 
 /// ParseValueList - Parse a comma separated list of values, returning them as a
 /// vector.  Note that this always expects to be able to parse at least one
@@ -1675,7 +1681,6 @@ std::vector<Init*> TGParser::ParseValueList(Record *CurRec, Record *ArgsRec,
 
   return Result;
 }
-
 
 /// ParseDeclaration - Read a declaration, returning the name of field ID, or an
 /// empty string on error.  This can happen in a number of different context's,
@@ -1850,7 +1855,6 @@ bool TGParser::ParseTemplateArgList(Record *CurRec) {
   return false;
 }
 
-
 /// ParseBodyItem - Parse a single item at within the body of a def or class.
 ///
 ///   BodyItem ::= Declaration ';'
@@ -1953,7 +1957,7 @@ bool TGParser::ParseObjectBody(Record *CurRec) {
 
     // Read all of the subclasses.
     SubClassReference SubClass = ParseSubClassReference(CurRec, false);
-    while (1) {
+    while (true) {
       // Check for error.
       if (!SubClass.Rec) return true;
 
@@ -2144,7 +2148,7 @@ bool TGParser::ParseClass() {
 std::vector<LetRecord> TGParser::ParseLetList() {
   std::vector<LetRecord> Result;
 
-  while (1) {
+  while (true) {
     if (Lex.getCode() != tgtok::Id) {
       TokError("expected identifier in let definition");
       return std::vector<LetRecord>();
@@ -2266,7 +2270,7 @@ bool TGParser::ParseMultiClass() {
     // Read all of the submulticlasses.
     SubMultiClassReference SubMultiClass =
       ParseSubMultiClassReference(CurMultiClass);
-    while (1) {
+    while (true) {
       // Check for error.
       if (!SubMultiClass.MC) return true;
 
@@ -2521,7 +2525,7 @@ bool TGParser::ParseDefm(MultiClass *CurMultiClass) {
   SMLoc SubClassLoc = Lex.getLoc();
   SubClassReference Ref = ParseSubClassReference(nullptr, true);
 
-  while (1) {
+  while (true) {
     if (!Ref.Rec) return true;
 
     // To instantiate a multiclass, we need to first get the multiclass, then
@@ -2591,7 +2595,7 @@ bool TGParser::ParseDefm(MultiClass *CurMultiClass) {
     // Process all the classes to inherit as if they were part of a
     // regular 'def' and inherit all record values.
     SubClassReference SubClass = ParseSubClassReference(nullptr, false);
-    while (1) {
+    while (true) {
       // Check for error.
       if (!SubClass.Rec) return true;
 
@@ -2666,4 +2670,3 @@ bool TGParser::ParseFile() {
 
   return TokError("Unexpected input at top level");
 }
-

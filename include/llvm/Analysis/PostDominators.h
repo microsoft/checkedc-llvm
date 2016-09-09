@@ -48,7 +48,7 @@ public:
 
   /// \brief Run the analysis pass over a function and produce a post dominator
   ///        tree.
-  PostDominatorTree run(Function &F);
+  PostDominatorTree run(Function &F, FunctionAnalysisManager &);
 };
 
 /// \brief Printer pass for the \c PostDominatorTree.
@@ -58,7 +58,7 @@ class PostDominatorTreePrinterPass
 
 public:
   explicit PostDominatorTreePrinterPass(raw_ostream &OS);
-  PreservedAnalyses run(Function &F, AnalysisManager<Function> &AM);
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 };
 
 struct PostDominatorTreeWrapperPass : public FunctionPass {
@@ -89,7 +89,7 @@ FunctionPass* createPostDomTree();
 
 template <> struct GraphTraits<PostDominatorTree*>
   : public GraphTraits<DomTreeNode*> {
-  static NodeType *getEntryNode(PostDominatorTree *DT) {
+  static NodeRef getEntryNode(PostDominatorTree *DT) {
     return DT->getRootNode();
   }
 

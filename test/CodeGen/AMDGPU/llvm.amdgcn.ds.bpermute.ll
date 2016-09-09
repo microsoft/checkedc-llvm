@@ -4,33 +4,29 @@ declare i32 @llvm.amdgcn.ds.bpermute(i32, i32) #0
 
 ; FUNC-LABEL: {{^}}ds_bpermute:
 ; CHECK: ds_bpermute_b32 v{{[0-9]+}}, v{{[0-9]+}}, v{{[0-9]+}}
+; CHECK: s_waitcnt lgkmcnt
 define void @ds_bpermute(i32 addrspace(1)* %out, i32 %index, i32 %src) nounwind {
   %bpermute = call i32 @llvm.amdgcn.ds.bpermute(i32 %index, i32 %src) #0
   store i32 %bpermute, i32 addrspace(1)* %out, align 4
   ret void
 }
 
-; FUNC-LABEL: {{^}}bpermute_no_waitcnt_test:
-; CHECK: s_cbranch_scc1
-; CHECK: ds_bpermute_b32 v{{[0-9]+}}, v{{[0-9]+}}, v{{[0-9]+}}
-; CHECK-NOT: s_waitcnt
-define void @bpermute_no_waitcnt_test(i32 addrspace(1)* %out, i32 %cond) {
-entry:
+; CHECK-LABEL: {{^}}ds_bpermute_imm_offset:
+; CHECK: ds_bpermute_b32 v{{[0-9]+}}, v{{[0-9]+}}, v{{[0-9]+}} offset:4
+; CHECK: s_waitcnt lgkmcnt
+define void @ds_bpermute_imm_offset(i32 addrspace(1)* %out, i32 %base_index, i32 %src) nounwind {
+  %index = add i32 %base_index, 4
+  %bpermute = call i32 @llvm.amdgcn.ds.bpermute(i32 %index, i32 %src) #0
+  store i32 %bpermute, i32 addrspace(1)* %out, align 4
+  ret void
+}
 
-  %tmp = icmp eq i32 %cond, 0
-  br i1 %tmp, label %if, label %else
-
-if:                                               ; preds = %entry
-
-  %bpermute = call i32 @llvm.amdgcn.ds.bpermute(i32 0, i32 0) #0
-  br label %endif
-
-else:                                             ; preds = %entry
-  br label %endif
-
-endif:
-  %val = phi i32 [ %bpermute, %if ], [0, %else]      ; preds = %else, %if
-  store i32 %val, i32 addrspace(1)* %out, align 4
+; CHECK-LABEL: {{^}}ds_bpermute_imm_index:
+; CHECK: ds_bpermute_b32 v{{[0-9]+}}, v{{[0-9]+}}, v{{[0-9]+}} offset:64
+; CHECK: s_waitcnt lgkmcnt
+define void @ds_bpermute_imm_index(i32 addrspace(1)* %out, i32 %base_index, i32 %src) nounwind {
+  %bpermute = call i32 @llvm.amdgcn.ds.bpermute(i32 64, i32 %src) #0
+  store i32 %bpermute, i32 addrspace(1)* %out, align 4
   ret void
 }
 

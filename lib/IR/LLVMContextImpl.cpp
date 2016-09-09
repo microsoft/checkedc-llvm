@@ -16,6 +16,8 @@
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/OptBisect.h"
+#include "llvm/Support/ManagedStatic.h"
 #include <algorithm>
 using namespace llvm;
 
@@ -43,6 +45,7 @@ LLVMContextImpl::LLVMContextImpl(LLVMContext &C)
   DiagnosticHandler = nullptr;
   DiagnosticContext = nullptr;
   RespectDiagnosticFilters = false;
+  DiagnosticHotnessRequested = false;
   YieldCallback = nullptr;
   YieldOpaqueHandle = nullptr;
   NamedStructTypesUniqueID = 0;
@@ -97,10 +100,9 @@ LLVMContextImpl::~LLVMContextImpl() {
   InlineAsms.freeConstants();
   DeleteContainerSeconds(IntConstants);
   DeleteContainerSeconds(FPConstants);
-  
-  for (StringMap<ConstantDataSequential*>::iterator I = CDSConstants.begin(),
-       E = CDSConstants.end(); I != E; ++I)
-    delete I->second;
+
+  for (auto &CDSConstant : CDSConstants)
+    delete CDSConstant.second;
   CDSConstants.clear();
 
   // Destroy attributes.
@@ -232,3 +234,19 @@ void GetElementPtrConstantExpr::anchor() { }
 
 void CompareConstantExpr::anchor() { }
 
+/// Singleton instance of the OptBisect class.
+///
+/// This singleton is accessed via the LLVMContext::getOptBisect() function.  It
+/// provides a mechanism to disable passes and individual optimizations at
+/// compile time based on a command line option (-opt-bisect-limit) in order to
+/// perform a bisecting search for optimization-related problems.
+///
+/// Even if multiple LLVMContext objects are created, they will all return the
+/// same instance of OptBisect in order to provide a single bisect count.  Any
+/// code that uses the OptBisect object should be serialized when bisection is
+/// enabled in order to enable a consistent bisect count.
+static ManagedStatic<OptBisect> OptBisector;
+
+OptBisect &LLVMContextImpl::getOptBisect() {
+  return *OptBisector;
+}

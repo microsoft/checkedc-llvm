@@ -2308,9 +2308,12 @@ class LD_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
 }
 
 class LD_B_DESC : LD_DESC_BASE<"ld.b", load, v16i8, MSA128BOpnd, mem_simm10>;
-class LD_H_DESC : LD_DESC_BASE<"ld.h", load, v8i16, MSA128HOpnd, mem_simm10_lsl1>;
-class LD_W_DESC : LD_DESC_BASE<"ld.w", load, v4i32, MSA128WOpnd, mem_simm10_lsl2>;
-class LD_D_DESC : LD_DESC_BASE<"ld.d", load, v2i64, MSA128DOpnd, mem_simm10_lsl3>;
+class LD_H_DESC : LD_DESC_BASE<"ld.h", load, v8i16, MSA128HOpnd,
+                               mem_simm10_lsl1, addrimm10lsl1>;
+class LD_W_DESC : LD_DESC_BASE<"ld.w", load, v4i32, MSA128WOpnd,
+                               mem_simm10_lsl2, addrimm10lsl2>;
+class LD_D_DESC : LD_DESC_BASE<"ld.d", load, v2i64, MSA128DOpnd,
+                               mem_simm10_lsl3, addrimm10lsl3>;
 
 class LDI_B_DESC : MSA_I10_LDI_DESC_BASE<"ldi.b", MSA128BOpnd>;
 class LDI_H_DESC : MSA_I10_LDI_DESC_BASE<"ldi.h", MSA128HOpnd>;
@@ -2318,19 +2321,18 @@ class LDI_W_DESC : MSA_I10_LDI_DESC_BASE<"ldi.w", MSA128WOpnd>;
 class LDI_D_DESC : MSA_I10_LDI_DESC_BASE<"ldi.d", MSA128DOpnd>;
 
 class LSA_DESC_BASE<string instr_asm, RegisterOperand RORD,
-                    RegisterOperand RORS = RORD, RegisterOperand RORT = RORD,
-                    InstrItinClass itin = NoItinerary > {
+                    InstrItinClass itin = NoItinerary> {
   dag OutOperandList = (outs RORD:$rd);
-  dag InOperandList = (ins RORS:$rs, RORT:$rt, uimm2_plus1:$sa);
+  dag InOperandList = (ins RORD:$rs, RORD:$rt, uimm2_plus1:$sa);
   string AsmString = !strconcat(instr_asm, "\t$rd, $rs, $rt, $sa");
-  list<dag> Pattern = [(set RORD:$rd, (add RORT:$rt,
-                                                (shl RORS:$rs,
+  list<dag> Pattern = [(set RORD:$rd, (add RORD:$rt,
+                                                (shl RORD:$rs,
                                                      immZExt2Lsa:$sa)))];
   InstrItinClass Itinerary = itin;
 }
 
-class LSA_DESC : LSA_DESC_BASE<"lsa", GPR32Opnd>;
-class DLSA_DESC : LSA_DESC_BASE<"dlsa", GPR64Opnd>;
+class LSA_DESC : LSA_DESC_BASE<"lsa", GPR32Opnd, II_LSA>;
+class DLSA_DESC : LSA_DESC_BASE<"dlsa", GPR64Opnd, II_DLSA>;
 
 class MADD_Q_H_DESC : MSA_3RF_4RF_DESC_BASE<"madd_q.h", int_mips_madd_q_h,
                                             MSA128HOpnd>;
@@ -2642,9 +2644,12 @@ class ST_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
 }
 
 class ST_B_DESC : ST_DESC_BASE<"st.b", store, v16i8, MSA128BOpnd, mem_simm10>;
-class ST_H_DESC : ST_DESC_BASE<"st.h", store, v8i16, MSA128HOpnd, mem_simm10_lsl1>;
-class ST_W_DESC : ST_DESC_BASE<"st.w", store, v4i32, MSA128WOpnd, mem_simm10_lsl2>;
-class ST_D_DESC : ST_DESC_BASE<"st.d", store, v2i64, MSA128DOpnd, mem_simm10_lsl3>;
+class ST_H_DESC : ST_DESC_BASE<"st.h", store, v8i16, MSA128HOpnd,
+                               mem_simm10_lsl1, addrimm10lsl1>;
+class ST_W_DESC : ST_DESC_BASE<"st.w", store, v4i32, MSA128WOpnd,
+                               mem_simm10_lsl2, addrimm10lsl2>;
+class ST_D_DESC : ST_DESC_BASE<"st.d", store, v2i64, MSA128DOpnd,
+                               mem_simm10_lsl3, addrimm10lsl3>;
 
 class SUBS_S_B_DESC : MSA_3R_DESC_BASE<"subs_s.b", int_mips_subs_s_b,
                                        MSA128BOpnd>;
@@ -3524,16 +3529,16 @@ class MSAPat<dag pattern, dag result, list<Predicate> pred = [HasMSA]> :
 def : MSAPat<(extractelt (v4i32 MSA128W:$ws), immZExt4:$idx),
              (COPY_S_W MSA128W:$ws, immZExt4:$idx)>;
 
-def : MSAPat<(v8f16 (load addrimm10:$addr)), (LD_H addrimm10:$addr)>;
-def : MSAPat<(v4f32 (load addrimm10:$addr)), (LD_W addrimm10:$addr)>;
-def : MSAPat<(v2f64 (load addrimm10:$addr)), (LD_D addrimm10:$addr)>;
+def : MSAPat<(v8f16 (load addrimm10lsl1:$addr)), (LD_H addrimm10lsl1:$addr)>;
+def : MSAPat<(v4f32 (load addrimm10lsl2:$addr)), (LD_W addrimm10lsl2:$addr)>;
+def : MSAPat<(v2f64 (load addrimm10lsl3:$addr)), (LD_D addrimm10lsl3:$addr)>;
 
-def ST_FH : MSAPat<(store (v8f16 MSA128H:$ws), addrimm10:$addr),
-                   (ST_H MSA128H:$ws, addrimm10:$addr)>;
-def ST_FW : MSAPat<(store (v4f32 MSA128W:$ws), addrimm10:$addr),
-                   (ST_W MSA128W:$ws, addrimm10:$addr)>;
-def ST_FD : MSAPat<(store (v2f64 MSA128D:$ws), addrimm10:$addr),
-                   (ST_D MSA128D:$ws, addrimm10:$addr)>;
+def ST_FH : MSAPat<(store (v8f16 MSA128H:$ws), addrimm10lsl1:$addr),
+                   (ST_H MSA128H:$ws, addrimm10lsl1:$addr)>;
+def ST_FW : MSAPat<(store (v4f32 MSA128W:$ws), addrimm10lsl2:$addr),
+                   (ST_W MSA128W:$ws, addrimm10lsl2:$addr)>;
+def ST_FD : MSAPat<(store (v2f64 MSA128D:$ws), addrimm10lsl3:$addr),
+                   (ST_D MSA128D:$ws, addrimm10lsl3:$addr)>;
 
 class MSA_FABS_PSEUDO_DESC_BASE<RegisterOperand ROWD,
                                 RegisterOperand ROWS = ROWD,

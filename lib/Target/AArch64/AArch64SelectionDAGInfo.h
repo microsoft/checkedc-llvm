@@ -20,11 +20,11 @@ namespace llvm {
 
 class AArch64SelectionDAGInfo : public SelectionDAGTargetInfo {
 public:
-
-  SDValue EmitTargetCodeForMemset(SelectionDAG &DAG, SDLoc dl, SDValue Chain,
-                                  SDValue Dst, SDValue Src, SDValue Size,
-                                  unsigned Align, bool isVolatile,
+  SDValue EmitTargetCodeForMemset(SelectionDAG &DAG, const SDLoc &dl,
+                                  SDValue Chain, SDValue Dst, SDValue Src,
+                                  SDValue Size, unsigned Align, bool isVolatile,
                                   MachinePointerInfo DstPtrInfo) const override;
+  bool generateFMAsInMachineCombiner(CodeGenOpt::Level OptLevel) const override;
 };
 }
 

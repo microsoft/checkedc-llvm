@@ -21,7 +21,7 @@ set(NVPTXCodeGen_sources
   NVPTXInferAddressSpaces.cpp
   NVPTXInstrInfo.cpp
   NVPTXLowerAggrCopies.cpp
-  NVPTXLowerKernelArgs.cpp
+  NVPTXLowerArgs.cpp
   NVPTXLowerAlloca.cpp
   NVPTXPeephole.cpp
   NVPTXMCExpr.cpp
@@ -32,6 +32,7 @@ set(NVPTXCodeGen_sources
   NVPTXTargetMachine.cpp
   NVPTXTargetTransformInfo.cpp
   NVPTXUtilities.cpp
+  NVVMIntrRange.cpp
   NVVMReflect.cpp
   )
 

@@ -14,6 +14,7 @@
 
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -228,7 +229,7 @@ static Value *getUnwindDestTokenHelper(Instruction *EHPad,
             Instruction *ChildPad = cast<Instruction>(Child);
             auto Memo = MemoMap.find(ChildPad);
             if (Memo == MemoMap.end()) {
-              // Haven't figure out this child pad yet; queue it.
+              // Haven't figured out this child pad yet; queue it.
               Worklist.push_back(ChildPad);
               continue;
             }
@@ -366,6 +367,10 @@ static Value *getUnwindDestToken(Instruction *EHPad,
   // search up the chain to try to find a funclet with information.  Put
   // null entries in the memo map to avoid re-processing as we go up.
   MemoMap[EHPad] = nullptr;
+#ifndef NDEBUG
+  SmallPtrSet<Instruction *, 4> TempMemos;
+  TempMemos.insert(EHPad);
+#endif
   Instruction *LastUselessPad = EHPad;
   Value *AncestorToken;
   for (AncestorToken = getParentPad(EHPad);
@@ -374,6 +379,13 @@ static Value *getUnwindDestToken(Instruction *EHPad,
     // Skip over catchpads since they just follow their catchswitches.
     if (isa<CatchPadInst>(AncestorPad))
       continue;
+    // If the MemoMap had an entry mapping AncestorPad to nullptr, since we
+    // haven't yet called getUnwindDestTokenHelper for AncestorPad in this
+    // call to getUnwindDestToken, that would mean that AncestorPad had no
+    // information in itself, its descendants, or its ancestors.  If that
+    // were the case, then we should also have recorded the lack of information
+    // for the descendant that we're coming from.  So assert that we don't
+    // find a null entry in the MemoMap for AncestorPad.
     assert(!MemoMap.count(AncestorPad) || MemoMap[AncestorPad]);
     auto AncestorMemo = MemoMap.find(AncestorPad);
     if (AncestorMemo == MemoMap.end()) {
@@ -384,25 +396,85 @@ static Value *getUnwindDestToken(Instruction *EHPad,
     if (UnwindDestToken)
       break;
     LastUselessPad = AncestorPad;
+    MemoMap[LastUselessPad] = nullptr;
+#ifndef NDEBUG
+    TempMemos.insert(LastUselessPad);
+#endif
   }
 
-  // Since the whole tree under LastUselessPad has no information, it all must
-  // match UnwindDestToken; record that to avoid repeating the search.
+  // We know that getUnwindDestTokenHelper was called on LastUselessPad and
+  // returned nullptr (and likewise for EHPad and any of its ancestors up to
+  // LastUselessPad), so LastUselessPad has no information from below.  Since
+  // getUnwindDestTokenHelper must investigate all downward paths through
+  // no-information nodes to prove that a node has no information like this,
+  // and since any time it finds information it records it in the MemoMap for
+  // not just the immediately-containing funclet but also any ancestors also
+  // exited, it must be the case that, walking downward from LastUselessPad,
+  // visiting just those nodes which have not been mapped to an unwind dest
+  // by getUnwindDestTokenHelper (the nullptr TempMemos notwithstanding, since
+  // they are just used to keep getUnwindDestTokenHelper from repeating work),
+  // any node visited must have been exhaustively searched with no information
+  // for it found.
   SmallVector<Instruction *, 8> Worklist(1, LastUselessPad);
   while (!Worklist.empty()) {
     Instruction *UselessPad = Worklist.pop_back_val();
-    assert(!MemoMap.count(UselessPad) || MemoMap[UselessPad] == nullptr);
+    auto Memo = MemoMap.find(UselessPad);
+    if (Memo != MemoMap.end() && Memo->second) {
+      // Here the name 'UselessPad' is a bit of a misnomer, because we've found
+      // that it is a funclet that does have information about unwinding to
+      // a particular destination; its parent was a useless pad.
+      // Since its parent has no information, the unwind edge must not escape
+      // the parent, and must target a sibling of this pad.  This local unwind
+      // gives us no information about EHPad.  Leave it and the subtree rooted
+      // at it alone.
+      assert(getParentPad(Memo->second) == getParentPad(UselessPad));
+      continue;
+    }
+    // We know we don't have information for UselesPad.  If it has an entry in
+    // the MemoMap (mapping it to nullptr), it must be one of the TempMemos
+    // added on this invocation of getUnwindDestToken; if a previous invocation
+    // recorded nullptr, it would have had to prove that the ancestors of
+    // UselessPad, which include LastUselessPad, had no information, and that
+    // in turn would have required proving that the descendants of
+    // LastUselesPad, which include EHPad, have no information about
+    // LastUselessPad, which would imply that EHPad was mapped to nullptr in
+    // the MemoMap on that invocation, which isn't the case if we got here.
+    assert(!MemoMap.count(UselessPad) || TempMemos.count(UselessPad));
+    // Assert as we enumerate users that 'UselessPad' doesn't have any unwind
+    // information that we'd be contradicting by making a map entry for it
+    // (which is something that getUnwindDestTokenHelper must have proved for
+    // us to get here).  Just assert on is direct users here; the checks in
+    // this downward walk at its descendants will verify that they don't have
+    // any unwind edges that exit 'UselessPad' either (i.e. they either have no
+    // unwind edges or unwind to a sibling).
     MemoMap[UselessPad] = UnwindDestToken;
     if (auto *CatchSwitch = dyn_cast<CatchSwitchInst>(UselessPad)) {
-      for (BasicBlock *HandlerBlock : CatchSwitch->handlers())
-        for (User *U : HandlerBlock->getFirstNonPHI()->users())
+      assert(CatchSwitch->getUnwindDest() == nullptr && "Expected useless pad");
+      for (BasicBlock *HandlerBlock : CatchSwitch->handlers()) {
+        auto *CatchPad = HandlerBlock->getFirstNonPHI();
+        for (User *U : CatchPad->users()) {
+          assert(
+              (!isa<InvokeInst>(U) ||
+               (getParentPad(
+                    cast<InvokeInst>(U)->getUnwindDest()->getFirstNonPHI()) ==
+                CatchPad)) &&
+              "Expected useless pad");
           if (isa<CatchSwitchInst>(U) || isa<CleanupPadInst>(U))
             Worklist.push_back(cast<Instruction>(U));
+        }
+      }
     } else {
       assert(isa<CleanupPadInst>(UselessPad));
-      for (User *U : UselessPad->users())
+      for (User *U : UselessPad->users()) {
+        assert(!isa<CleanupReturnInst>(U) && "Expected useless pad");
+        assert((!isa<InvokeInst>(U) ||
+                (getParentPad(
+                     cast<InvokeInst>(U)->getUnwindDest()->getFirstNonPHI()) ==
+                 UselessPad)) &&
+               "Expected useless pad");
         if (isa<CatchSwitchInst>(U) || isa<CleanupPadInst>(U))
           Worklist.push_back(cast<Instruction>(U));
+      }
     }
   }
 
@@ -688,6 +760,34 @@ static void HandleInlinedEHPad(InvokeInst *II, BasicBlock *FirstNewBlock,
   UnwindDest->removePredecessor(InvokeBB);
 }
 
+/// When inlining a call site that has !llvm.mem.parallel_loop_access metadata,
+/// that metadata should be propagated to all memory-accessing cloned
+/// instructions.
+static void PropagateParallelLoopAccessMetadata(CallSite CS,
+                                                ValueToValueMapTy &VMap) {
+  MDNode *M =
+    CS.getInstruction()->getMetadata(LLVMContext::MD_mem_parallel_loop_access);
+  if (!M)
+    return;
+
+  for (ValueToValueMapTy::iterator VMI = VMap.begin(), VMIE = VMap.end();
+       VMI != VMIE; ++VMI) {
+    if (!VMI->second)
+      continue;
+
+    Instruction *NI = dyn_cast<Instruction>(VMI->second);
+    if (!NI)
+      continue;
+
+    if (MDNode *PM = NI->getMetadata(LLVMContext::MD_mem_parallel_loop_access)) {
+        M = MDNode::concatenate(PM, M);
+      NI->setMetadata(LLVMContext::MD_mem_parallel_loop_access, M);
+    } else if (NI->mayReadOrWriteMemory()) {
+      NI->setMetadata(LLVMContext::MD_mem_parallel_loop_access, M);
+    }
+  }
+}
+
 /// When inlining a function that contains noalias scope metadata,
 /// this metadata needs to be cloned so that the inlined blocks
 /// have different "unqiue scopes" at every call site. Were this not done, then
@@ -704,12 +804,11 @@ static void CloneAliasScopeMetadata(CallSite CS, ValueToValueMapTy &VMap) {
   // inter-procedural alias analysis passes. We can revisit this if it becomes
   // an efficiency or overhead problem.
 
-  for (Function::const_iterator I = CalledFunc->begin(), IE = CalledFunc->end();
-       I != IE; ++I)
-    for (BasicBlock::const_iterator J = I->begin(), JE = I->end(); J != JE; ++J) {
-      if (const MDNode *M = J->getMetadata(LLVMContext::MD_alias_scope))
+  for (const BasicBlock &I : *CalledFunc)
+    for (const Instruction &J : I) {
+      if (const MDNode *M = J.getMetadata(LLVMContext::MD_alias_scope))
         MD.insert(M);
-      if (const MDNode *M = J->getMetadata(LLVMContext::MD_noalias))
+      if (const MDNode *M = J.getMetadata(LLVMContext::MD_noalias))
         MD.insert(M);
     }
 
@@ -731,20 +830,18 @@ static void CloneAliasScopeMetadata(CallSite CS, ValueToValueMapTy &VMap) {
   // the noalias scopes and the lists of those scopes.
   SmallVector<TempMDTuple, 16> DummyNodes;
   DenseMap<const MDNode *, TrackingMDNodeRef> MDMap;
-  for (SetVector<const MDNode *>::iterator I = MD.begin(), IE = MD.end();
-       I != IE; ++I) {
+  for (const MDNode *I : MD) {
     DummyNodes.push_back(MDTuple::getTemporary(CalledFunc->getContext(), None));
-    MDMap[*I].reset(DummyNodes.back().get());
+    MDMap[I].reset(DummyNodes.back().get());
   }
 
   // Create new metadata nodes to replace the dummy nodes, replacing old
   // metadata references with either a dummy node or an already-created new
   // node.
-  for (SetVector<const MDNode *>::iterator I = MD.begin(), IE = MD.end();
-       I != IE; ++I) {
+  for (const MDNode *I : MD) {
     SmallVector<Metadata *, 4> NewOps;
-    for (unsigned i = 0, ie = (*I)->getNumOperands(); i != ie; ++i) {
-      const Metadata *V = (*I)->getOperand(i);
+    for (unsigned i = 0, ie = I->getNumOperands(); i != ie; ++i) {
+      const Metadata *V = I->getOperand(i);
       if (const MDNode *M = dyn_cast<MDNode>(V))
         NewOps.push_back(MDMap[M]);
       else
@@ -752,7 +849,7 @@ static void CloneAliasScopeMetadata(CallSite CS, ValueToValueMapTy &VMap) {
     }
 
     MDNode *NewM = MDNode::get(CalledFunc->getContext(), NewOps);
-    MDTuple *TempM = cast<MDTuple>(MDMap[*I]);
+    MDTuple *TempM = cast<MDTuple>(MDMap[I]);
     assert(TempM->isTemporary() && "Expected temporary node");
 
     TempM->replaceAllUsesWith(NewM);
@@ -1028,8 +1125,11 @@ static void AddAliasScopeMetadata(CallSite CS, ValueToValueMapTy &VMap,
 /// If the inlined function has non-byval align arguments, then
 /// add @llvm.assume-based alignment assumptions to preserve this information.
 static void AddAlignmentAssumptions(CallSite CS, InlineFunctionInfo &IFI) {
-  if (!PreserveAlignmentAssumptions)
+  if (!PreserveAlignmentAssumptions || !IFI.GetAssumptionCache)
     return;
+  AssumptionCache *AC = IFI.GetAssumptionCache
+                            ? &(*IFI.GetAssumptionCache)(*CS.getCaller())
+                            : nullptr;
   auto &DL = CS.getCaller()->getParent()->getDataLayout();
 
   // To avoid inserting redundant assumptions, we should check for assumptions
@@ -1052,13 +1152,13 @@ static void AddAlignmentAssumptions(CallSite CS, InlineFunctionInfo &IFI) {
       // If we can already prove the asserted alignment in the context of the
       // caller, then don't bother inserting the assumption.
       Value *Arg = CS.getArgument(I->getArgNo());
-      if (getKnownAlignment(Arg, DL, CS.getInstruction(),
-                            &IFI.ACT->getAssumptionCache(*CS.getCaller()),
-                            &DT) >= Align)
+      if (getKnownAlignment(Arg, DL, CS.getInstruction(), AC, &DT) >= Align)
         continue;
 
-      IRBuilder<>(CS.getInstruction())
-          .CreateAlignmentAssumption(DL, Arg, Align);
+      CallInst *NewAssumption = IRBuilder<>(CS.getInstruction())
+                                    .CreateAlignmentAssumption(DL, Arg, Align);
+      if (AC)
+        AC->registerAssumption(NewAssumption);
     }
   }
 }
@@ -1169,12 +1269,13 @@ static Value *HandleByValArgument(Value *Arg, Instruction *TheCall,
     if (ByValAlignment <= 1)  // 0 = unspecified, 1 = no particular alignment.
       return Arg;
 
+    AssumptionCache *AC =
+        IFI.GetAssumptionCache ? &(*IFI.GetAssumptionCache)(*Caller) : nullptr;
     const DataLayout &DL = Caller->getParent()->getDataLayout();
 
     // If the pointer is already known to be sufficiently aligned, or if we can
     // round it up to a larger alignment, then we don't need a temporary.
-    if (getOrEnforceKnownAlignment(Arg, ByValAlignment, DL, TheCall,
-                                   &IFI.ACT->getAssumptionCache(*Caller)) >=
+    if (getOrEnforceKnownAlignment(Arg, ByValAlignment, DL, TheCall, AC) >=
         ByValAlignment)
       return Arg;
     
@@ -1237,7 +1338,8 @@ static bool hasLifetimeMarkers(AllocaInst *AI) {
 /// Rebuild the entire inlined-at chain for this instruction so that the top of
 /// the chain now is inlined-at the new call site.
 static DebugLoc
-updateInlinedAtInfo(DebugLoc DL, DILocation *InlinedAtNode, LLVMContext &Ctx,
+updateInlinedAtInfo(const DebugLoc &DL, DILocation *InlinedAtNode,
+                    LLVMContext &Ctx,
                     DenseMap<const DILocation *, DILocation *> &IANodes) {
   SmallVector<DILocation *, 3> InlinedAtLocations;
   DILocation *Last = InlinedAtNode;
@@ -1258,8 +1360,7 @@ updateInlinedAtInfo(DebugLoc DL, DILocation *InlinedAtNode, LLVMContext &Ctx,
   // Starting from the top, rebuild the nodes to point to the new inlined-at
   // location (then rebuilding the rest of the chain behind it) and update the
   // map of already-constructed inlined-at nodes.
-  for (const DILocation *MD : make_range(InlinedAtLocations.rbegin(),
-                                         InlinedAtLocations.rend())) {
+  for (const DILocation *MD : reverse(InlinedAtLocations)) {
     Last = IANodes[MD] = DILocation::getDistinct(
         Ctx, MD->getLine(), MD->getColumn(), MD->getScope(), Last);
   }
@@ -1269,11 +1370,18 @@ updateInlinedAtInfo(DebugLoc DL, DILocation *InlinedAtNode, LLVMContext &Ctx,
   return DebugLoc::get(DL.getLine(), DL.getCol(), DL.getScope(), Last);
 }
 
+/// Return the result of AI->isStaticAlloca() if AI were moved to the entry
+/// block. Allocas used in inalloca calls and allocas of dynamic array size
+/// cannot be static.
+static bool allocaWouldBeStaticInEntry(const AllocaInst *AI ) {
+  return isa<Constant>(AI->getArraySize()) && !AI->isUsedWithInAlloca();
+}
+
 /// Update inlined instructions' line numbers to
 /// to encode location where these instructions are inlined.
 static void fixupLineNumbers(Function *Fn, Function::iterator FI,
                              Instruction *TheCall) {
-  DebugLoc TheCallDL = TheCall->getDebugLoc();
+  const DebugLoc &TheCallDL = TheCall->getDebugLoc();
   if (!TheCallDL)
     return;
 
@@ -1303,7 +1411,7 @@ static void fixupLineNumbers(Function *Fn, Function::iterator FI,
 
         // Don't update static allocas, as they may get moved later.
         if (auto *AI = dyn_cast<AllocaInst>(BI))
-          if (isa<Constant>(AI->getArraySize()))
+          if (allocaWouldBeStaticInEntry(AI))
             continue;
 
         BI->setDebugLoc(TheCallDL);
@@ -1574,10 +1682,18 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
     // Add noalias metadata if necessary.
     AddAliasScopeMetadata(CS, VMap, DL, CalleeAAR);
 
-    // FIXME: We could register any cloned assumptions instead of clearing the
-    // whole function's cache.
-    if (IFI.ACT)
-      IFI.ACT->getAssumptionCache(*Caller).clear();
+    // Propagate llvm.mem.parallel_loop_access if necessary.
+    PropagateParallelLoopAccessMetadata(CS, VMap);
+
+    // Register any cloned assumptions.
+    if (IFI.GetAssumptionCache)
+      for (BasicBlock &NewBlock :
+           make_range(FirstNewBlock->getIterator(), Caller->end()))
+        for (Instruction &I : NewBlock) {
+          if (auto *II = dyn_cast<IntrinsicInst>(&I))
+            if (II->getIntrinsicID() == Intrinsic::assume)
+              (*IFI.GetAssumptionCache)(*Caller).registerAssumption(II);
+        }
   }
 
   // If there are any alloca instructions in the block that used to be the entry
@@ -1598,7 +1714,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
         continue;
       }
 
-      if (!isa<Constant>(AI->getArraySize()))
+      if (!allocaWouldBeStaticInEntry(AI))
         continue;
       
       // Keep track of the static allocas that we inline into the caller.
@@ -1607,7 +1723,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
       // Scan for the block of allocas that we can move over, and move them
       // all at once.
       while (isa<AllocaInst>(I) &&
-             isa<Constant>(cast<AllocaInst>(I)->getArraySize())) {
+             allocaWouldBeStaticInEntry(cast<AllocaInst>(I))) {
         IFI.StaticAllocas.push_back(cast<AllocaInst>(I));
         ++I;
       }
@@ -1843,6 +1959,13 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
           continue;
         }
 
+        // The calling convention on the deoptimize call itself may be bogus,
+        // since the code we're inlining may have undefined behavior (and may
+        // never actually execute at runtime); but all
+        // @llvm.experimental.deoptimize declarations have to have the same
+        // calling convention in a well-formed module.
+        auto CallingConv = DeoptCall->getCalledFunction()->getCallingConv();
+        NewDeoptIntrinsic->setCallingConv(CallingConv);
         auto *CurBB = RI->getParent();
         RI->eraseFromParent();
 
@@ -1856,8 +1979,9 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
                "Expected at least the deopt operand bundle");
 
         IRBuilder<> Builder(CurBB);
-        Value *NewDeoptCall =
+        CallInst *NewDeoptCall =
             Builder.CreateCall(NewDeoptIntrinsic, CallArgs, OpBundles);
+        NewDeoptCall->setCallingConv(CallingConv);
         if (NewDeoptCall->getType()->isVoidTy())
           Builder.CreateRetVoid();
         else
@@ -2087,9 +2211,10 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
   // the entries are the same or undef).  If so, remove the PHI so it doesn't
   // block other optimizations.
   if (PHI) {
+    AssumptionCache *AC =
+        IFI.GetAssumptionCache ? &(*IFI.GetAssumptionCache)(*Caller) : nullptr;
     auto &DL = Caller->getParent()->getDataLayout();
-    if (Value *V = SimplifyInstruction(PHI, DL, nullptr, nullptr,
-                                       &IFI.ACT->getAssumptionCache(*Caller))) {
+    if (Value *V = SimplifyInstruction(PHI, DL, nullptr, nullptr, AC)) {
       PHI->replaceAllUsesWith(V);
       PHI->eraseFromParent();
     }

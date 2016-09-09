@@ -42,7 +42,7 @@ public:
   TestLoopAnalysis(int &Runs) : Runs(Runs) {}
 
   /// \brief Run the analysis pass over the loop and return a result.
-  Result run(Loop &L, AnalysisManager<Loop> &AM) {
+  Result run(Loop &L, LoopAnalysisManager &AM) {
     ++Runs;
     int Count = 0;
 
@@ -65,7 +65,7 @@ public:
       : VisitedLoops(VisitedLoops), AnalyzedBlockCount(AnalyzedBlockCount),
         OnlyUseCachedResults(OnlyUseCachedResults) {}
 
-  PreservedAnalyses run(Loop &L, AnalysisManager<Loop> &AM) {
+  PreservedAnalyses run(Loop &L, LoopAnalysisManager &AM) {
     VisitedLoops.push_back(L.getName());
 
     if (OnlyUseCachedResults) {
@@ -91,47 +91,47 @@ class TestLoopInvalidatingPass {
 public:
   TestLoopInvalidatingPass(StringRef LoopName) : Name(LoopName) {}
 
-  PreservedAnalyses run(Loop &L, AnalysisManager<Loop> &AM) {
-    return L.getName() == Name ? PreservedAnalyses::none()
+  PreservedAnalyses run(Loop &L, LoopAnalysisManager &AM) {
+    return L.getName() == Name ? getLoopPassPreservedAnalyses()
                                : PreservedAnalyses::all();
   }
 
   static StringRef name() { return "TestLoopInvalidatingPass"; }
 };
 
-std::unique_ptr<Module> parseIR(const char *IR) {
-  LLVMContext &C = getGlobalContext();
+std::unique_ptr<Module> parseIR(LLVMContext &C, const char *IR) {
   SMDiagnostic Err;
   return parseAssemblyString(IR, Err, C);
 }
 
 class LoopPassManagerTest : public ::testing::Test {
 protected:
+  LLVMContext Context;
   std::unique_ptr<Module> M;
 
 public:
   LoopPassManagerTest()
-      : M(parseIR("define void @f() {\n"
-                  "entry:\n"
-                  "  br label %loop.0\n"
-                  "loop.0:\n"
-                  "  br i1 undef, label %loop.0.0, label %end\n"
-                  "loop.0.0:\n"
-                  "  br i1 undef, label %loop.0.0, label %loop.0.1\n"
-                  "loop.0.1:\n"
-                  "  br i1 undef, label %loop.0.1, label %loop.0\n"
-                  "end:\n"
-                  "  ret void\n"
-                  "}\n"
-                  "\n"
-                  "define void @g() {\n"
-                  "entry:\n"
-                  "  br label %loop.g.0\n"
-                  "loop.g.0:\n"
-                  "  br i1 undef, label %loop.g.0, label %end\n"
-                  "end:\n"
-                  "  ret void\n"
-                  "}\n")) {}
+      : M(parseIR(Context, "define void @f() {\n"
+                           "entry:\n"
+                           "  br label %loop.0\n"
+                           "loop.0:\n"
+                           "  br i1 undef, label %loop.0.0, label %end\n"
+                           "loop.0.0:\n"
+                           "  br i1 undef, label %loop.0.0, label %loop.0.1\n"
+                           "loop.0.1:\n"
+                           "  br i1 undef, label %loop.0.1, label %loop.0\n"
+                           "end:\n"
+                           "  ret void\n"
+                           "}\n"
+                           "\n"
+                           "define void @g() {\n"
+                           "entry:\n"
+                           "  br label %loop.g.0\n"
+                           "loop.g.0:\n"
+                           "  br i1 undef, label %loop.g.0, label %end\n"
+                           "end:\n"
+                           "  ret void\n"
+                           "}\n")) {}
 };
 
 #define EXPECT_N_ELEMENTS_EQ(N, EXPECTED, ACTUAL)                              \

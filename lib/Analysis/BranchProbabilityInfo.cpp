@@ -115,7 +115,12 @@ static const uint32_t IH_NONTAKEN_WEIGHT = 1;
 bool BranchProbabilityInfo::calcUnreachableHeuristics(const BasicBlock *BB) {
   const TerminatorInst *TI = BB->getTerminator();
   if (TI->getNumSuccessors() == 0) {
-    if (isa<UnreachableInst>(TI))
+    if (isa<UnreachableInst>(TI) ||
+        // If this block is terminated by a call to
+        // @llvm.experimental.deoptimize then treat it like an unreachable since
+        // the @llvm.experimental.deoptimize call is expected to practically
+        // never execute.
+        BB->getTerminatingDeoptimizeCall())
       PostDominatedByUnreachable.insert(BB);
     return false;
   }
@@ -361,7 +366,9 @@ bool BranchProbabilityInfo::calcLoopBranchHeuristics(const BasicBlock *BB,
 
   // Collect the sum of probabilities of back-edges/in-edges/exiting-edges, and
   // normalize them so that they sum up to one.
-  SmallVector<BranchProbability, 4> Probs(3, BranchProbability::getZero());
+  BranchProbability Probs[] = {BranchProbability::getZero(),
+                               BranchProbability::getZero(),
+                               BranchProbability::getZero()};
   unsigned Denom = (BackEdges.empty() ? 0 : LBH_TAKEN_WEIGHT) +
                    (InEdges.empty() ? 0 : LBH_TAKEN_WEIGHT) +
                    (ExitingEdges.empty() ? 0 : LBH_NONTAKEN_WEIGHT);
@@ -617,6 +624,7 @@ void BranchProbabilityInfo::setEdgeProbability(const BasicBlock *Src,
                                                unsigned IndexInSuccessors,
                                                BranchProbability Prob) {
   Probs[std::make_pair(Src, IndexInSuccessors)] = Prob;
+  Handles.insert(BasicBlockCallbackVH(Src, this));
   DEBUG(dbgs() << "set edge " << Src->getName() << " -> " << IndexInSuccessors
                << " successor probability to " << Prob << "\n");
 }
@@ -632,6 +640,14 @@ BranchProbabilityInfo::printEdgeProbability(raw_ostream &OS,
      << (isEdgeHot(Src, Dst) ? " [HOT edge]\n" : "\n");
 
   return OS;
+}
+
+void BranchProbabilityInfo::eraseBlock(const BasicBlock *BB) {
+  for (auto I = Probs.begin(), E = Probs.end(); I != E; ++I) {
+    auto Key = I->first;
+    if (Key.first == BB)
+      Probs.erase(Key);
+  }
 }
 
 void BranchProbabilityInfo::calculate(const Function &F, const LoopInfo &LI) {
@@ -683,4 +699,21 @@ void BranchProbabilityInfoWrapperPass::releaseMemory() { BPI.releaseMemory(); }
 void BranchProbabilityInfoWrapperPass::print(raw_ostream &OS,
                                              const Module *) const {
   BPI.print(OS);
+}
+
+char BranchProbabilityAnalysis::PassID;
+BranchProbabilityInfo
+BranchProbabilityAnalysis::run(Function &F, FunctionAnalysisManager &AM) {
+  BranchProbabilityInfo BPI;
+  BPI.calculate(F, AM.getResult<LoopAnalysis>(F));
+  return BPI;
+}
+
+PreservedAnalyses
+BranchProbabilityPrinterPass::run(Function &F, FunctionAnalysisManager &AM) {
+  OS << "Printing analysis results of BPI for function "
+     << "'" << F.getName() << "':"
+     << "\n";
+  AM.getResult<BranchProbabilityAnalysis>(F).print(OS);
+  return PreservedAnalyses::all();
 }

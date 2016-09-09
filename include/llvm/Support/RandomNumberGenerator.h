@@ -16,12 +16,13 @@
 #ifndef LLVM_SUPPORT_RANDOMNUMBERGENERATOR_H_
 #define LLVM_SUPPORT_RANDOMNUMBERGENERATOR_H_
 
-#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/DataTypes.h" // Needed for uint64_t on Windows.
 #include <random>
+#include <system_error>
 
 namespace llvm {
+class StringRef;
 
 /// A random number generator.
 ///
@@ -53,6 +54,9 @@ private:
 
   friend class Module;
 };
+
+// Get random vector of specified size
+std::error_code getRandomBytes(void *Buffer, size_t Size);
 }
 
 #endif

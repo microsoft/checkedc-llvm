@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cassert>
 #include <map>
+#include <utility>
 #include <vector>
 using namespace llvm;
 
@@ -156,8 +157,7 @@ FindUniqueOperandCommands(std::vector<std::string> &UniqueOperandCommands,
 
     // Check to see if we already have 'Command' in UniqueOperandCommands.
     // If not, add it.
-    auto I = std::find(UniqueOperandCommands.begin(),
-                       UniqueOperandCommands.end(), Command);
+    auto I = find(UniqueOperandCommands, Command);
     if (I != UniqueOperandCommands.end()) {
       size_t idx = I - UniqueOperandCommands.begin();
       InstrsForCase[idx] += ", ";
@@ -450,10 +450,8 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
   }
 
   // Okay, delete instructions with no operand info left.
-  auto I = std::remove_if(Instructions.begin(), Instructions.end(),
-                          [](AsmWriterInst &Inst) {
-                            return Inst.Operands.empty();
-                          });
+  auto I = remove_if(Instructions,
+                     [](AsmWriterInst &Inst) { return Inst.Operands.empty(); });
   Instructions.erase(I, Instructions.end());
 
 
@@ -575,7 +573,7 @@ void AsmWriterEmitter::EmitGetRegisterName(raw_ostream &O) {
     O << "  switch(AltIdx) {\n"
       << "  default: llvm_unreachable(\"Invalid register alt name index!\");\n";
     for (const Record *R : AltNameIndices) {
-      std::string AltName(R->getName());
+      const std::string &AltName = R->getName();
       std::string Prefix = !Namespace.empty() ? Namespace + "::" : "";
       O << "  case " << Prefix << AltName << ":\n"
         << "    assert(*(AsmStrs" << AltName << "+RegAsmOffset"
@@ -600,12 +598,12 @@ namespace {
 class IAPrinter {
   std::vector<std::string> Conds;
   std::map<StringRef, std::pair<int, int>> OpMap;
-  SmallVector<Record*, 4> ReqFeatures;
 
   std::string Result;
   std::string AsmString;
 public:
-  IAPrinter(std::string R, std::string AS) : Result(R), AsmString(AS) {}
+  IAPrinter(std::string R, std::string AS)
+      : Result(std::move(R)), AsmString(std::move(AS)) {}
 
   void addCond(const std::string &C) { Conds.push_back(C); }
 
@@ -646,7 +644,7 @@ public:
   }
 
   void print(raw_ostream &O) {
-    if (Conds.empty() && ReqFeatures.empty()) {
+    if (Conds.empty()) {
       O.indent(6) << "return true;\n";
       return;
     }
@@ -796,6 +794,18 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
 
       IAPrinter IAP(CGA.Result->getAsString(), CGA.AsmString);
 
+      std::string Namespace = Target.getName();
+      std::vector<Record *> ReqFeatures;
+      if (PassSubtarget) {
+        // We only consider ReqFeatures predicates if PassSubtarget
+        std::vector<Record *> RF =
+            CGA.TheDef->getValueAsListOfDefs("Predicates");
+        std::copy_if(RF.begin(), RF.end(), std::back_inserter(ReqFeatures),
+                     [](Record *R) {
+                       return R->getValueAsBit("AssemblerMatcherPredicate");
+                     });
+      }
+
       unsigned NumMIOps = 0;
       for (auto &Operand : CGA.ResultOperands)
         NumMIOps += Operand.getMINumOperands();
@@ -825,9 +835,8 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
               Rec->isSubClassOf("Operand")) {
             std::string PrintMethod = Rec->getValueAsString("PrintMethod");
             if (PrintMethod != "" && PrintMethod != "printOperand") {
-              PrintMethodIdx = std::find(PrintMethods.begin(),
-                                         PrintMethods.end(), PrintMethod) -
-                               PrintMethods.begin();
+              PrintMethodIdx =
+                  find(PrintMethods, PrintMethod) - PrintMethods.begin();
               if (static_cast<unsigned>(PrintMethodIdx) == PrintMethods.size())
                 PrintMethods.push_back(PrintMethod);
             }
@@ -900,6 +909,27 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
       }
 
       if (CantHandle) continue;
+
+      for (auto I = ReqFeatures.cbegin(); I != ReqFeatures.cend(); I++) {
+        Record *R = *I;
+        std::string AsmCondString = R->getValueAsString("AssemblerCondString");
+
+        // AsmCondString has syntax [!]F(,[!]F)*
+        SmallVector<StringRef, 4> Ops;
+        SplitString(AsmCondString, Ops, ",");
+        assert(!Ops.empty() && "AssemblerCondString cannot be empty");
+
+        for (auto &Op : Ops) {
+          assert(!Op.empty() && "Empty operator");
+          if (Op[0] == '!')
+            Cond = "!STI.getFeatureBits()[" + Namespace + "::" +
+                   Op.substr(1).str() + "]";
+          else
+            Cond = "STI.getFeatureBits()[" + Namespace + "::" + Op.str() + "]";
+          IAP.addCond(Cond);
+        }
+      }
+
       IAPrinterMap[Aliases.first].push_back(std::move(IAP));
     }
   }
@@ -973,13 +1003,14 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
   // Code that prints the alias, replacing the operands with the ones from the
   // MCInst.
   O << "  unsigned I = 0;\n";
-  O << "  while (AsmString[I] != ' ' && AsmString[I] != '\t' &&\n";
-  O << "         AsmString[I] != '\\0')\n";
+  O << "  while (AsmString[I] != ' ' && AsmString[I] != '\\t' &&\n";
+  O << "         AsmString[I] != '$' && AsmString[I] != '\\0')\n";
   O << "    ++I;\n";
   O << "  OS << '\\t' << StringRef(AsmString, I);\n";
 
   O << "  if (AsmString[I] != '\\0') {\n";
-  O << "    OS << '\\t';\n";
+  O << "    if (AsmString[I] == ' ' || AsmString[I] == '\\t')";
+  O << "      OS << '\\t';\n";
   O << "    do {\n";
   O << "      if (AsmString[I] == '$') {\n";
   O << "        ++I;\n";
@@ -1043,7 +1074,7 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
 
     for (unsigned i = 0; i < MCOpPredicates.size(); ++i) {
       Init *MCOpPred = MCOpPredicates[i]->getValueInit("MCOperandPredicate");
-      if (StringInit *SI = dyn_cast<StringInit>(MCOpPred)) {
+      if (CodeInit *SI = dyn_cast<CodeInit>(MCOpPred)) {
         O << "  case " << i + 1 << ": {\n"
           << SI->getValue() << "\n"
           << "    }\n";

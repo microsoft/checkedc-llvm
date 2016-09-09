@@ -9,8 +9,9 @@
 ;     return -1;
 ; }
 
+; CHECK: mvnlt
 ; CHECK: .loc 1 6 7
-; CHECK: mvn
+; CHECK: strlt
 
 target datalayout = "e-m:e-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64"
 target triple = "armv7--linux-gnueabihf"
@@ -48,11 +49,10 @@ declare void @llvm.dbg.declare(metadata, metadata, metadata)
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!8, !9}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "", isOptimized: false, subprograms: !3, emissionKind: FullDebug)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "", isOptimized: false, emissionKind: FullDebug)
 !1 = !DIFile(filename: "test.c", directory: "/home/user/clang/build")
 !2 = !{}
-!3 = !{!4}
-!4 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 1, type: !5, isLocal: false, isDefinition: true, scopeLine: 2, isOptimized: false, variables: !2)
+!4 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 1, type: !5, isLocal: false, isDefinition: true, scopeLine: 2, isOptimized: false, unit: !0, variables: !2)
 !5 = !DISubroutineType(types: !6)
 !6 = !{!7}
 !7 = !DIBasicType(name: "int", size: 32, align: 32, encoding: DW_ATE_signed)

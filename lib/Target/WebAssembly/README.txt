@@ -99,17 +99,33 @@ according to their usage frequency to maximize the usage of smaller encodings.
 
 //===---------------------------------------------------------------------===//
 
-When the last statement in a function body computes the return value, it can
-just let that value be the exit value of the outermost block, rather than
-needing an explicit return operation.
-
-//===---------------------------------------------------------------------===//
-
 Many cases of irreducible control flow could be transformed more optimally
 than via the transform in WebAssemblyFixIrreducibleControlFlow.cpp.
 
 It may also be worthwhile to do transforms before register coloring,
 particularly when duplicating code, to allow register coloring to be aware of
 the duplication.
+
+//===---------------------------------------------------------------------===//
+
+WebAssemblyRegStackify could use AliasAnalysis to reorder loads and stores more
+aggressively.
+
+//===---------------------------------------------------------------------===//
+
+WebAssemblyRegStackify is currently a greedy algorithm. This means that, for
+example, a binary operator will stackify with its user before its operands.
+However, if moving the binary operator to its user moves it to a place where
+its operands can't be moved to, it would be better to leave it in place, or
+perhaps move it up, so that it can stackify its operands. A binary operator
+has two operands and one result, so in such cases there could be a net win by
+prefering the operands.
+
+//===---------------------------------------------------------------------===//
+
+Instruction ordering has a significant influence on register stackification and
+coloring. Consider experimenting with the MachineScheduler (enable via
+enableMachineScheduler) and determine if it can be configured to schedule
+instructions advantageously for this purpose.
 
 //===---------------------------------------------------------------------===//

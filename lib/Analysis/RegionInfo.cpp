@@ -19,9 +19,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include <algorithm>
-#include <iterator>
-#include <set>
 #ifndef NDEBUG
 #include "llvm/Analysis/RegionPrinter.h"
 #endif
@@ -187,7 +184,7 @@ namespace llvm {
 
 char RegionInfoAnalysis::PassID;
 
-RegionInfo RegionInfoAnalysis::run(Function &F, AnalysisManager<Function> &AM) {
+RegionInfo RegionInfoAnalysis::run(Function &F, FunctionAnalysisManager &AM) {
   RegionInfo RI;
   auto *DT = &AM.getResult<DominatorTreeAnalysis>(F);
   auto *PDT = &AM.getResult<PostDominatorTreeAnalysis>(F);
@@ -209,7 +206,7 @@ PreservedAnalyses RegionInfoPrinterPass::run(Function &F,
 }
 
 PreservedAnalyses RegionInfoVerifierPass::run(Function &F,
-                                              AnalysisManager<Function> &AM) {
+                                              FunctionAnalysisManager &AM) {
   AM.getResult<RegionInfoAnalysis>(F).verifyAnalysis();
 
   return PreservedAnalyses::all();

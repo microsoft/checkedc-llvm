@@ -15,7 +15,6 @@
 #define LLVM_MC_MCSECTION_H
 
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/ilist.h"
 #include "llvm/ADT/ilist_node.h"
 #include "llvm/MC/MCFragment.h"
@@ -32,16 +31,9 @@ class MCSection;
 class MCSymbol;
 class raw_ostream;
 
-template<>
-struct ilist_node_traits<MCFragment> {
-  MCFragment *createNode(const MCFragment &V);
+template <> struct ilist_alloc_traits<MCFragment> {
   static void deleteNode(MCFragment *V);
-
-  void addNodeToList(MCFragment *) {}
-  void removeNodeFromList(MCFragment *) {}
-  void transferNodesFromList(ilist_node_traits &    /*SrcTraits*/,
-                             ilist_iterator<MCFragment> /*first*/,
-                             ilist_iterator<MCFragment> /*last*/) {}
+  // Leave out createNode...
 };
 
 /// Instances of this class represent a uniqued identifier for a section in the

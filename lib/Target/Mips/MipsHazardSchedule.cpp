@@ -23,8 +23,8 @@
 ///
 /// For example:
 ///
-/// 0x8004	bnec	a1,v0,<P+0x18>
-/// 0x8008	beqc	a1,a2,<P+0x54>
+/// 0x8004      bnec    a1,v0,<P+0x18>
+/// 0x8008      beqc    a1,a2,<P+0x54>
 ///
 /// In such cases, the processor is required to signal a Reserved Instruction
 /// exception.
@@ -46,11 +46,10 @@
 #include "MipsInstrInfo.h"
 #include "MipsSEInstrInfo.h"
 #include "MipsTargetMachine.h"
-#include "llvm/IR/Function.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/Support/CommandLine.h"
+#include "llvm/IR/Function.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
@@ -77,7 +76,7 @@ public:
 
   MachineFunctionProperties getRequiredProperties() const override {
     return MachineFunctionProperties().set(
-        MachineFunctionProperties::Property::AllVRegsAllocated);
+        MachineFunctionProperties::Property::NoVRegs);
   }
 
 private:
@@ -90,6 +89,14 @@ char MipsHazardSchedule::ID = 0;
 /// Returns a pass that clears pipeline hazards.
 FunctionPass *llvm::createMipsHazardSchedule() {
   return new MipsHazardSchedule();
+}
+
+// Find the next real instruction from the current position.
+static Iter getNextMachineInstr(Iter Position) {
+  Iter I = Position, E = Position->getParent()->end();
+  I = std::find_if_not(I, E, [](const Iter &Insn) { return Insn->isTransient(); });
+  assert(I != E);
+  return I;
 }
 
 bool MipsHazardSchedule::runOnMachineFunction(MachineFunction &MF) {
@@ -114,14 +121,14 @@ bool MipsHazardSchedule::runOnMachineFunction(MachineFunction &MF) {
       bool InsertNop = false;
       // Next instruction in the basic block.
       if (std::next(I) != FI->end() &&
-          !TII->SafeInForbiddenSlot(*std::next(I))) {
+          !TII->SafeInForbiddenSlot(*getNextMachineInstr(std::next(I)))) {
         InsertNop = true;
       } else {
         // Next instruction in the physical successor basic block.
         for (auto *Succ : FI->successors()) {
           if (FI->isLayoutSuccessor(Succ) &&
-              Succ->getFirstNonDebugInstr() != Succ->end() &&
-              !TII->SafeInForbiddenSlot(*Succ->getFirstNonDebugInstr())) {
+              getNextMachineInstr(Succ->begin()) != Succ->end() &&
+              !TII->SafeInForbiddenSlot(*getNextMachineInstr(Succ->begin()))) {
             InsertNop = true;
             break;
           }
@@ -130,8 +137,8 @@ bool MipsHazardSchedule::runOnMachineFunction(MachineFunction &MF) {
 
       if (InsertNop) {
         Changed = true;
-        MIBundleBuilder(I)
-            .append(BuildMI(MF, I->getDebugLoc(), TII->get(Mips::NOP)));
+        MIBundleBuilder(&*I).append(
+            BuildMI(MF, I->getDebugLoc(), TII->get(Mips::NOP)));
         NumInsertedNops++;
       }
     }

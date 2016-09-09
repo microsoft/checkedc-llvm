@@ -29,10 +29,6 @@ class MDNode;
 class BasicBlock;
 struct AAMDNodes;
 
-template <>
-struct SymbolTableListSentinelTraits<Instruction>
-    : public ilist_half_embedded_sentinel_traits<Instruction> {};
-
 class Instruction : public User,
                     public ilist_node_with_parent<Instruction, BasicBlock> {
   void operator=(const Instruction &) = delete;
@@ -93,6 +89,11 @@ public:
   /// Unlink this instruction from its current basic block and insert it into
   /// the basic block that MovePos lives in, right before MovePos.
   void moveBefore(Instruction *MovePos);
+
+  /// Unlink this instruction and insert into BB before I.
+  ///
+  /// \pre I is a valid iterator into BB.
+  void moveBefore(BasicBlock &BB, SymbolTableList<Instruction>::iterator I);
 
   //===--------------------------------------------------------------------===//
   // Subclass classification.
@@ -197,6 +198,17 @@ public:
   void setMetadata(unsigned KindID, MDNode *Node);
   void setMetadata(StringRef Kind, MDNode *Node);
 
+  /// Copy metadata from \p SrcInst to this instruction. \p WL, if not empty,
+  /// specifies the list of meta data that needs to be copied. If \p WL is
+  /// empty, all meta data will be copied.
+  void copyMetadata(const Instruction &SrcInst,
+                    ArrayRef<unsigned> WL = ArrayRef<unsigned>());
+
+  /// If the instruction has "branch_weights" MD_prof metadata and the MDNode
+  /// has three operands (including name string), swap the order of the
+  /// metadata.
+  void swapProfMetadata();
+
   /// Drop all unknown metadata except for debug locations.
   /// @{
   /// Passes are required to drop metadata they don't understand. This is a
@@ -217,11 +229,42 @@ public:
   /// Sets the metadata on this instruction from the AAMDNodes structure.
   void setAAMetadata(const AAMDNodes &N);
 
+  /// Retrieve the raw weight values of a conditional branch or select.
+  /// Returns true on success with profile weights filled in.
+  /// Returns false if no metadata or invalid metadata was found.
+  bool extractProfMetadata(uint64_t &TrueVal, uint64_t &FalseVal);
+
+  /// Retrieve total raw weight values of a branch.
+  /// Returns true on success with profile total weights filled in.
+  /// Returns false if no metadata was found.
+  bool extractProfTotalWeight(uint64_t &TotalVal);
+
   /// Set the debug location information for this instruction.
   void setDebugLoc(DebugLoc Loc) { DbgLoc = std::move(Loc); }
 
   /// Return the debug location for this node as a DebugLoc.
   const DebugLoc &getDebugLoc() const { return DbgLoc; }
+
+  /// Set or clear the nsw flag on this instruction, which must be an operator
+  /// which supports this flag. See LangRef.html for the meaning of this flag.
+  void setHasNoUnsignedWrap(bool b = true);
+
+  /// Set or clear the nsw flag on this instruction, which must be an operator
+  /// which supports this flag. See LangRef.html for the meaning of this flag.
+  void setHasNoSignedWrap(bool b = true);
+
+  /// Set or clear the exact flag on this instruction, which must be an operator
+  /// which supports this flag. See LangRef.html for the meaning of this flag.
+  void setIsExact(bool b = true);
+
+  /// Determine whether the no unsigned wrap flag is set.
+  bool hasNoUnsignedWrap() const;
+
+  /// Determine whether the no signed wrap flag is set.
+  bool hasNoSignedWrap() const;
+
+  /// Determine whether the exact flag is set.
+  bool isExact() const;
 
   /// Set or clear the unsafe-algebra flag on this instruction, which must be an
   /// operator which supports this flag. See LangRef.html for the meaning of
@@ -280,6 +323,14 @@ public:
 
   /// Copy I's fast-math flags
   void copyFastMathFlags(const Instruction *I);
+
+  /// Convenience method to copy supported wrapping, exact, and fast-math flags
+  /// from V to this instruction.
+  void copyIRFlags(const Value *V);
+
+  /// Logical 'and' of any supported wrapping, exact, and fast-math flags of
+  /// V and this instruction.
+  void andIRFlags(const Value *V);
 
 private:
   /// Return true if we have an entry in the on-the-side metadata hash.
@@ -360,11 +411,22 @@ public:
   /// Return true if this instruction may throw an exception.
   bool mayThrow() const;
 
-  /// Return true if this is a function that may return.
-  /// This is true for all normal instructions. The only exception
-  /// is functions that are marked with the 'noreturn' attribute.
-  ///
-  bool mayReturn() const;
+  /// Return true if this instruction behaves like a memory fence: it can load
+  /// or store to memory location without being given a memory location.
+  bool isFenceLike() const {
+    switch (getOpcode()) {
+    default:
+      return false;
+    // This list should be kept in sync with the list in mayWriteToMemory for
+    // all opcodes which don't have a memory location.
+    case Instruction::Fence:
+    case Instruction::CatchPad:
+    case Instruction::CatchRet:
+    case Instruction::Call:
+    case Instruction::Invoke:
+      return true;
+    }
+  }
 
   /// Return true if the instruction may have side effects.
   ///
@@ -372,9 +434,7 @@ public:
   /// effects because the newly allocated memory is completely invisible to
   /// instructions which don't use the returned value.  For cases where this
   /// matters, isSafeToSpeculativelyExecute may be more appropriate.
-  bool mayHaveSideEffects() const {
-    return mayWriteToMemory() || mayThrow() || !mayReturn();
-  }
+  bool mayHaveSideEffects() const { return mayWriteToMemory() || mayThrow(); }
 
   /// Return true if the instruction is a variety of EH-block.
   bool isEHPad() const {

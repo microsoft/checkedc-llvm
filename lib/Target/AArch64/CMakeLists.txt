@@ -12,11 +12,15 @@ tablegen(LLVM AArch64GenFastISel.inc -gen-fast-isel)
 tablegen(LLVM AArch64GenCallingConv.inc -gen-callingconv)
 tablegen(LLVM AArch64GenSubtargetInfo.inc -gen-subtarget)
 tablegen(LLVM AArch64GenDisassemblerTables.inc -gen-disassembler)
+tablegen(LLVM AArch64GenSystemOperands.inc -gen-searchable-tables)
+
 add_public_tablegen_target(AArch64CommonTableGen)
 
 # List of all GlobalISel files.
 set(GLOBAL_ISEL_FILES
       AArch64CallLowering.cpp
+      AArch64InstructionSelector.cpp
+      AArch64MachineLegalizer.cpp
       AArch64RegisterBankInfo.cpp
       )
 

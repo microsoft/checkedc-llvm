@@ -496,7 +496,7 @@ def imm0_65535 : Operand<i32>, ImmLeaf<i32, [{
   return ((uint32_t)Imm) < 65536;
 }]> {
   let ParserMatchClass = Imm0_65535Operand;
-  let PrintMethod = "printHexImm";
+  let PrintMethod = "printImmHex";
 }
 
 // imm0_255 predicate - True if the immediate is in the range [0,255].
@@ -505,7 +505,7 @@ def imm0_255 : Operand<i32>, ImmLeaf<i32, [{
   return ((uint32_t)Imm) < 256;
 }]> {
   let ParserMatchClass = Imm0_255Operand;
-  let PrintMethod = "printHexImm";
+  let PrintMethod = "printImm";
 }
 
 // imm0_127 predicate - True if the immediate is in the range [0,127]
@@ -514,7 +514,7 @@ def imm0_127 : Operand<i32>, ImmLeaf<i32, [{
   return ((uint32_t)Imm) < 128;
 }]> {
   let ParserMatchClass = Imm0_127Operand;
-  let PrintMethod = "printHexImm";
+  let PrintMethod = "printImm";
 }
 
 // NOTE: These imm0_N operands have to be of type i64 because i64 is the size
@@ -923,10 +923,7 @@ def psbhint_op : Operand<i32> {
     // "psb" is an alias to "hint" only for certain values of CRm:Op2 fields.
     if (!MCOp.isImm())
       return false;
-    bool ValidNamed;
-    (void)AArch64PSBHint::PSBHintMapper().toString(MCOp.getImm(),
-      STI.getFeatureBits(), ValidNamed);
-    return ValidNamed;
+    return AArch64PSBHint::lookupPSBByEncoding(MCOp.getImm()) != nullptr;
   }];
 }
 
@@ -1549,7 +1546,7 @@ class ADRI<bit page, string asm, Operand adr, list<dag> pattern>
 def movimm32_imm : Operand<i32> {
   let ParserMatchClass = Imm0_65535Operand;
   let EncoderMethod = "getMoveWideImmOpValue";
-  let PrintMethod = "printHexImm";
+  let PrintMethod = "printImm";
 }
 def movimm32_shift : Operand<i32> {
   let PrintMethod = "printShifter";
@@ -3939,27 +3936,27 @@ class BaseFPConversion<bits<2> type, bits<2> opcode, RegisterClass dstType,
 multiclass FPConversion<string asm> {
   // Double-precision to Half-precision
   def HDr : BaseFPConversion<0b01, 0b11, FPR16, FPR64, asm,
-                             [(set FPR16:$Rd, (fround FPR64:$Rn))]>;
+                             [(set FPR16:$Rd, (fpround FPR64:$Rn))]>;
 
   // Double-precision to Single-precision
   def SDr : BaseFPConversion<0b01, 0b00, FPR32, FPR64, asm,
-                             [(set FPR32:$Rd, (fround FPR64:$Rn))]>;
+                             [(set FPR32:$Rd, (fpround FPR64:$Rn))]>;
 
   // Half-precision to Double-precision
   def DHr : BaseFPConversion<0b11, 0b01, FPR64, FPR16, asm,
-                             [(set FPR64:$Rd, (fextend FPR16:$Rn))]>;
+                             [(set FPR64:$Rd, (fpextend FPR16:$Rn))]>;
 
   // Half-precision to Single-precision
   def SHr : BaseFPConversion<0b11, 0b00, FPR32, FPR16, asm,
-                             [(set FPR32:$Rd, (fextend FPR16:$Rn))]>;
+                             [(set FPR32:$Rd, (fpextend FPR16:$Rn))]>;
 
   // Single-precision to Double-precision
   def DSr : BaseFPConversion<0b00, 0b01, FPR64, FPR32, asm,
-                             [(set FPR64:$Rd, (fextend FPR32:$Rn))]>;
+                             [(set FPR64:$Rd, (fpextend FPR32:$Rn))]>;
 
   // Single-precision to Half-precision
   def HSr : BaseFPConversion<0b00, 0b11, FPR16, FPR32, asm,
-                             [(set FPR16:$Rd, (fround FPR32:$Rn))]>;
+                             [(set FPR16:$Rd, (fpround FPR32:$Rn))]>;
 }
 
 //---

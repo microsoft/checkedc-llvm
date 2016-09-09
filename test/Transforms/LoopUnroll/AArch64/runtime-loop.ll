@@ -1,19 +1,17 @@
-; RUN: opt < %s -S -loop-unroll -mtriple aarch64 -mcpu=cortex-a57 | FileCheck %s -check-prefix=EPILOG
+; RUN: opt < %s -S -loop-unroll -mtriple aarch64 -mcpu=cortex-a57 -unroll-runtime-epilog=true  | FileCheck %s -check-prefix=EPILOG
 ; RUN: opt < %s -S -loop-unroll -mtriple aarch64 -mcpu=cortex-a57 -unroll-runtime-epilog=false | FileCheck %s -check-prefix=PROLOG
 
 ; Tests for unrolling loops with run-time trip counts
 
 ; EPILOG:  %xtraiter = and i32 %n
-; EPILOG:  %lcmp.mod = icmp ne i32 %xtraiter, %n
-; EPILOG:  br i1 %lcmp.mod, label %for.body.preheader.new, label %for.end.loopexit.unr-lcssa
+; EPILOG:  for.body:
+; EPILOG:  %lcmp.mod = icmp ne i32 %xtraiter, 0
+; EPILOG:  br i1 %lcmp.mod, label %for.body.epil.preheader, label %for.end.loopexit
+; EPILOG:  for.body.epil:
 
 ; PROLOG:  %xtraiter = and i32 %n
 ; PROLOG:  %lcmp.mod = icmp ne i32 %xtraiter, 0
 ; PROLOG:  br i1 %lcmp.mod, label %for.body.prol.preheader, label %for.body.prol.loopexit
-
-; EPILOG:  for.body:
-; EPILOG:  for.body.epil:
-
 ; PROLOG:  for.body.prol:
 ; PROLOG:  for.body:
 

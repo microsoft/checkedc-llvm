@@ -15,12 +15,8 @@
 #ifndef LLVM_LIB_TARGET_AMDGPU_AMDGPUTARGETMACHINE_H
 #define LLVM_LIB_TARGET_AMDGPU_AMDGPUTARGETMACHINE_H
 
-#include "AMDGPUFrameLowering.h"
-#include "AMDGPUInstrInfo.h"
 #include "AMDGPUIntrinsicInfo.h"
 #include "AMDGPUSubtarget.h"
-#include "R600ISelLowering.h"
-#include "llvm/IR/DataLayout.h"
 
 namespace llvm {
 
@@ -29,23 +25,23 @@ namespace llvm {
 //===----------------------------------------------------------------------===//
 
 class AMDGPUTargetMachine : public LLVMTargetMachine {
-private:
-
 protected:
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
-  AMDGPUSubtarget Subtarget;
   AMDGPUIntrinsicInfo IntrinsicInfo;
+
+  StringRef getGPUName(const Function &F) const;
+  StringRef getFeatureString(const Function &F) const;
 
 public:
   AMDGPUTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
-                      StringRef FS, TargetOptions Options, Reloc::Model RM,
-                      CodeModel::Model CM, CodeGenOpt::Level OL);
+                      StringRef FS, TargetOptions Options,
+                      Optional<Reloc::Model> RM, CodeModel::Model CM,
+                      CodeGenOpt::Level OL);
   ~AMDGPUTargetMachine();
 
-  const AMDGPUSubtarget *getSubtargetImpl() const { return &Subtarget; }
-  const AMDGPUSubtarget *getSubtargetImpl(const Function &) const override {
-    return &Subtarget;
-  }
+  const AMDGPUSubtarget *getSubtargetImpl() const;
+  const AMDGPUSubtarget *getSubtargetImpl(const Function &) const override = 0;
+
   const AMDGPUIntrinsicInfo *getIntrinsicInfo() const override {
     return &IntrinsicInfo;
   }
@@ -61,13 +57,18 @@ public:
 //===----------------------------------------------------------------------===//
 
 class R600TargetMachine final : public AMDGPUTargetMachine {
+private:
+  mutable StringMap<std::unique_ptr<R600Subtarget>> SubtargetMap;
 
 public:
   R600TargetMachine(const Target &T, const Triple &TT, StringRef CPU,
-                    StringRef FS, TargetOptions Options, Reloc::Model RM,
-                    CodeModel::Model CM, CodeGenOpt::Level OL);
+                    StringRef FS, TargetOptions Options,
+                    Optional<Reloc::Model> RM, CodeModel::Model CM,
+                    CodeGenOpt::Level OL);
 
   TargetPassConfig *createPassConfig(PassManagerBase &PM) override;
+
+  const R600Subtarget *getSubtargetImpl(const Function &) const override;
 };
 
 //===----------------------------------------------------------------------===//
@@ -75,13 +76,18 @@ public:
 //===----------------------------------------------------------------------===//
 
 class GCNTargetMachine final : public AMDGPUTargetMachine {
+private:
+  mutable StringMap<std::unique_ptr<SISubtarget>> SubtargetMap;
 
 public:
   GCNTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
-                   StringRef FS, TargetOptions Options, Reloc::Model RM,
-                   CodeModel::Model CM, CodeGenOpt::Level OL);
+                   StringRef FS, TargetOptions Options,
+                   Optional<Reloc::Model> RM, CodeModel::Model CM,
+                   CodeGenOpt::Level OL);
 
   TargetPassConfig *createPassConfig(PassManagerBase &PM) override;
+
+  const SISubtarget *getSubtargetImpl(const Function &) const override;
 };
 
 } // End namespace llvm

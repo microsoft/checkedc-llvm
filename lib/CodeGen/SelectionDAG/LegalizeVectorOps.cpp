@@ -362,7 +362,7 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
       Result = Tmp1;
       break;
     }
-    // FALL THROUGH
+    LLVM_FALLTHROUGH;
   }
   case TargetLowering::Expand:
     Result = Expand(Op);
@@ -535,24 +535,22 @@ SDValue VectorLegalizer::ExpandLoad(SDValue Op) {
       unsigned LoadBytes = WideBytes;
 
       if (RemainingBytes >= LoadBytes) {
-        ScalarLoad = DAG.getLoad(WideVT, dl, Chain, BasePTR,
-                                 LD->getPointerInfo().getWithOffset(Offset),
-                                 LD->isVolatile(), LD->isNonTemporal(),
-                                 LD->isInvariant(),
-                                 MinAlign(LD->getAlignment(), Offset),
-                                 LD->getAAInfo());
+        ScalarLoad =
+            DAG.getLoad(WideVT, dl, Chain, BasePTR,
+                        LD->getPointerInfo().getWithOffset(Offset),
+                        MinAlign(LD->getAlignment(), Offset),
+                        LD->getMemOperand()->getFlags(), LD->getAAInfo());
       } else {
         EVT LoadVT = WideVT;
         while (RemainingBytes < LoadBytes) {
           LoadBytes >>= 1; // Reduce the load size by half.
           LoadVT = EVT::getIntegerVT(*DAG.getContext(), LoadBytes << 3);
         }
-        ScalarLoad = DAG.getExtLoad(ISD::EXTLOAD, dl, WideVT, Chain, BasePTR,
-                                    LD->getPointerInfo().getWithOffset(Offset),
-                                    LoadVT, LD->isVolatile(),
-                                    LD->isNonTemporal(), LD->isInvariant(),
-                                    MinAlign(LD->getAlignment(), Offset),
-                                    LD->getAAInfo());
+        ScalarLoad =
+            DAG.getExtLoad(ISD::EXTLOAD, dl, WideVT, Chain, BasePTR,
+                           LD->getPointerInfo().getWithOffset(Offset), LoadVT,
+                           MinAlign(LD->getAlignment(), Offset),
+                           LD->getMemOperand()->getFlags(), LD->getAAInfo());
       }
 
       RemainingBytes -= LoadBytes;
@@ -659,13 +657,10 @@ SDValue VectorLegalizer::ExpandStore(SDValue Op) {
                          MemSclVT.getIntegerVT(Ctx, NextPowerOf2(ScalarSize)),
                          StVT.getVectorNumElements());
 
-    SDValue NewVectorStore
-      = DAG.getTruncStore(ST->getChain(), SDLoc(Op), ST->getValue(),
-                          ST->getBasePtr(),
-                          ST->getPointerInfo(), NewMemVT,
-                          ST->isVolatile(), ST->isNonTemporal(),
-                          ST->getAlignment(),
-                          ST->getAAInfo());
+    SDValue NewVectorStore = DAG.getTruncStore(
+        ST->getChain(), SDLoc(Op), ST->getValue(), ST->getBasePtr(),
+        ST->getPointerInfo(), NewMemVT, ST->getAlignment(),
+        ST->getMemOperand()->getFlags(), ST->getAAInfo());
     ST = cast<StoreSDNode>(NewVectorStore.getNode());
   }
 
@@ -860,16 +855,19 @@ SDValue VectorLegalizer::ExpandZERO_EXTEND_VECTOR_INREG(SDValue Op) {
                      DAG.getVectorShuffle(SrcVT, DL, Zero, Src, ShuffleMask));
 }
 
+static void createBSWAPShuffleMask(EVT VT, SmallVectorImpl<int> &ShuffleMask) {
+  int ScalarSizeInBytes = VT.getScalarSizeInBits() / 8;
+  for (int I = 0, E = VT.getVectorNumElements(); I != E; ++I)
+    for (int J = ScalarSizeInBytes - 1; J >= 0; --J)
+      ShuffleMask.push_back((I * ScalarSizeInBytes) + J);
+}
+
 SDValue VectorLegalizer::ExpandBSWAP(SDValue Op) {
   EVT VT = Op.getValueType();
 
   // Generate a byte wise shuffle mask for the BSWAP.
   SmallVector<int, 16> ShuffleMask;
-  int ScalarSizeInBytes = VT.getScalarSizeInBits() / 8;
-  for (int I = 0, E = VT.getVectorNumElements(); I != E; ++I)
-    for (int J = ScalarSizeInBytes - 1; J >= 0; --J)
-      ShuffleMask.push_back((I * ScalarSizeInBytes) + J);
-
+  createBSWAPShuffleMask(VT, ShuffleMask);
   EVT ByteVT = EVT::getVectorVT(*DAG.getContext(), MVT::i8, ShuffleMask.size());
 
   // Only emit a shuffle if the mask is legal.
@@ -878,8 +876,7 @@ SDValue VectorLegalizer::ExpandBSWAP(SDValue Op) {
 
   SDLoc DL(Op);
   Op = DAG.getNode(ISD::BITCAST, DL, ByteVT, Op.getOperand(0));
-  Op = DAG.getVectorShuffle(ByteVT, DL, Op, DAG.getUNDEF(ByteVT),
-                            ShuffleMask.data());
+  Op = DAG.getVectorShuffle(ByteVT, DL, Op, DAG.getUNDEF(ByteVT), ShuffleMask);
   return DAG.getNode(ISD::BITCAST, DL, VT, Op);
 }
 
@@ -890,12 +887,36 @@ SDValue VectorLegalizer::ExpandBITREVERSE(SDValue Op) {
   if (TLI.isOperationLegalOrCustom(ISD::BITREVERSE, VT.getScalarType()))
     return DAG.UnrollVectorOp(Op.getNode());
 
+  // If the vector element width is a whole number of bytes, test if its legal
+  // to BSWAP shuffle the bytes and then perform the BITREVERSE on the byte
+  // vector. This greatly reduces the number of bit shifts necessary.
+  unsigned ScalarSizeInBits = VT.getScalarSizeInBits();
+  if (ScalarSizeInBits > 8 && (ScalarSizeInBits % 8) == 0) {
+    SmallVector<int, 16> BSWAPMask;
+    createBSWAPShuffleMask(VT, BSWAPMask);
+
+    EVT ByteVT = EVT::getVectorVT(*DAG.getContext(), MVT::i8, BSWAPMask.size());
+    if (TLI.isShuffleMaskLegal(BSWAPMask, ByteVT) &&
+        (TLI.isOperationLegalOrCustom(ISD::BITREVERSE, ByteVT) ||
+         (TLI.isOperationLegalOrCustom(ISD::SHL, ByteVT) &&
+          TLI.isOperationLegalOrCustom(ISD::SRL, ByteVT) &&
+          TLI.isOperationLegalOrCustomOrPromote(ISD::AND, ByteVT) &&
+          TLI.isOperationLegalOrCustomOrPromote(ISD::OR, ByteVT)))) {
+      SDLoc DL(Op);
+      Op = DAG.getNode(ISD::BITCAST, DL, ByteVT, Op.getOperand(0));
+      Op = DAG.getVectorShuffle(ByteVT, DL, Op, DAG.getUNDEF(ByteVT),
+                                BSWAPMask);
+      Op = DAG.getNode(ISD::BITREVERSE, DL, ByteVT, Op);
+      return DAG.getNode(ISD::BITCAST, DL, VT, Op);
+    }
+  }
+
   // If we have the appropriate vector bit operations, it is better to use them
   // than unrolling and expanding each component.
   if (!TLI.isOperationLegalOrCustom(ISD::SHL, VT) ||
       !TLI.isOperationLegalOrCustom(ISD::SRL, VT) ||
-      !TLI.isOperationLegalOrCustom(ISD::AND, VT) ||
-      !TLI.isOperationLegalOrCustom(ISD::OR, VT))
+      !TLI.isOperationLegalOrCustomOrPromote(ISD::AND, VT) ||
+      !TLI.isOperationLegalOrCustomOrPromote(ISD::OR, VT))
     return DAG.UnrollVectorOp(Op.getNode());
 
   // Let LegalizeDAG handle this later.
@@ -1002,10 +1023,12 @@ SDValue VectorLegalizer::ExpandFNEG(SDValue Op) {
 }
 
 SDValue VectorLegalizer::ExpandCTLZ_CTTZ_ZERO_UNDEF(SDValue Op) {
-  // If the non-ZERO_UNDEF version is supported we can let LegalizeDAG handle.
+  // If the non-ZERO_UNDEF version is supported we can use that instead.
   unsigned Opc = Op.getOpcode() == ISD::CTLZ_ZERO_UNDEF ? ISD::CTLZ : ISD::CTTZ;
-  if (TLI.isOperationLegalOrCustom(Opc, Op.getValueType()))
-    return Op;
+  if (TLI.isOperationLegalOrCustom(Opc, Op.getValueType())) {
+    SDLoc DL(Op);
+    return DAG.getNode(Opc, DL, Op.getValueType(), Op.getOperand(0));
+  }
 
   // Otherwise go ahead and unroll.
   return DAG.UnrollVectorOp(Op.getNode());

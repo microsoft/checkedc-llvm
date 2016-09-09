@@ -41,15 +41,13 @@ def or_is_add : PatFrag<(ops node:$lhs, node:$rhs), (or node:$lhs, node:$rhs),[{
 }]>;
 
 // GlobalAddresses are conceptually unsigned values, so we can also fold them
-// into immediate values as long as their offsets are non-negative.
+// into immediate values as long as the add is 'nuw'.
+// TODO: We'd like to also match GA offsets but there are cases where the
+// register can have a negative value. Find out what more we can do.
 def regPlusGA : PatFrag<(ops node:$addr, node:$off),
                         (add node:$addr, node:$off),
                         [{
-  return N->getFlags()->hasNoUnsignedWrap() ||
-         (N->getOperand(1)->getOpcode() == WebAssemblyISD::Wrapper &&
-          isa<GlobalAddressSDNode>(N->getOperand(1)->getOperand(0)) &&
-          cast<GlobalAddressSDNode>(N->getOperand(1)->getOperand(0))
-             ->getOffset() >= 0);
+  return N->getFlags()->hasNoUnsignedWrap();
 }]>;
 
 // We don't need a regPlusES because external symbols never have constant
@@ -670,15 +668,15 @@ def : Pat<(truncstorei32 I64:$val, (WebAssemblywrapper texternalsym:$off)),
 
 let Defs = [ARGUMENTS] in {
 
-// Memory size.
-def MEMORY_SIZE_I32 : I<(outs I32:$dst), (ins),
-                        [(set I32:$dst, (int_wasm_memory_size))],
-                        "memory_size\t$dst">,
-                      Requires<[HasAddr32]>;
-def MEMORY_SIZE_I64 : I<(outs I64:$dst), (ins),
-                        [(set I64:$dst, (int_wasm_memory_size))],
-                        "memory_size\t$dst">,
-                      Requires<[HasAddr64]>;
+// Current memory size.
+def CURRENT_MEMORY_I32 : I<(outs I32:$dst), (ins),
+                           [(set I32:$dst, (int_wasm_current_memory))],
+                           "current_memory\t$dst">,
+                         Requires<[HasAddr32]>;
+def CURRENT_MEMORY_I64 : I<(outs I64:$dst), (ins),
+                           [(set I64:$dst, (int_wasm_current_memory))],
+                           "current_memory\t$dst">,
+                         Requires<[HasAddr64]>;
 
 // Grow memory.
 def GROW_MEMORY_I32 : I<(outs), (ins I32:$delta),

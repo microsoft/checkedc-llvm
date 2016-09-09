@@ -20,8 +20,8 @@
 #ifndef LLVM_IR_DATALAYOUT_H
 #define LLVM_IR_DATALAYOUT_H
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Pass.h"
@@ -34,8 +34,6 @@ typedef struct LLVMOpaqueTargetData *LLVMTargetDataRef;
 namespace llvm {
 
 class Value;
-class Type;
-class IntegerType;
 class StructType;
 class StructLayout;
 class Triple;
@@ -147,6 +145,10 @@ private:
   // The StructType -> StructLayout map.
   mutable void *LayoutMap;
 
+  /// Pointers in these address spaces are non-integral, and don't have a
+  /// well-defined bitwise representation.
+  SmallVector<unsigned, 8> NonIntegralAddressSpaces;
+
   void setAlignment(AlignTypeEnum align_type, unsigned abi_align,
                     unsigned pref_align, uint32_t bit_width);
   unsigned getAlignmentInfo(AlignTypeEnum align_type, uint32_t bit_width,
@@ -202,6 +204,7 @@ public:
     LegalIntWidths = DL.LegalIntWidths;
     Alignments = DL.Alignments;
     Pointers = DL.Pointers;
+    NonIntegralAddressSpaces = DL.NonIntegralAddressSpaces;
     return *this;
   }
 
@@ -323,6 +326,23 @@ public:
   /// the backends/clients are updated.
   unsigned getPointerSize(unsigned AS = 0) const;
 
+  /// Return the address spaces containing non-integral pointers.  Pointers in
+  /// this address space don't have a well-defined bitwise representation.
+  ArrayRef<unsigned> getNonIntegralAddressSpaces() const {
+    return NonIntegralAddressSpaces;
+  }
+
+  bool isNonIntegralPointerType(PointerType *PT) const {
+    ArrayRef<unsigned> NonIntegralSpaces = getNonIntegralAddressSpaces();
+    return find(NonIntegralSpaces, PT->getAddressSpace()) !=
+           NonIntegralSpaces.end();
+  }
+
+  bool isNonIntegralPointerType(Type *Ty) const {
+    auto *PTy = dyn_cast<PointerType>(Ty);
+    return PTy && isNonIntegralPointerType(PTy);
+  }
+
   /// Layout pointer size, in bits
   /// FIXME: The defaults need to be removed once all of
   /// the backends/clients are updated.
@@ -430,20 +450,20 @@ public:
 
   /// \brief Returns the largest legal integer type, or null if none are set.
   Type *getLargestLegalIntType(LLVMContext &C) const {
-    unsigned LargestSize = getLargestLegalIntTypeSize();
+    unsigned LargestSize = getLargestLegalIntTypeSizeInBits();
     return (LargestSize == 0) ? nullptr : Type::getIntNTy(C, LargestSize);
   }
 
   /// \brief Returns the size of largest legal integer type size, or 0 if none
   /// are set.
-  unsigned getLargestLegalIntTypeSize() const;
+  unsigned getLargestLegalIntTypeSizeInBits() const;
 
   /// \brief Returns the offset from the beginning of the type for the specified
   /// indices.
   ///
   /// Note that this takes the element type, not the pointer type.
   /// This is used to implement getelementptr.
-  uint64_t getIndexedOffsetInType(Type *ElemTy, ArrayRef<Value *> Indices) const;
+  int64_t getIndexedOffsetInType(Type *ElemTy, ArrayRef<Value *> Indices) const;
 
   /// \brief Returns a StructLayout object, indicating the alignment of the
   /// struct, its size, and the offsets of its fields.

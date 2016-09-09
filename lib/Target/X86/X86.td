@@ -198,6 +198,8 @@ def FeatureRDSEED  : SubtargetFeature<"rdseed", "HasRDSEED", "true",
                                       "Support RDSEED instruction">;
 def FeatureLAHFSAHF : SubtargetFeature<"sahf", "HasLAHFSAHF", "true",
                                        "Support LAHF and SAHF instructions">;
+def FeatureMWAITX  : SubtargetFeature<"mwaitx", "HasMWAITX", "true",
+                                      "Enable MONITORX/MWAITX timer functionality">;
 def FeatureMPX     : SubtargetFeature<"mpx", "HasMPX", "true",
                                       "Support MPX instructions">;
 def FeatureLEAForSP : SubtargetFeature<"lea-sp", "UseLeaForSP", "true",
@@ -247,6 +249,19 @@ def FeatureSoftFloat
 def FeatureFastPartialYMMWrite
     : SubtargetFeature<"fast-partial-ymm-write", "HasFastPartialYMMWrite",
                        "true", "Partial writes to YMM registers are fast">;
+// FeatureFastScalarFSQRT should be enabled if scalar FSQRT has shorter latency
+// than the corresponding NR code. FeatureFastVectorFSQRT should be enabled if
+// vector FSQRT has higher throughput than the corresponding NR code.
+// The idea is that throughput bound code is likely to be vectorized, so for
+// vectorized code we should care about the throughput of SQRT operations.
+// But if the code is scalar that probably means that the code has some kind of
+// dependency and we should care more about reducing the latency.
+def FeatureFastScalarFSQRT
+    : SubtargetFeature<"fast-scalar-fsqrt", "HasFastScalarFSQRT",
+                       "true", "Scalar SQRT is fast (disable Newton-Raphson)">;
+def FeatureFastVectorFSQRT
+    : SubtargetFeature<"fast-vector-fsqrt", "HasFastVectorFSQRT",
+                       "true", "Vector SQRT is fast (disable Newton-Raphson)">;
 
 //===----------------------------------------------------------------------===//
 // X86 processors supported.
@@ -276,12 +291,28 @@ def : Proc<"pentium3",        [FeatureX87, FeatureSlowUAMem16, FeatureMMX,
                                FeatureSSE1, FeatureFXSR]>;
 def : Proc<"pentium3m",       [FeatureX87, FeatureSlowUAMem16, FeatureMMX,
                                FeatureSSE1, FeatureFXSR, FeatureSlowBTMem]>;
-def : Proc<"pentium-m",       [FeatureX87, FeatureSlowUAMem16, FeatureMMX,
-                               FeatureSSE2, FeatureFXSR, FeatureSlowBTMem]>;
-def : Proc<"pentium4",        [FeatureX87, FeatureSlowUAMem16, FeatureMMX,
-                               FeatureSSE2, FeatureFXSR]>;
-def : Proc<"pentium4m",       [FeatureX87, FeatureSlowUAMem16, FeatureMMX,
-                               FeatureSSE2, FeatureFXSR, FeatureSlowBTMem]>;
+
+// Enable the PostRAScheduler for SSE2 and SSE3 class cpus.
+// The intent is to enable it for pentium4 which is the current default
+// processor in a vanilla 32-bit clang compilation when no specific
+// architecture is specified.  This generally gives a nice performance
+// increase on silvermont, with largely neutral behavior on other
+// contemporary large core processors.
+// pentium-m, pentium4m, prescott and nocona are included as a preventative
+// measure to avoid performance surprises, in case clang's default cpu
+// changes slightly.
+
+def : ProcessorModel<"pentium-m", GenericPostRAModel,
+                     [FeatureX87, FeatureSlowUAMem16, FeatureMMX,
+                      FeatureSSE2, FeatureFXSR, FeatureSlowBTMem]>;
+
+def : ProcessorModel<"pentium4", GenericPostRAModel,
+                     [FeatureX87, FeatureSlowUAMem16, FeatureMMX,
+                      FeatureSSE2, FeatureFXSR]>;
+
+def : ProcessorModel<"pentium4m", GenericPostRAModel,
+                     [FeatureX87, FeatureSlowUAMem16, FeatureMMX,
+                      FeatureSSE2, FeatureFXSR, FeatureSlowBTMem]>;
 
 // Intel Quark.
 def : Proc<"lakemont",        []>;
@@ -292,10 +323,10 @@ def : ProcessorModel<"yonah", SandyBridgeModel,
                       FeatureFXSR, FeatureSlowBTMem]>;
 
 // NetBurst.
-def : Proc<"prescott",
-           [FeatureX87, FeatureSlowUAMem16, FeatureMMX, FeatureSSE3,
-            FeatureFXSR, FeatureSlowBTMem]>;
-def : Proc<"nocona", [
+def : ProcessorModel<"prescott", GenericPostRAModel,
+                     [FeatureX87, FeatureSlowUAMem16, FeatureMMX, FeatureSSE3,
+                      FeatureFXSR, FeatureSlowBTMem]>;
+def : ProcessorModel<"nocona", GenericPostRAModel, [
   FeatureX87,
   FeatureSlowUAMem16,
   FeatureMMX,
@@ -424,7 +455,8 @@ def SNBFeatures : ProcessorFeatures<[], [
   FeaturePCLMUL,
   FeatureXSAVE,
   FeatureXSAVEOPT,
-  FeatureLAHFSAHF
+  FeatureLAHFSAHF,
+  FeatureFastScalarFSQRT
 ]>;
 
 class SandyBridgeProc<string Name> : ProcModel<Name, SandyBridgeModel,
@@ -482,7 +514,8 @@ def SKLFeatures : ProcessorFeatures<BDWFeatures.Value, [
   FeatureXSAVEC,
   FeatureXSAVES,
   FeatureSGX,
-  FeatureCLFLUSHOPT
+  FeatureCLFLUSHOPT,
+  FeatureFastVectorFSQRT
 ]>;
 
 // FIXME: define SKL model
@@ -711,8 +744,10 @@ def : Proc<"bdver4", [
   FeatureTBM,
   FeatureFMA,
   FeatureXSAVEOPT,
+  FeatureSlowSHLD,
   FeatureFSGSBase,
-  FeatureLAHFSAHF
+  FeatureLAHFSAHF,
+  FeatureMWAITX
 ]>;
 
 def : Proc<"geode",           [FeatureX87, FeatureSlowUAMem16, Feature3DNowA]>;

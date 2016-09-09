@@ -377,6 +377,8 @@ let hasSideEffects = 0 in {
   }
 
   // Generate cvts from all types to all types.
+  defm CVT_s8  : CVT_FROM_ALL<"s8",  Int16Regs>;
+  defm CVT_u8  : CVT_FROM_ALL<"u8",  Int16Regs>;
   defm CVT_s16 : CVT_FROM_ALL<"s16", Int16Regs>;
   defm CVT_u16 : CVT_FROM_ALL<"u16", Int16Regs>;
   defm CVT_f16 : CVT_FROM_ALL<"f16", Int16Regs>;
@@ -2576,23 +2578,16 @@ let hasSideEffects = 0 in {
 
 // 32-bit has a direct PTX instruction
 def : Pat<(ctlz Int32Regs:$a), (CLZr32 Int32Regs:$a)>;
-def : Pat<(ctlz_zero_undef Int32Regs:$a), (CLZr32 Int32Regs:$a)>;
 
 // For 64-bit, the result in PTX is actually 32-bit so we zero-extend
 // to 64-bit to match the LLVM semantics
 def : Pat<(ctlz Int64Regs:$a), (CVT_u64_u32 (CLZr64 Int64Regs:$a), CvtNONE)>;
-def : Pat<(ctlz_zero_undef Int64Regs:$a),
-          (CVT_u64_u32 (CLZr64 Int64Regs:$a), CvtNONE)>;
 
 // For 16-bit, we zero-extend to 32-bit, then trunc the result back
 // to 16-bits (ctlz of a 16-bit value is guaranteed to require less
 // than 16 bits to store). We also need to subtract 16 because the
 // high-order 16 zeros were counted.
 def : Pat<(ctlz Int16Regs:$a),
-          (SUBi16ri (CVT_u16_u32 (CLZr32
-            (CVT_u32_u16 Int16Regs:$a, CvtNONE)),
-           CvtNONE), 16)>;
-def : Pat<(ctlz_zero_undef Int16Regs:$a),
           (SUBi16ri (CVT_u16_u32 (CLZr32
             (CVT_u32_u16 Int16Regs:$a, CvtNONE)),
            CvtNONE), 16)>;
@@ -2618,16 +2613,16 @@ def : Pat<(ctpop Int64Regs:$a), (CVT_u64_u32 (POPCr64 Int64Regs:$a), CvtNONE)>;
 def : Pat<(ctpop Int16Regs:$a),
           (CVT_u16_u32 (POPCr32 (CVT_u32_u16 Int16Regs:$a, CvtNONE)), CvtNONE)>;
 
-// fround f64 -> f32
-def : Pat<(f32 (fround Float64Regs:$a)),
+// fpround f64 -> f32
+def : Pat<(f32 (fpround Float64Regs:$a)),
           (CVT_f32_f64 Float64Regs:$a, CvtRN_FTZ)>, Requires<[doF32FTZ]>;
-def : Pat<(f32 (fround Float64Regs:$a)),
+def : Pat<(f32 (fpround Float64Regs:$a)),
           (CVT_f32_f64 Float64Regs:$a, CvtRN)>;
 
-// fextend f32 -> f64
-def : Pat<(f64 (fextend Float32Regs:$a)),
+// fpextend f32 -> f64
+def : Pat<(f64 (fpextend Float32Regs:$a)),
           (CVT_f64_f32 Float32Regs:$a, CvtNONE_FTZ)>, Requires<[doF32FTZ]>;
-def : Pat<(f64 (fextend Float32Regs:$a)),
+def : Pat<(f64 (fpextend Float32Regs:$a)),
           (CVT_f64_f32 Float32Regs:$a, CvtNONE)>;
 
 def retflag : SDNode<"NVPTXISD::RET_FLAG", SDTNone,

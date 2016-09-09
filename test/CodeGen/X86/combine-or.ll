@@ -356,3 +356,113 @@ define <4 x i8> @test_crash(<4 x i8> %a, <4 x i8> %b) {
   ret <4 x i8> %or
 }
 
+; Verify that we can fold regardless of which operand is the zeroinitializer
+
+define <4 x i32> @test2b(<4 x i32> %a, <4 x i32> %b) {
+; CHECK-LABEL: test2b:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    pblendw {{.*#+}} xmm0 = xmm1[0,1,2,3],xmm0[4,5,6,7]
+; CHECK-NEXT:    retq
+  %shuf1 = shufflevector <4 x i32> zeroinitializer, <4 x i32> %a, <4 x i32><i32 0, i32 0, i32 6, i32 7>
+  %shuf2 = shufflevector <4 x i32> %b, <4 x i32> zeroinitializer, <4 x i32><i32 0, i32 1, i32 4, i32 4>
+  %or = or <4 x i32> %shuf1, %shuf2
+  ret <4 x i32> %or
+}
+
+define <4 x i32> @test2c(<4 x i32> %a, <4 x i32> %b) {
+; CHECK-LABEL: test2c:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    pblendw {{.*#+}} xmm0 = xmm1[0,1,2,3],xmm0[4,5,6,7]
+; CHECK-NEXT:    retq
+  %shuf1 = shufflevector <4 x i32> zeroinitializer, <4 x i32> %a, <4 x i32><i32 0, i32 0, i32 6, i32 7>
+  %shuf2 = shufflevector <4 x i32> zeroinitializer, <4 x i32> %b, <4 x i32><i32 4, i32 5, i32 0, i32 0>
+  %or = or <4 x i32> %shuf1, %shuf2
+  ret <4 x i32> %or
+}
+
+
+define <4 x i32> @test2d(<4 x i32> %a, <4 x i32> %b) {
+; CHECK-LABEL: test2d:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    pblendw {{.*#+}} xmm0 = xmm1[0,1,2,3],xmm0[4,5,6,7]
+; CHECK-NEXT:    retq
+  %shuf1 = shufflevector <4 x i32> %a, <4 x i32> zeroinitializer, <4 x i32><i32 4, i32 4, i32 2, i32 3>
+  %shuf2 = shufflevector <4 x i32> zeroinitializer, <4 x i32> %b, <4 x i32><i32 4, i32 5, i32 0, i32 0>
+  %or = or <4 x i32> %shuf1, %shuf2
+  ret <4 x i32> %or
+}
+
+; Make sure we can have an undef where an index pointing to the zero vector should be
+
+define <4 x i32> @test2e(<4 x i32> %a, <4 x i32> %b) {
+; CHECK-LABEL: test2e:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    pblendw {{.*#+}} xmm0 = xmm1[0,1,2,3],xmm0[4,5,6,7]
+; CHECK-NEXT:    retq
+  %shuf1 = shufflevector <4 x i32> %a, <4 x i32> <i32 0, i32 undef, i32 undef, i32 undef>, <4 x i32><i32 undef, i32 4, i32 2, i32 3>
+  %shuf2 = shufflevector <4 x i32> %b, <4 x i32> <i32 0, i32 undef, i32 undef, i32 undef>, <4 x i32><i32 0, i32 1, i32 4, i32 4>
+  %or = or <4 x i32> %shuf1, %shuf2
+  ret <4 x i32> %or
+}
+
+define <4 x i32> @test2f(<4 x i32> %a, <4 x i32> %b) {
+; CHECK-LABEL: test2f:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    pblendw {{.*#+}} xmm0 = xmm1[0,1,2,3],xmm0[4,5,6,7]
+; CHECK-NEXT:    retq
+  %shuf1 = shufflevector <4 x i32> %a, <4 x i32> <i32 0, i32 undef, i32 undef, i32 undef>, <4 x i32><i32 4, i32 4, i32 2, i32 3>
+  %shuf2 = shufflevector <4 x i32> %b, <4 x i32> <i32 0, i32 undef, i32 undef, i32 undef>, <4 x i32><i32 undef, i32 1, i32 4, i32 4>
+  %or = or <4 x i32> %shuf1, %shuf2
+  ret <4 x i32> %or
+}
+
+; (or (and X, c1), c2) -> (and (or X, c2), c1|c2)
+
+define <2 x i64> @or_and_v2i64(<2 x i64> %a0) {
+; CHECK-LABEL: or_and_v2i64:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    andps {{.*}}(%rip), %xmm0
+; CHECK-NEXT:    orps {{.*}}(%rip), %xmm0
+; CHECK-NEXT:    retq
+  %1 = and <2 x i64> %a0, <i64 1, i64 1>
+  %2 = or <2 x i64> %1, <i64 3, i64 3>
+  ret <2 x i64> %2
+}
+
+define <4 x i32> @or_and_v4i32(<4 x i32> %a0) {
+; CHECK-LABEL: or_and_v4i32:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    andps {{.*}}(%rip), %xmm0
+; CHECK-NEXT:    orps {{.*}}(%rip), %xmm0
+; CHECK-NEXT:    retq
+  %1 = and <4 x i32> %a0, <i32 1, i32 1, i32 1, i32 1>
+  %2 = or <4 x i32> %1, <i32 3, i32 3, i32 3, i32 3>
+  ret <4 x i32> %2
+}
+
+; fold (or x, c) -> c iff (x & ~c) == 0
+
+define <2 x i64> @or_zext_v2i32(<2 x i32> %a0) {
+; CHECK-LABEL: or_zext_v2i32:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    pxor %xmm1, %xmm1
+; CHECK-NEXT:    pblendw {{.*#+}} xmm0 = xmm0[0,1],xmm1[2,3],xmm0[4,5],xmm1[6,7]
+; CHECK-NEXT:    por {{.*}}(%rip), %xmm0
+; CHECK-NEXT:    retq
+  %1 = zext <2 x i32> %a0 to <2 x i64>
+  %2 = or <2 x i64> %1, <i64 4294967295, i64 4294967295>
+  ret <2 x i64> %2
+}
+
+define <4 x i32> @or_zext_v4i16(<4 x i16> %a0) {
+; CHECK-LABEL: or_zext_v4i16:
+; CHECK:       # BB#0:
+; CHECK-NEXT:    pxor %xmm1, %xmm1
+; CHECK-NEXT:    pblendw {{.*#+}} xmm0 = xmm0[0],xmm1[1],xmm0[2],xmm1[3],xmm0[4],xmm1[5],xmm0[6],xmm1[7]
+; CHECK-NEXT:    por {{.*}}(%rip), %xmm0
+; CHECK-NEXT:    retq
+  %1 = zext <4 x i16> %a0 to <4 x i32>
+  %2 = or <4 x i32> %1, <i32 65535, i32 65535, i32 65535, i32 65535>
+  ret <4 x i32> %2
+}
+

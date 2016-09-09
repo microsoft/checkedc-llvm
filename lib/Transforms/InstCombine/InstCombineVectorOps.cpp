@@ -62,21 +62,31 @@ static bool cheapToScalarize(Value *V, bool isConstant) {
   return false;
 }
 
-// If we have a PHI node with a vector type that has only 2 uses: feed
+// If we have a PHI node with a vector type that is only used to feed
 // itself and be an operand of extractelement at a constant location,
 // try to replace the PHI of the vector type with a PHI of a scalar type.
 Instruction *InstCombiner::scalarizePHI(ExtractElementInst &EI, PHINode *PN) {
-  // Verify that the PHI node has exactly 2 uses. Otherwise return NULL.
-  if (!PN->hasNUses(2))
-    return nullptr;
+  SmallVector<Instruction *, 2> Extracts;
+  // The users we want the PHI to have are:
+  // 1) The EI ExtractElement (we already know this)
+  // 2) Possibly more ExtractElements with the same index.
+  // 3) Another operand, which will feed back into the PHI.
+  Instruction *PHIUser = nullptr;
+  for (auto U : PN->users()) {
+    if (ExtractElementInst *EU = dyn_cast<ExtractElementInst>(U)) {
+      if (EI.getIndexOperand() == EU->getIndexOperand())
+        Extracts.push_back(EU);
+      else
+        return nullptr;
+    } else if (!PHIUser) {
+      PHIUser = cast<Instruction>(U);
+    } else {
+      return nullptr;
+    }
+  }
 
-  // If so, it's known at this point that one operand is PHI and the other is
-  // an extractelement node. Find the PHI user that is not the extractelement
-  // node.
-  auto iu = PN->user_begin();
-  Instruction *PHIUser = dyn_cast<Instruction>(*iu);
-  if (PHIUser == cast<Instruction>(&EI))
-    PHIUser = cast<Instruction>(*(++iu));
+  if (!PHIUser)
+    return nullptr;
 
   // Verify that this PHI user has one use, which is the PHI itself,
   // and that it is a binary operation which is cheap to scalarize.
@@ -126,12 +136,16 @@ Instruction *InstCombiner::scalarizePHI(ExtractElementInst &EI, PHINode *PN) {
       scalarPHI->addIncoming(newEI, inBB);
     }
   }
-  return replaceInstUsesWith(EI, scalarPHI);
+
+  for (auto E : Extracts)
+    replaceInstUsesWith(*E, scalarPHI);
+
+  return &EI;
 }
 
 Instruction *InstCombiner::visitExtractElementInst(ExtractElementInst &EI) {
   if (Value *V = SimplifyExtractElementInst(
-          EI.getVectorOperand(), EI.getIndexOperand(), DL, TLI, DT, AC))
+          EI.getVectorOperand(), EI.getIndexOperand(), DL, &TLI, &DT, &AC))
     return replaceInstUsesWith(EI, V);
 
   // If vector val is constant with all elements the same, replace EI with
@@ -552,6 +566,79 @@ Instruction *InstCombiner::visitInsertValueInst(InsertValueInst &I) {
   return nullptr;
 }
 
+static bool isShuffleEquivalentToSelect(ShuffleVectorInst &Shuf) {
+  int MaskSize = Shuf.getMask()->getType()->getVectorNumElements();
+  int VecSize = Shuf.getOperand(0)->getType()->getVectorNumElements();
+
+  // A vector select does not change the size of the operands.
+  if (MaskSize != VecSize)
+    return false;
+
+  // Each mask element must be undefined or choose a vector element from one of
+  // the source operands without crossing vector lanes.
+  for (int i = 0; i != MaskSize; ++i) {
+    int Elt = Shuf.getMaskValue(i);
+    if (Elt != -1 && Elt != i && Elt != i + VecSize)
+      return false;
+  }
+
+  return true;
+}
+
+/// insertelt (shufflevector X, CVec, Mask), C, CIndex -->
+/// shufflevector X, CVec', Mask'
+static Instruction *foldConstantInsEltIntoShuffle(InsertElementInst &InsElt) {
+  // Bail out if the shuffle has more than one use. In that case, we'd be
+  // replacing the insertelt with a shuffle, and that's not a clear win.
+  auto *Shuf = dyn_cast<ShuffleVectorInst>(InsElt.getOperand(0));
+  if (!Shuf || !Shuf->hasOneUse())
+    return nullptr;
+
+  // The shuffle must have a constant vector operand. The insertelt must have a
+  // constant scalar being inserted at a constant position in the vector.
+  Constant *ShufConstVec, *InsEltScalar;
+  uint64_t InsEltIndex;
+  if (!match(Shuf->getOperand(1), m_Constant(ShufConstVec)) ||
+      !match(InsElt.getOperand(1), m_Constant(InsEltScalar)) ||
+      !match(InsElt.getOperand(2), m_ConstantInt(InsEltIndex)))
+    return nullptr;
+
+  // Adding an element to an arbitrary shuffle could be expensive, but a shuffle
+  // that selects elements from vectors without crossing lanes is assumed cheap.
+  // If we're just adding a constant into that shuffle, it will still be cheap.
+  if (!isShuffleEquivalentToSelect(*Shuf))
+    return nullptr;
+
+  // From the above 'select' check, we know that the mask has the same number of
+  // elements as the vector input operands. We also know that each constant
+  // input element is used in its lane and can not be used more than once by the
+  // shuffle. Therefore, replace the constant in the shuffle's constant vector
+  // with the insertelt constant. Replace the constant in the shuffle's mask
+  // vector with the insertelt index plus the length of the vector (because the
+  // constant vector operand of a shuffle is always the 2nd operand).
+  Constant *Mask = Shuf->getMask();
+  unsigned NumElts = Mask->getType()->getVectorNumElements();
+  SmallVector<Constant*, 16> NewShufElts(NumElts);
+  SmallVector<Constant*, 16> NewMaskElts(NumElts);
+  for (unsigned i = 0; i != NumElts; ++i) {
+    if (i == InsEltIndex) {
+      NewShufElts[i] = InsEltScalar;
+      Type *Int32Ty = Type::getInt32Ty(Shuf->getContext());
+      NewMaskElts[i] = ConstantInt::get(Int32Ty, InsEltIndex + NumElts);
+    } else {
+      // Copy over the existing values.
+      NewShufElts[i] = ShufConstVec->getAggregateElement(i);
+      NewMaskElts[i] = Mask->getAggregateElement(i);
+    }
+  }
+
+  // Create new operands for a shuffle that includes the constant of the
+  // original insertelt. The old shuffle will be dead now.
+  Constant *NewShufVec = ConstantVector::get(NewShufElts);
+  Constant *NewMask = ConstantVector::get(NewMaskElts);
+  return new ShuffleVectorInst(Shuf->getOperand(0), NewShufVec, NewMask);
+}
+
 Instruction *InstCombiner::visitInsertElementInst(InsertElementInst &IE) {
   Value *VecOp    = IE.getOperand(0);
   Value *ScalarOp = IE.getOperand(1);
@@ -610,6 +697,9 @@ Instruction *InstCombiner::visitInsertElementInst(InsertElementInst &IE) {
       return replaceInstUsesWith(IE, V);
     return &IE;
   }
+
+  if (Instruction *Shuf = foldConstantInsEltIntoShuffle(IE))
+    return Shuf;
 
   return nullptr;
 }

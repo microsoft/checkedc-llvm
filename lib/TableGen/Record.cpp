@@ -15,14 +15,15 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/Hashing.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/Support/DataTypes.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/Format.h"
 #include "llvm/TableGen/Error.h"
+#include <cassert>
+#include <cstdint>
+#include <new>
 
 using namespace llvm;
 
@@ -32,8 +33,8 @@ using namespace llvm;
 
 namespace llvm {
 
-/// TableGenStringKey - This is a wrapper for std::string suitable for
-/// using as a key to a DenseMap.  Because there isn't a particularly
+/// This is a wrapper for std::string suitable for using as a key to a DenseMap.
+/// Because there isn't a particularly
 /// good way to indicate tombstone or empty keys for strings, we want
 /// to wrap std::string to indicate that this is a "special" string
 /// not expected to take on certain values (those of the tombstone and
@@ -51,6 +52,7 @@ public:
     using llvm::hash_value;
     return hash_value(Value.str());
   }
+
 private:
   std::string data;
 };
@@ -61,27 +63,31 @@ template<> struct DenseMapInfo<TableGenStringKey> {
     TableGenStringKey Empty("<<<EMPTY KEY>>>");
     return Empty;
   }
+
   static inline TableGenStringKey getTombstoneKey() {
     TableGenStringKey Tombstone("<<<TOMBSTONE KEY>>>");
     return Tombstone;
   }
+
   static unsigned getHashValue(const TableGenStringKey& Val) {
     using llvm::hash_value;
     return hash_value(Val);
   }
+
   static bool isEqual(const TableGenStringKey& LHS,
                       const TableGenStringKey& RHS) {
     return LHS.str() == RHS.str();
   }
 };
 
-} // namespace llvm
+} // end namespace llvm
 
 //===----------------------------------------------------------------------===//
 //    Type implementations
 //===----------------------------------------------------------------------===//
 
 BitRecTy BitRecTy::Shared;
+CodeRecTy CodeRecTy::Shared;
 IntRecTy IntRecTy::Shared;
 StringRecTy StringRecTy::Shared;
 DagRecTy DagRecTy::Shared;
@@ -174,9 +180,6 @@ bool RecordRecTy::typeIsConvertibleTo(const RecTy *RHS) const {
   return false;
 }
 
-/// resolveTypes - Find a common type that T1 and T2 convert to.
-/// Return null if no such type exists.
-///
 RecTy *llvm::resolveTypes(RecTy *T1, RecTy *T2) {
   if (T1->typeIsConvertibleTo(T2))
     return T2;
@@ -204,7 +207,6 @@ RecTy *llvm::resolveTypes(RecTy *T1, RecTy *T2) {
   }
   return nullptr;
 }
-
 
 //===----------------------------------------------------------------------===//
 //    Initializer implementations
@@ -406,8 +408,6 @@ std::string IntInit::getAsString() const {
   return itostr(Value);
 }
 
-/// canFitInBitfield - Return true if the number of bits is large enough to hold
-/// the integer value.
 static bool canFitInBitfield(int64_t Value, unsigned NumBits) {
   // For example, with NumBits == 4, we permit Values from [-7 .. 15].
   return (NumBits >= sizeof(Value) * 8) ||
@@ -453,6 +453,14 @@ IntInit::convertInitializerBitRange(const std::vector<unsigned> &Bits) const {
   return BitsInit::get(NewBits);
 }
 
+CodeInit *CodeInit::get(StringRef V) {
+  static StringMap<std::unique_ptr<CodeInit>> ThePool;
+
+  std::unique_ptr<CodeInit> &I = ThePool[V];
+  if (!I) I.reset(new CodeInit(V));
+  return I.get();
+}
+
 StringInit *StringInit::get(StringRef V) {
   static StringMap<std::unique_ptr<StringInit>> ThePool;
 
@@ -464,6 +472,13 @@ StringInit *StringInit::get(StringRef V) {
 Init *StringInit::convertInitializerTo(RecTy *Ty) const {
   if (isa<StringRecTy>(Ty))
     return const_cast<StringInit *>(this);
+
+  return nullptr;
+}
+
+Init *CodeInit::convertInitializerTo(RecTy *Ty) const {
+  if (isa<CodeRecTy>(Ty))
+    return const_cast<CodeInit *>(this);
 
   return nullptr;
 }
@@ -651,7 +666,7 @@ Init *UnOpInit::Fold(Record *CurRec, MultiClass *CurMultiClass) const {
         return StringInit::get(LHSi->getAsString());
     } else {
       if (StringInit *LHSs = dyn_cast<StringInit>(LHS)) {
-        std::string Name = LHSs->getValue();
+        const std::string &Name = LHSs->getValue();
 
         // From TGParser::ParseIDValue
         if (CurRec) {
@@ -1158,6 +1173,12 @@ TypedInit::convertInitializerTo(RecTy *Ty) const {
     return nullptr;
   }
 
+  if (isa<CodeRecTy>(Ty)) {
+    if (isa<CodeRecTy>(getType()))
+      return const_cast<TypedInit *>(this);
+    return nullptr;
+  }
+
   if (isa<BitRecTy>(Ty)) {
     // Accept variable if it is already of bit type!
     if (isa<BitRecTy>(getType()))
@@ -1303,7 +1324,6 @@ Init *VarInit::resolveListElementReference(Record &R,
   return nullptr;
 }
 
-
 RecTy *VarInit::getFieldType(const std::string &FieldName) const {
   if (RecordRecTy *RTy = dyn_cast<RecordRecTy>(getType()))
     if (const RecordVal *RV = RTy->getRecord()->getValue(FieldName))
@@ -1326,11 +1346,6 @@ Init *VarInit::getFieldInit(Record &R, const RecordVal *RV,
   return nullptr;
 }
 
-/// resolveReferences - This method is used by classes that refer to other
-/// variables which may not be defined at the time the expression is formed.
-/// If a value is set for the variable later, this method will be called on
-/// users of the value to allow the value to propagate out.
-///
 Init *VarInit::resolveReferences(Record &R, const RecordVal *RV) const {
   if (RecordVal *Val = R.getValue(VarName))
     if (RV == Val || (!RV && !isa<UnsetInit>(Val->getValue())))
@@ -1434,7 +1449,6 @@ Init *DefInit::getFieldInit(Record &R, const RecordVal *RV,
                             const std::string &FieldName) const {
   return Def->getValue(FieldName)->getValue();
 }
-
 
 std::string DefInit::getAsString() const {
   return Def->getName();
@@ -1560,7 +1574,6 @@ Init *DagInit::resolveReferences(Record &R, const RecordVal *RV) const {
   return const_cast<DagInit *>(this);
 }
 
-
 std::string DagInit::getAsString() const {
   std::string Result = "(" + Val->getAsString();
   if (!ValName.empty())
@@ -1575,7 +1588,6 @@ std::string DagInit::getAsString() const {
   }
   return Result + ")";
 }
-
 
 //===----------------------------------------------------------------------===//
 //    Other implementations
@@ -1616,7 +1628,7 @@ void Record::init() {
 
   // Every record potentially has a def at the top.  This value is
   // replaced with the top-level def name at instantiation time.
-  RecordVal DN("NAME", StringRecTy::get(), 0);
+  RecordVal DN("NAME", StringRecTy::get(), false);
   addValue(DN);
 }
 
@@ -1657,9 +1669,6 @@ void Record::setName(const std::string &Name) {
   setName(StringInit::get(Name));
 }
 
-/// resolveReferencesTo - If anything in this record refers to RV, replace the
-/// reference to RV with the RHS of RV.  If RV is null, we resolve all possible
-/// references.
 void Record::resolveReferencesTo(const RecordVal *RV) {
   for (unsigned i = 0, e = Values.size(); i != e; ++i) {
     if (RV == &Values[i]) // Skip resolve the same field as the given one
@@ -1720,9 +1729,6 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const Record &R) {
   return OS << "}\n";
 }
 
-/// getValueInit - Return the initializer for a value with the specified name,
-/// or abort if the field does not exist.
-///
 Init *Record::getValueInit(StringRef FieldName) const {
   const RecordVal *R = getValue(FieldName);
   if (!R || !R->getValue())
@@ -1731,11 +1737,6 @@ Init *Record::getValueInit(StringRef FieldName) const {
   return R->getValue();
 }
 
-
-/// getValueAsString - This method looks up the specified field and returns its
-/// value as a string, aborts if the field does not exist or if
-/// the value is not a string.
-///
 std::string Record::getValueAsString(StringRef FieldName) const {
   const RecordVal *R = getValue(FieldName);
   if (!R || !R->getValue())
@@ -1744,14 +1745,13 @@ std::string Record::getValueAsString(StringRef FieldName) const {
 
   if (StringInit *SI = dyn_cast<StringInit>(R->getValue()))
     return SI->getValue();
+  if (CodeInit *CI = dyn_cast<CodeInit>(R->getValue()))
+    return CI->getValue();
+
   PrintFatalError(getLoc(), "Record `" + getName() + "', field `" +
     FieldName + "' does not have a string initializer!");
 }
 
-/// getValueAsBitsInit - This method looks up the specified field and returns
-/// its value as a BitsInit, aborts if the field does not exist or if
-/// the value is not the right type.
-///
 BitsInit *Record::getValueAsBitsInit(StringRef FieldName) const {
   const RecordVal *R = getValue(FieldName);
   if (!R || !R->getValue())
@@ -1764,10 +1764,6 @@ BitsInit *Record::getValueAsBitsInit(StringRef FieldName) const {
     FieldName + "' does not have a BitsInit initializer!");
 }
 
-/// getValueAsListInit - This method looks up the specified field and returns
-/// its value as a ListInit, aborting if the field does not exist or if
-/// the value is not the right type.
-///
 ListInit *Record::getValueAsListInit(StringRef FieldName) const {
   const RecordVal *R = getValue(FieldName);
   if (!R || !R->getValue())
@@ -1780,10 +1776,6 @@ ListInit *Record::getValueAsListInit(StringRef FieldName) const {
     FieldName + "' does not have a list initializer!");
 }
 
-/// getValueAsListOfDefs - This method looks up the specified field and returns
-/// its value as a vector of records, aborting if the field does not exist
-/// or if the value is not the right type.
-///
 std::vector<Record*>
 Record::getValueAsListOfDefs(StringRef FieldName) const {
   ListInit *List = getValueAsListInit(FieldName);
@@ -1798,10 +1790,6 @@ Record::getValueAsListOfDefs(StringRef FieldName) const {
   return Defs;
 }
 
-/// getValueAsInt - This method looks up the specified field and returns its
-/// value as an int64_t, aborting if the field does not exist or if the value
-/// is not the right type.
-///
 int64_t Record::getValueAsInt(StringRef FieldName) const {
   const RecordVal *R = getValue(FieldName);
   if (!R || !R->getValue())
@@ -1814,10 +1802,6 @@ int64_t Record::getValueAsInt(StringRef FieldName) const {
     FieldName + "' does not have an int initializer!");
 }
 
-/// getValueAsListOfInts - This method looks up the specified field and returns
-/// its value as a vector of integers, aborting if the field does not exist or
-/// if the value is not the right type.
-///
 std::vector<int64_t>
 Record::getValueAsListOfInts(StringRef FieldName) const {
   ListInit *List = getValueAsListInit(FieldName);
@@ -1832,10 +1816,6 @@ Record::getValueAsListOfInts(StringRef FieldName) const {
   return Ints;
 }
 
-/// getValueAsListOfStrings - This method looks up the specified field and
-/// returns its value as a vector of strings, aborting if the field does not
-/// exist or if the value is not the right type.
-///
 std::vector<std::string>
 Record::getValueAsListOfStrings(StringRef FieldName) const {
   ListInit *List = getValueAsListInit(FieldName);
@@ -1850,10 +1830,6 @@ Record::getValueAsListOfStrings(StringRef FieldName) const {
   return Strings;
 }
 
-/// getValueAsDef - This method looks up the specified field and returns its
-/// value as a Record, aborting if the field does not exist or if the value
-/// is not the right type.
-///
 Record *Record::getValueAsDef(StringRef FieldName) const {
   const RecordVal *R = getValue(FieldName);
   if (!R || !R->getValue())
@@ -1866,10 +1842,6 @@ Record *Record::getValueAsDef(StringRef FieldName) const {
     FieldName + "' does not have a def initializer!");
 }
 
-/// getValueAsBit - This method looks up the specified field and returns its
-/// value as a bit, aborting if the field does not exist or if the value is
-/// not the right type.
-///
 bool Record::getValueAsBit(StringRef FieldName) const {
   const RecordVal *R = getValue(FieldName);
   if (!R || !R->getValue())
@@ -1899,10 +1871,6 @@ bool Record::getValueAsBitOrUnset(StringRef FieldName, bool &Unset) const {
     FieldName + "' does not have a bit initializer!");
 }
 
-/// getValueAsDag - This method looks up the specified field and returns its
-/// value as an Dag, aborting if the field does not exist or if the value is
-/// not the right type.
-///
 DagInit *Record::getValueAsDag(StringRef FieldName) const {
   const RecordVal *R = getValue(FieldName);
   if (!R || !R->getValue())
@@ -1915,7 +1883,6 @@ DagInit *Record::getValueAsDag(StringRef FieldName) const {
     FieldName + "' does not have a dag initializer!");
 }
 
-
 LLVM_DUMP_METHOD void MultiClass::dump() const {
   errs() << "Record:\n";
   Rec.dump();
@@ -1924,7 +1891,6 @@ LLVM_DUMP_METHOD void MultiClass::dump() const {
   for (const auto &Proto : DefPrototypes)
     Proto->dump();
 }
-
 
 LLVM_DUMP_METHOD void RecordKeeper::dump() const { errs() << *this; }
 
@@ -1939,11 +1905,7 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const RecordKeeper &RK) {
   return OS;
 }
 
-
-/// getAllDerivedDefinitions - This method returns all concrete definitions
-/// that derive from the specified class name.  If a class with the specified
-/// name does not exist, an error is printed and true is returned.
-std::vector<Record*>
+std::vector<Record *>
 RecordKeeper::getAllDerivedDefinitions(const std::string &ClassName) const {
   Record *Class = getClass(ClassName);
   if (!Class)
@@ -1957,8 +1919,6 @@ RecordKeeper::getAllDerivedDefinitions(const std::string &ClassName) const {
   return Defs;
 }
 
-/// QualifyName - Return an Init with a qualifier prefix referring
-/// to CurRec's name.
 Init *llvm::QualifyName(Record &CurRec, MultiClass *CurMultiClass,
                         Init *Name, const std::string &Scoper) {
   RecTy *Type = cast<TypedInit>(Name)->getType();
@@ -1986,8 +1946,6 @@ Init *llvm::QualifyName(Record &CurRec, MultiClass *CurMultiClass,
   return NewName->Fold(&CurRec, CurMultiClass);
 }
 
-/// QualifyName - Return an Init with a qualifier prefix referring
-/// to CurRec's name.
 Init *llvm::QualifyName(Record &CurRec, MultiClass *CurMultiClass,
                         const std::string &Name,
                         const std::string &Scoper) {

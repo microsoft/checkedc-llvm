@@ -17,6 +17,8 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/IR/DebugInfo.h"
+#include "llvm/MC/MCStreamer.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
 
 using namespace llvm;
@@ -82,6 +84,35 @@ bool DebugHandlerBase::piecesOverlap(const DIExpression *P1, const DIExpression 
   if (!P1->isBitPiece() || !P2->isBitPiece())
     return true;
   return pieceCmp(P1, P2) == 0;
+}
+
+/// If this type is derived from a base type then return base type size.
+uint64_t DebugHandlerBase::getBaseTypeSize(const DITypeRef TyRef) {
+  DIType *Ty = TyRef.resolve();
+  assert(Ty);
+  DIDerivedType *DDTy = dyn_cast<DIDerivedType>(Ty);
+  if (!DDTy)
+    return Ty->getSizeInBits();
+
+  unsigned Tag = DDTy->getTag();
+
+  if (Tag != dwarf::DW_TAG_member && Tag != dwarf::DW_TAG_typedef &&
+      Tag != dwarf::DW_TAG_const_type && Tag != dwarf::DW_TAG_volatile_type &&
+      Tag != dwarf::DW_TAG_restrict_type)
+    return DDTy->getSizeInBits();
+
+  DIType *BaseType = DDTy->getBaseType().resolve();
+
+  assert(BaseType && "Unexpected invalid base type");
+
+  // If this is a derived type, go ahead and get the base type, unless it's a
+  // reference then it's just the size of the field. Pointer types have no need
+  // of this since they're a different type of qualification on the type.
+  if (BaseType->getTag() == dwarf::DW_TAG_reference_type ||
+      BaseType->getTag() == dwarf::DW_TAG_rvalue_reference_type)
+    return Ty->getSizeInBits();
+
+  return getBaseTypeSize(BaseType);
 }
 
 void DebugHandlerBase::beginFunction(const MachineFunction *MF) {

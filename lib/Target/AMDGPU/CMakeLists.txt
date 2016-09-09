@@ -13,12 +13,27 @@ tablegen(LLVM AMDGPUGenAsmMatcher.inc -gen-asm-matcher)
 tablegen(LLVM AMDGPUGenDisassemblerTables.inc -gen-disassembler)
 add_public_tablegen_target(AMDGPUCommonTableGen)
 
+# List of all GlobalISel files.
+set(GLOBAL_ISEL_FILES
+  AMDGPUCallLowering.cpp
+  )
+
+# Add GlobalISel files to the dependencies if the user wants to build it.
+if(LLVM_BUILD_GLOBAL_ISEL)
+  set(GLOBAL_ISEL_BUILD_FILES ${GLOBAL_ISEL_FILES})
+else()
+  set(GLOBAL_ISEL_BUILD_FILES"")
+  set(LLVM_OPTIONAL_SOURCES LLVMGlobalISel ${GLOBAL_ISEL_FILES})
+endif()
+
+
 add_llvm_target(AMDGPUCodeGen
   AMDILCFGStructurizer.cpp
   AMDGPUAlwaysInlinePass.cpp
   AMDGPUAnnotateKernelFeatures.cpp
   AMDGPUAnnotateUniformValues.cpp
   AMDGPUAsmPrinter.cpp
+  AMDGPUCodeGenPrepare.cpp
   AMDGPUFrameLowering.cpp
   AMDGPUTargetObjectFile.cpp
   AMDGPUIntrinsicInfo.cpp
@@ -33,10 +48,13 @@ add_llvm_target(AMDGPUCodeGen
   AMDGPUInstrInfo.cpp
   AMDGPUPromoteAlloca.cpp
   AMDGPURegisterInfo.cpp
+  GCNHazardRecognizer.cpp
+  GCNSchedStrategy.cpp
   R600ClauseMergePass.cpp
   R600ControlFlowFinalizer.cpp
   R600EmitClauseMarkers.cpp
   R600ExpandSpecialInstrs.cpp
+  R600FrameLowering.cpp
   R600InstrInfo.cpp
   R600ISelLowering.cpp
   R600MachineFunctionInfo.cpp
@@ -44,14 +62,13 @@ add_llvm_target(AMDGPUCodeGen
   R600OptimizeVectorRegisters.cpp
   R600Packetizer.cpp
   R600RegisterInfo.cpp
-  R600TextureIntrinsicsReplacer.cpp
   SIAnnotateControlFlow.cpp
+  SIDebuggerInsertNops.cpp
   SIFixControlFlowLiveIntervals.cpp
   SIFixSGPRCopies.cpp
-  SIFixSGPRLiveRanges.cpp
   SIFoldOperands.cpp
   SIFrameLowering.cpp
-  SIInsertNopsPass.cpp
+  SIInsertSkips.cpp
   SIInsertWaits.cpp
   SIInstrInfo.cpp
   SIISelLowering.cpp
@@ -64,6 +81,7 @@ add_llvm_target(AMDGPUCodeGen
   SIShrinkInstructions.cpp
   SITypeRewriter.cpp
   SIWholeQuadMode.cpp
+  ${GLOBAL_ISEL_BUILD_FILES}
   )
 
 add_subdirectory(AsmParser)

@@ -180,8 +180,6 @@ enum ValueSymtabCodes {
   VST_CODE_ENTRY = 1,   // VST_ENTRY: [valueid, namechar x N]
   VST_CODE_BBENTRY = 2, // VST_BBENTRY: [bbid, namechar x N]
   VST_CODE_FNENTRY = 3, // VST_FNENTRY: [valueid, offset, namechar x N]
-  // VST_COMBINED_GVDEFENTRY: [valueid, sumoffset, guid]
-  VST_CODE_COMBINED_GVDEFENTRY = 4,
   // VST_COMBINED_ENTRY: [valueid, refguid]
   VST_CODE_COMBINED_ENTRY = 5
 };
@@ -195,24 +193,32 @@ enum ModulePathSymtabCodes {
 // The summary section uses different codes in the per-module
 // and combined index cases.
 enum GlobalValueSummarySymtabCodes {
-  // PERMODULE: [valueid, linkage, instcount, numrefs, numrefs x valueid,
+  // PERMODULE: [valueid, flags, instcount, numrefs, numrefs x valueid,
   //             n x (valueid, callsitecount)]
   FS_PERMODULE = 1,
-  // PERMODULE_PROFILE: [valueid, linkage, instcount, numrefs,
+  // PERMODULE_PROFILE: [valueid, flags, instcount, numrefs,
   //                     numrefs x valueid,
   //                     n x (valueid, callsitecount, profilecount)]
   FS_PERMODULE_PROFILE = 2,
-  // PERMODULE_GLOBALVAR_INIT_REFS: [valueid, linkage, n x valueid]
+  // PERMODULE_GLOBALVAR_INIT_REFS: [valueid, flags, n x valueid]
   FS_PERMODULE_GLOBALVAR_INIT_REFS = 3,
-  // COMBINED: [modid, linkage, instcount, numrefs, numrefs x valueid,
+  // COMBINED: [valueid, modid, flags, instcount, numrefs, numrefs x valueid,
   //            n x (valueid, callsitecount)]
   FS_COMBINED = 4,
-  // COMBINED_PROFILE: [modid, linkage, instcount, numrefs,
+  // COMBINED_PROFILE: [valueid, modid, flags, instcount, numrefs,
   //                    numrefs x valueid,
   //                    n x (valueid, callsitecount, profilecount)]
   FS_COMBINED_PROFILE = 5,
-  // COMBINED_GLOBALVAR_INIT_REFS: [modid, linkage, n x valueid]
+  // COMBINED_GLOBALVAR_INIT_REFS: [valueid, modid, flags, n x valueid]
   FS_COMBINED_GLOBALVAR_INIT_REFS = 6,
+  // ALIAS: [valueid, flags, valueid]
+  FS_ALIAS = 7,
+  // COMBINED_ALIAS: [valueid, modid, flags, valueid]
+  FS_COMBINED_ALIAS = 8,
+  // COMBINED_ORIGINAL_NAME: [original_name_hash]
+  FS_COMBINED_ORIGINAL_NAME = 9,
+  // VERSION of the summary, bumped when adding flags for instance.
+  FS_VERSION = 10,
 };
 
 enum MetadataCodes {
@@ -234,7 +240,7 @@ enum MetadataCodes {
   METADATA_FILE = 16,            // [distinct, filename, directory]
   METADATA_DERIVED_TYPE = 17,    // [distinct, ...]
   METADATA_COMPOSITE_TYPE = 18,  // [distinct, ...]
-  METADATA_SUBROUTINE_TYPE = 19, // [distinct, flags, types]
+  METADATA_SUBROUTINE_TYPE = 19, // [distinct, flags, types, cc]
   METADATA_COMPILE_UNIT = 20,    // [distinct, ...]
   METADATA_SUBPROGRAM = 21,      // [distinct, ...]
   METADATA_LEXICAL_BLOCK = 22,   // [distinct, scope, file, line, column]
@@ -251,6 +257,7 @@ enum MetadataCodes {
   METADATA_MACRO = 33,           // [distinct, macinfo, line, name, value]
   METADATA_MACRO_FILE = 34,      // [distinct, macinfo, line, file, ...]
   METADATA_STRINGS = 35,         // [count, offset] blob([lengths][chars])
+  METADATA_GLOBAL_DECL_ATTACHMENT = 36, // [valueid, n x [id, mdnode]]
 };
 
 // The constants block (CONSTANTS_BLOCK_ID) describes emission for each
@@ -513,7 +520,9 @@ enum AttributeKindCodes {
   ATTR_KIND_SWIFT_ERROR = 47,
   ATTR_KIND_NO_RECURSE = 48,
   ATTR_KIND_INACCESSIBLEMEM_ONLY = 49,
-  ATTR_KIND_INACCESSIBLEMEM_OR_ARGMEMONLY = 50
+  ATTR_KIND_INACCESSIBLEMEM_OR_ARGMEMONLY = 50,
+  ATTR_KIND_ALLOC_SIZE = 51,
+  ATTR_KIND_WRITEONLY = 52
 };
 
 enum ComdatSelectionKindCodes {

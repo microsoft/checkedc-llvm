@@ -12,7 +12,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/Passes.h"
 #include "AllocationOrder.h"
 #include "InterferenceCache.h"
 #include "LiveDebugVariables.h"
@@ -33,6 +32,7 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
@@ -44,6 +44,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
 #include <queue>
 
@@ -55,14 +56,14 @@ STATISTIC(NumGlobalSplits, "Number of split global live ranges");
 STATISTIC(NumLocalSplits,  "Number of split local live ranges");
 STATISTIC(NumEvicted,      "Number of interferences evicted");
 
-static cl::opt<SplitEditor::ComplementSpillMode>
-SplitSpillMode("split-spill-mode", cl::Hidden,
-  cl::desc("Spill mode for splitting live ranges"),
-  cl::values(clEnumValN(SplitEditor::SM_Partition, "default", "Default"),
-             clEnumValN(SplitEditor::SM_Size,  "size",  "Optimize for size"),
-             clEnumValN(SplitEditor::SM_Speed, "speed", "Optimize for speed"),
-             clEnumValEnd),
-  cl::init(SplitEditor::SM_Partition));
+static cl::opt<SplitEditor::ComplementSpillMode> SplitSpillMode(
+    "split-spill-mode", cl::Hidden,
+    cl::desc("Spill mode for splitting live ranges"),
+    cl::values(clEnumValN(SplitEditor::SM_Partition, "default", "Default"),
+               clEnumValN(SplitEditor::SM_Size, "size", "Optimize for size"),
+               clEnumValN(SplitEditor::SM_Speed, "speed", "Optimize for speed"),
+               clEnumValEnd),
+    cl::init(SplitEditor::SM_Speed));
 
 static cl::opt<unsigned>
 LastChanceRecoloringMaxDepth("lcr-max-depth", cl::Hidden,
@@ -128,6 +129,7 @@ class RAGreedy : public MachineFunctionPass,
   EdgeBundles *Bundles;
   SpillPlacement *SpillPlacer;
   LiveDebugVariables *DebugVars;
+  AliasAnalysis *AA;
 
   // state
   std::unique_ptr<Spiller> SpillerInstance;
@@ -331,6 +333,11 @@ public:
 
   /// Perform register allocation.
   bool runOnMachineFunction(MachineFunction &mf) override;
+
+  MachineFunctionProperties getRequiredProperties() const override {
+    return MachineFunctionProperties().set(
+        MachineFunctionProperties::Property::NoPHIs);
+  }
 
   static char ID;
 
@@ -1465,7 +1472,7 @@ unsigned RAGreedy::doRegionSplit(LiveInterval &VirtReg, unsigned BestCand,
                                  SmallVectorImpl<unsigned> &NewVRegs) {
   SmallVector<unsigned, 8> UsedCands;
   // Prepare split editor.
-  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this);
+  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this, &DeadRemats);
   SE->reset(LREdit, SplitSpillMode);
 
   // Assign all edge bundles to the preferred candidate, or NoCand.
@@ -1513,7 +1520,7 @@ unsigned RAGreedy::tryBlockSplit(LiveInterval &VirtReg, AllocationOrder &Order,
   assert(&SA->getParent() == &VirtReg && "Live range wasn't analyzed");
   unsigned Reg = VirtReg.reg;
   bool SingleInstrs = RegClassInfo.isProperSubClass(MRI->getRegClass(Reg));
-  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this);
+  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this, &DeadRemats);
   SE->reset(LREdit, SplitSpillMode);
   ArrayRef<SplitAnalysis::BlockInfo> UseBlocks = SA->getUseBlocks();
   for (unsigned i = 0; i != UseBlocks.size(); ++i) {
@@ -1585,7 +1592,7 @@ RAGreedy::tryInstructionSplit(LiveInterval &VirtReg, AllocationOrder &Order,
 
   // Always enable split spill mode, since we're effectively spilling to a
   // register.
-  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this);
+  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this, &DeadRemats);
   SE->reset(LREdit, SplitEditor::SM_Size);
 
   ArrayRef<SlotIndex> Uses = SA->getUseSlots();
@@ -1908,7 +1915,7 @@ unsigned RAGreedy::tryLocalSplit(LiveInterval &VirtReg, AllocationOrder &Order,
                << '-' << Uses[BestAfter] << ", " << BestDiff
                << ", " << (BestAfter - BestBefore + 1) << " instrs\n");
 
-  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this);
+  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this, &DeadRemats);
   SE->reset(LREdit);
 
   SE->openIntv();
@@ -2551,7 +2558,7 @@ unsigned RAGreedy::selectOrSplitImpl(LiveInterval &VirtReg,
     NewVRegs.push_back(VirtReg.reg);
   } else {
     NamedRegionTimer T("Spiller", TimerGroupName, TimePassesIsEnabled);
-    LiveRangeEdit LRE(&VirtReg, NewVRegs, *MF, *LIS, VRM, this);
+    LiveRangeEdit LRE(&VirtReg, NewVRegs, *MF, *LIS, VRM, this, &DeadRemats);
     spiller().spill(LRE);
     setStage(NewVRegs.begin(), NewVRegs.end(), RS_Done);
 
@@ -2591,6 +2598,7 @@ bool RAGreedy::runOnMachineFunction(MachineFunction &mf) {
   Bundles = &getAnalysis<EdgeBundles>();
   SpillPlacer = &getAnalysis<SpillPlacement>();
   DebugVars = &getAnalysis<LiveDebugVariables>();
+  AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
 
   initializeCSRCost();
 
@@ -2599,7 +2607,7 @@ bool RAGreedy::runOnMachineFunction(MachineFunction &mf) {
   DEBUG(LIS->dump());
 
   SA.reset(new SplitAnalysis(*VRM, *LIS, *Loops));
-  SE.reset(new SplitEditor(*SA, *LIS, *VRM, *DomTree, *MBFI));
+  SE.reset(new SplitEditor(*SA, *AA, *LIS, *VRM, *DomTree, *MBFI));
   ExtraRegInfo.clear();
   ExtraRegInfo.resize(MRI->getNumVirtRegs());
   NextCascade = 1;
@@ -2609,6 +2617,8 @@ bool RAGreedy::runOnMachineFunction(MachineFunction &mf) {
 
   allocatePhysRegs();
   tryHintsRecoloring();
+  postOptimization();
+
   releaseMemory();
   return true;
 }

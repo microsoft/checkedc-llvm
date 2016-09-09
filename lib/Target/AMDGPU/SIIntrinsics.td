@@ -7,14 +7,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// SI Intrinsic Definitions
+// Backend internal SI Intrinsic Definitions. User code should not
+// directly use these.
 //
 //===----------------------------------------------------------------------===//
 
 
 let TargetPrefix = "SI", isTarget = 1 in {
-
-  def int_SI_tid : Intrinsic <[llvm_i32_ty], [], [IntrNoMem]>;
   def int_SI_packf16 : Intrinsic <[llvm_i32_ty], [llvm_float_ty, llvm_float_ty], [IntrNoMem]>;
   def int_SI_export : Intrinsic <[], [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_float_ty, llvm_float_ty, llvm_float_ty, llvm_float_ty], []>;
   def int_SI_load_const : Intrinsic <[llvm_float_ty], [llvm_anyint_ty, llvm_i32_ty], [IntrNoMem]>;
@@ -50,7 +49,7 @@ let TargetPrefix = "SI", isTarget = 1 in {
      llvm_i32_ty,     // glc(imm)
      llvm_i32_ty,     // slc(imm)
      llvm_i32_ty],    // tfe(imm)
-    [IntrReadArgMem]>;
+    [IntrReadMem, IntrArgMemOnly]>;
 
   def int_SI_sendmsg : Intrinsic <[], [llvm_i32_ty, llvm_i32_ty], []>;
 
@@ -179,6 +178,12 @@ let TargetPrefix = "SI", isTarget = 1 in {
 } // End TargetPrefix = "SI", isTarget = 1
 
 let TargetPrefix = "amdgcn", isTarget = 1 in {
+  // Emit 2.5 ulp, no denormal division. Should only be inserted by
+  // pass based on !fpmath metadata.
+  def int_amdgcn_fdiv_fast : Intrinsic<
+    [llvm_float_ty], [llvm_float_ty], [IntrNoMem]
+  >;
+
   /* Control flow Intrinsics */
 
   def int_amdgcn_if : Intrinsic<[llvm_i64_ty], [llvm_i1_ty, llvm_empty_ty], []>;

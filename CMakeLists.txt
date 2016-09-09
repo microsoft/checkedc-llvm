@@ -1,11 +1,6 @@
 # See docs/CMake.html for instructions about how to build LLVM with CMake.
 
-cmake_minimum_required(VERSION 2.8.12.2)
-
-if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  message(STATUS "No build type selected, default to Debug")
-  set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type (default Debug)")
-endif()
+cmake_minimum_required(VERSION 3.4.3)
 
 if(POLICY CMP0022)
   cmake_policy(SET CMP0022 NEW) # automatic when 2.8.12 is required
@@ -20,17 +15,11 @@ if (POLICY CMP0051)
   cmake_policy(SET CMP0051 OLD)
 endif()
 
-if(CMAKE_VERSION VERSION_LESS 3.1.20141117)
-  set(cmake_3_2_USES_TERMINAL)
-else()
-  set(cmake_3_2_USES_TERMINAL USES_TERMINAL)
-endif()
-
 if(NOT DEFINED LLVM_VERSION_MAJOR)
-  set(LLVM_VERSION_MAJOR 3)
+  set(LLVM_VERSION_MAJOR 4)
 endif()
 if(NOT DEFINED LLVM_VERSION_MINOR)
-  set(LLVM_VERSION_MINOR 9)
+  set(LLVM_VERSION_MINOR 0)
 endif()
 if(NOT DEFINED LLVM_VERSION_PATCH)
   set(LLVM_VERSION_PATCH 0)
@@ -56,19 +45,83 @@ project(LLVM
   ${cmake_3_0_LANGUAGES}
   C CXX ASM)
 
+if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  message(STATUS "No build type selected, default to Debug")
+  set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type (default Debug)")
+endif()
+
+# This should only apply if you are both on an Apple host, and targeting Apple.
+if(CMAKE_HOST_APPLE AND APPLE)
+  if(NOT CMAKE_XCRUN)
+    find_program(CMAKE_XCRUN NAMES xcrun)
+  endif()
+  if(CMAKE_XCRUN)
+    execute_process(COMMAND ${CMAKE_XCRUN} -find libtool
+      OUTPUT_VARIABLE CMAKE_LIBTOOL
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+  endif()
+
+  if(NOT CMAKE_LIBTOOL OR NOT EXISTS CMAKE_LIBTOOL)
+    find_program(CMAKE_LIBTOOL NAMES libtool)
+  endif()
+
+  get_property(languages GLOBAL PROPERTY ENABLED_LANGUAGES)
+  if(CMAKE_LIBTOOL)
+    set(CMAKE_LIBTOOL ${CMAKE_LIBTOOL} CACHE PATH "libtool executable")
+    message(STATUS "Found libtool - ${CMAKE_LIBTOOL}")
+    foreach(lang ${languages})
+      set(CMAKE_${lang}_CREATE_STATIC_LIBRARY
+        "${CMAKE_LIBTOOL} -static -o <TARGET> <LINK_FLAGS> <OBJECTS> ")
+    endforeach()
+  endif()
+
+  # If DYLD_LIBRARY_PATH is set we need to set it on archiver commands
+  if(DYLD_LIBRARY_PATH)
+    set(dyld_envar "DYLD_LIBRARY_PATH=${DYLD_LIBRARY_PATH}")
+    foreach(lang ${languages})
+      foreach(cmd ${CMAKE_${lang}_CREATE_STATIC_LIBRARY})
+        list(APPEND CMAKE_${lang}_CREATE_STATIC_LIBRARY_NEW
+             "${dyld_envar} ${cmd}")
+      endforeach()
+      set(CMAKE_${lang}_CREATE_STATIC_LIBRARY
+        ${CMAKE_${lang}_CREATE_STATIC_LIBRARY_NEW})
+    endforeach()
+  endif()
+endif()
+
 # The following only works with the Ninja generator in CMake >= 3.0.
 set(LLVM_PARALLEL_COMPILE_JOBS "" CACHE STRING
   "Define the maximum number of concurrent compilation jobs.")
 if(LLVM_PARALLEL_COMPILE_JOBS)
-  if(CMAKE_VERSION VERSION_LESS 3.0 OR NOT CMAKE_MAKE_PROGRAM MATCHES "ninja")
-    message(WARNING "Job pooling is only available with Ninja generators and CMake 3.0 and later.")
+  if(NOT CMAKE_MAKE_PROGRAM MATCHES "ninja")
+    message(WARNING "Job pooling is only available with Ninja generators.")
   else()
     set_property(GLOBAL APPEND PROPERTY JOB_POOLS compile_job_pool=${LLVM_PARALLEL_COMPILE_JOBS})
     set(CMAKE_JOB_POOL_COMPILE compile_job_pool)
   endif()
 endif()
 
-set(LLVM_BUILD_GLOBAL_ISEL OFF CACHE BOOL "Experimental: Build GlobalISel")
+# Build llvm with ccache if the package is present
+set(LLVM_CCACHE_BUILD OFF CACHE BOOL "Set to ON for a ccache enabled build")
+if(LLVM_CCACHE_BUILD)
+  find_program(CCACHE_PROGRAM ccache)
+  if(CCACHE_PROGRAM)
+      set(LLVM_CCACHE_SIZE "" CACHE STRING "Size of ccache")
+      set(LLVM_CCACHE_DIR "" CACHE STRING "Directory to keep ccached data")
+      set(CCACHE_PROGRAM "CCACHE_CPP2=yes CCACHE_HASHDIR=yes ${CCACHE_PROGRAM}")
+      if (LLVM_CCACHE_SIZE)
+        set(CCACHE_PROGRAM "CCACHE_SIZE=${LLVM_CCACHE_SIZE} ${CCACHE_PROGRAM}")
+      endif()
+      if (LLVM_CCACHE_DIR)
+        set(CCACHE_PROGRAM "CCACHE_DIR=${LLVM_CCACHE_DIR} ${CCACHE_PROGRAM}")
+      endif()
+      set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ${CCACHE_PROGRAM})
+  else()
+    message(FATAL_ERROR "Unable to find the program ccache. Set LLVM_CCACHE_BUILD to OFF")
+  endif()
+endif()
+
+option(LLVM_BUILD_GLOBAL_ISEL "Experimental: Build GlobalISel" OFF)
 if(LLVM_BUILD_GLOBAL_ISEL)
   add_definitions(-DLLVM_BUILD_GLOBAL_ISEL)
 endif()
@@ -76,8 +129,8 @@ endif()
 set(LLVM_PARALLEL_LINK_JOBS "" CACHE STRING
   "Define the maximum number of concurrent link jobs.")
 if(LLVM_PARALLEL_LINK_JOBS)
-  if(CMAKE_VERSION VERSION_LESS 3.0 OR NOT CMAKE_MAKE_PROGRAM MATCHES "ninja")
-    message(WARNING "Job pooling is only available with Ninja generators and CMake 3.0 and later.")
+  if(NOT CMAKE_MAKE_PROGRAM MATCHES "ninja")
+    message(WARNING "Job pooling is only available with Ninja generators.")
   else()
     set_property(GLOBAL APPEND PROPERTY JOB_POOLS link_job_pool=${LLVM_PARALLEL_LINK_JOBS})
     set(CMAKE_JOB_POOL_LINK link_job_pool)
@@ -186,6 +239,9 @@ endif()
 
 set(LLVM_LIBDIR_SUFFIX "" CACHE STRING "Define suffix of library directory name (32/64)" )
 
+set(LLVM_TOOLS_INSTALL_DIR "bin" CACHE STRING "Path for binary subdirectory (defaults to 'bin')")
+mark_as_advanced(LLVM_TOOLS_INSTALL_DIR)
+
 # They are used as destination of target generators.
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/lib${LLVM_LIBDIR_SUFFIX})
@@ -211,8 +267,8 @@ set(LLVM_ALL_TARGETS
   AMDGPU
   ARM
   BPF
-  CppBackend
   Hexagon
+  Lanai
   Mips
   MSP430
   NVPTX
@@ -234,11 +290,6 @@ set(LLVM_EXPERIMENTAL_TARGETS_TO_BUILD ""
 
 option(BUILD_SHARED_LIBS
   "Build all libraries as shared libraries instead of static" OFF)
-
-option(LLVM_ENABLE_TIMESTAMPS "Enable embedding timestamp information in build" ON)
-if(LLVM_ENABLE_TIMESTAMPS)
-  set(ENABLE_TIMESTAMPS 1)
-endif()
 
 option(LLVM_ENABLE_BACKTRACES "Enable embedding backtraces on crash." ON)
 if(LLVM_ENABLE_BACKTRACES)
@@ -277,9 +328,16 @@ include(AddLLVMDefinitions)
 option(LLVM_ENABLE_PIC "Build Position-Independent Code" ON)
 option(LLVM_ENABLE_WARNINGS "Enable compiler warnings." ON)
 option(LLVM_ENABLE_MODULES "Compile with C++ modules enabled." OFF)
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+  option(LLVM_ENABLE_MODULE_DEBUGGING "Compile with -gmodules." ON)
+  option(LLVM_ENABLE_LOCAL_SUBMODULE_VISIBILITY "Compile with -fmodules-local-submodule-visibility." OFF)
+else()
+  option(LLVM_ENABLE_MODULE_DEBUGGING "Compile with -gmodules." OFF)
+  option(LLVM_ENABLE_LOCAL_SUBMODULE_VISIBILITY "Compile with -fmodules-local-submodule-visibility." ON)
+endif()
 option(LLVM_ENABLE_CXX1Y "Compile with C++1y enabled." OFF)
 option(LLVM_ENABLE_LIBCXX "Use libc++ if available." OFF)
-option(LLVM_ENABLE_LIBCXXABI "Use libc++abi when using libc++." OFF)
+option(LLVM_ENABLE_LLD "Use lld as C and C++ linker." OFF)
 option(LLVM_ENABLE_PEDANTIC "Compile with pedantic enabled." ON)
 option(LLVM_ENABLE_WERROR "Fail and stop if a warning is triggered." OFF)
 
@@ -288,6 +346,8 @@ if( NOT uppercase_CMAKE_BUILD_TYPE STREQUAL "DEBUG" )
 else()
   option(LLVM_ENABLE_ASSERTIONS "Enable assertions" ON)
 endif()
+
+option(LLVM_ENABLE_EXPENSIVE_CHECKS "Enable expensive checks" OFF)
 
 set(LLVM_ABI_BREAKING_CHECKS "WITH_ASSERTS" CACHE STRING
   "Enable abi-breaking checks.  Can be WITH_ASSERTS, FORCE_ON or FORCE_OFF.")
@@ -326,8 +386,26 @@ set(LLVM_USE_SANITIZER "" CACHE STRING
 option(LLVM_USE_SPLIT_DWARF
   "Use -gsplit-dwarf when compiling llvm." OFF)
 
-option(WITH_POLLY "Build LLVM with Polly" ON)
-option(LINK_POLLY_INTO_TOOLS "Static link Polly into tools" OFF)
+option(LLVM_POLLY_LINK_INTO_TOOLS "Statically link Polly into tools (if available)" ON)
+option(LLVM_POLLY_BUILD "Build LLVM with Polly" ON)
+
+if (EXISTS ${LLVM_MAIN_SRC_DIR}/tools/polly/CMakeLists.txt)
+  set(POLLY_IN_TREE TRUE)
+else()
+  set(POLLY_IN_TREE FALSE)
+endif()
+
+if (LLVM_POLLY_BUILD AND POLLY_IN_TREE)
+  set(WITH_POLLY ON)
+else()
+  set(WITH_POLLY OFF)
+endif()
+
+if (LLVM_POLLY_LINK_INTO_TOOLS AND WITH_POLLY)
+  set(LINK_POLLY_INTO_TOOLS ON)
+else()
+  set(LINK_POLLY_INTO_TOOLS OFF)
+endif()
 
 # Define an option controlling whether we should build for 32-bit on 64-bit
 # platforms, where supported.
@@ -358,6 +436,8 @@ option(LLVM_BUILD_TOOLS
   "Build the LLVM tools. If OFF, just generate build targets." ON)
 
 option(LLVM_INCLUDE_UTILS "Generate build targets for the LLVM utils." ON)
+option(LLVM_BUILD_UTILS
+  "Build LLVM utility binaries. If OFF, just generate build targets." ON)
 
 option(LLVM_BUILD_RUNTIME
   "Build the LLVM runtime libraries." ON)
@@ -374,6 +454,7 @@ option (LLVM_BUILD_DOCS "Build the llvm documentation." OFF)
 option (LLVM_INCLUDE_DOCS "Generate build targets for llvm documentation." ON)
 option (LLVM_ENABLE_DOXYGEN "Use doxygen to generate llvm API documentation." OFF)
 option (LLVM_ENABLE_SPHINX "Use Sphinx to generate llvm documentation." OFF)
+option (LLVM_ENABLE_OCAMLDOC "Build OCaml bindings documentation." ON)
 
 option (LLVM_BUILD_EXTERNAL_COMPILER_RT
   "Build compiler-rt as an external project." OFF)
@@ -402,6 +483,21 @@ if (MSVC_IDE AND NOT (MSVC_VERSION LESS 1900))
   option(LLVM_ADD_NATIVE_VISUALIZERS_TO_SOLUTION "Configure project to use Visual Studio native visualizers" TRUE)
 else()
   set(LLVM_ADD_NATIVE_VISUALIZERS_TO_SOLUTION FALSE CACHE INTERNAL "For Visual Studio 2013, manually copy natvis files to Documents\\Visual Studio 2013\\Visualizers" FORCE)
+endif()
+
+if (LLVM_BUILD_INSTRUMENTED OR LLVM_BUILD_INSTRUMENTED_COVERAGE)
+  if(NOT LLVM_PROFILE_MERGE_POOL_SIZE)
+    # A pool size of 1-2 is probably sufficient on a SSD. 3-4 should be fine
+    # for spining disks. Anything higher may only help on slower mediums.
+    set(LLVM_PROFILE_MERGE_POOL_SIZE "4")
+  endif()
+  if(NOT LLVM_PROFILE_FILE_PATTERN)
+    if(NOT LLVM_PROFILE_DATA_DIR)
+      file(TO_NATIVE_PATH "${LLVM_BINARY_DIR}/profiles/%${LLVM_PROFILE_MERGE_POOL_SIZE}m.profraw" LLVM_PROFILE_FILE_PATTERN)
+    else()
+      file(TO_NATIVE_PATH "${LLVM_PROFILE_DATA_DIR}/%${LLVM_PROFILE_MERGE_POOL_SIZE}m.profraw" LLVM_PROFILE_FILE_PATTERN)
+    endif()
+  endif()
 endif()
 
 # All options referred to from HandleLLVMOptions have to be specified
@@ -593,7 +689,7 @@ endif()
 # check its symbols. This is wasteful (the check was done when foo.so
 # was created) and can fail since it is not the dynamic linker and
 # doesn't know how to handle search paths correctly.
-if (UNIX AND NOT APPLE AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
+if (UNIX AND NOT APPLE AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "SunOS|AIX")
   set(CMAKE_EXE_LINKER_FLAGS
       "${CMAKE_EXE_LINKER_FLAGS} -Wl,-allow-shlib-undefined")
 endif()
@@ -647,10 +743,20 @@ if( MINGW )
 endif()
 
 # Put this before tblgen. Else we have a circular dependence.
+add_subdirectory(lib/Demangle)
 add_subdirectory(lib/Support)
 add_subdirectory(lib/TableGen)
 
 add_subdirectory(utils/TableGen)
+
+# Force target to be built as soon as possible. Clang modules builds depend
+# header-wise on it as they ship all headers from the umbrella folders. Building
+# an entire module might include header, which depends on intrinsics_gen. This
+# should be right after LLVMSupport and LLVMTableGen otherwise we introduce a
+# circular dependence.
+if (LLVM_ENABLE_MODULES)
+  list(APPEND LLVM_COMMON_DEPENDS intrinsics_gen)
+endif(LLVM_ENABLE_MODULES)
 
 add_subdirectory(include/llvm)
 
@@ -663,6 +769,7 @@ if( LLVM_INCLUDE_UTILS )
   add_subdirectory(utils/not)
   add_subdirectory(utils/llvm-lit)
   add_subdirectory(utils/yaml-bench)
+  add_subdirectory(utils/unittest)
 else()
   if ( LLVM_INCLUDE_TESTS )
     message(FATAL_ERROR "Including tests when not building utils will not work.
@@ -675,10 +782,6 @@ if (LLVM_ADD_NATIVE_VISUALIZERS_TO_SOLUTION)
   add_subdirectory(utils/LLVMVisualizers)
 endif()
 
-if(LLVM_INCLUDE_TESTS)
-  add_subdirectory(utils/unittest)
-endif()
-
 foreach( binding ${LLVM_BINDINGS_LIST} )
   if( EXISTS "${LLVM_MAIN_SRC_DIR}/bindings/${binding}/CMakeLists.txt" )
     add_subdirectory(bindings/${binding})
@@ -687,15 +790,11 @@ endforeach()
 
 add_subdirectory(projects)
 
-if(WITH_POLLY)
-  if(NOT EXISTS ${LLVM_MAIN_SRC_DIR}/tools/polly/CMakeLists.txt)
-    set(WITH_POLLY OFF)
-  endif()
-endif(WITH_POLLY)
-
 if( LLVM_INCLUDE_TOOLS )
   add_subdirectory(tools)
 endif()
+
+add_subdirectory(runtimes)
 
 if( LLVM_INCLUDE_EXAMPLES )
   add_subdirectory(examples)
@@ -707,7 +806,8 @@ if( LLVM_INCLUDE_TESTS )
     llvm_ExternalProject_Add(test-suite ${LLVM_MAIN_SRC_DIR}/projects/test-suite
       USE_TOOLCHAIN
       EXCLUDE_FROM_ALL
-      NO_INSTALL)
+      NO_INSTALL
+      ALWAYS_CLEAN)
   endif()
   add_subdirectory(test)
   add_subdirectory(unittests)
@@ -723,14 +823,23 @@ if( LLVM_INCLUDE_TESTS )
   get_property(LLVM_LIT_PARAMS GLOBAL PROPERTY LLVM_LIT_PARAMS)
   get_property(LLVM_LIT_DEPENDS GLOBAL PROPERTY LLVM_LIT_DEPENDS)
   get_property(LLVM_LIT_EXTRA_ARGS GLOBAL PROPERTY LLVM_LIT_EXTRA_ARGS)
+  get_property(LLVM_ADDITIONAL_TEST_TARGETS
+               GLOBAL PROPERTY LLVM_ADDITIONAL_TEST_TARGETS)
+  get_property(LLVM_ADDITIONAL_TEST_DEPENDS
+               GLOBAL PROPERTY LLVM_ADDITIONAL_TEST_DEPENDS)
   add_lit_target(check-all
     "Running all regression tests"
     ${LLVM_LIT_TESTSUITES}
     PARAMS ${LLVM_LIT_PARAMS}
-    DEPENDS ${LLVM_LIT_DEPENDS}
+    DEPENDS ${LLVM_LIT_DEPENDS} ${LLVM_ADDITIONAL_TEST_TARGETS}
     ARGS ${LLVM_LIT_EXTRA_ARGS}
     )
-  add_custom_target(test-depends DEPENDS ${LLVM_LIT_DEPENDS})
+  if(TARGET check-runtimes)
+    add_dependencies(check-all check-runtimes)
+  endif()
+  add_custom_target(test-depends
+                    DEPENDS ${LLVM_LIT_DEPENDS} ${LLVM_ADDITIONAL_TEST_DEPENDS})
+  set_target_properties(test-depends PROPERTIES FOLDER "Tests")
 endif()
 
 if (LLVM_INCLUDE_DOCS)

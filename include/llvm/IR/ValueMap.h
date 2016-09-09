@@ -85,7 +85,7 @@ class ValueMap {
   typedef DenseMap<const Metadata *, TrackingMDRef> MDMapT;
   typedef typename Config::ExtraData ExtraData;
   MapT Map;
-  std::unique_ptr<MDMapT> MDMap;
+  Optional<MDMapT> MDMap;
   ExtraData Data;
 
   bool MayMapMetadata = true;
@@ -103,12 +103,13 @@ public:
   explicit ValueMap(const ExtraData &Data, unsigned NumInitBuckets = 64)
       : Map(NumInitBuckets), Data(Data) {}
 
-  bool hasMD() const { return MDMap; }
+  bool hasMD() const { return bool(MDMap); }
   MDMapT &MD() {
     if (!MDMap)
-      MDMap.reset(new MDMapT);
+      MDMap.emplace();
     return *MDMap;
   }
+  Optional<MDMapT> &getMDMap() { return MDMap; }
 
   bool mayMapMetadata() const { return MayMapMetadata; }
   void enableMapMetadata() { MayMapMetadata = true; }

@@ -373,6 +373,13 @@ VSX:
   . Provide builtin?
     (set f128:$vT, (int_ppc_vsx_xsrqpxp f128:$vB))
 
+Fixed Point Facility:
+
+- Exploit cmprb and cmpeqb (perhaps for something like
+  isalpha/isdigit/isupper/islower and isspace respectivelly). This can
+  perhaps be done through a builtin.
+
+- Provide testing for cnttz[dw]
 - Insert Exponent DP/QP: xsiexpdp xsiexpqp
   . Use intrinsic?
   . xsiexpdp:
@@ -390,6 +397,8 @@ VSX:
     (set f128:$vT, (int_ppc_vsx_xsxsigqp f128$vB))  // xsxsigqp
 
 - Vector Insert Word: xxinsertw
+  - Useful for inserting f32/i32 elements into vectors (the element to be
+    inserted needs to be prepared)
   . Note: llvm has insertelem in "Vector Operations"
     ; yields <n x <ty>>
     <result> = insertelement <n x <ty>> <val>, <ty> <elt>, <ty2> <idx>
@@ -402,6 +411,10 @@ VSX:
     (set v1f128:$XT, (int_ppc_vsx_xxinsertw v1f128:$XTi, f128:$XB, i4:$UIMM))
 
 - Vector Extract Unsigned Word: xxextractuw
+  - Not useful for extraction of f32 from v4f32 (the current pattern is better -
+    shift->convert)
+  - It is useful for (uint_to_fp (vector_extract v4i32, N))
+  - Unfortunately, it can't be used for (sint_to_fp (vector_extract v4i32, N))
   . Note: llvm has extractelement in "Vector Operations"
     ; yields <ty>
     <result> = extractelement <n x <ty>> <val>, <ty2> <idx>
@@ -575,79 +588,6 @@ Move to CR from XER Extended (mcrxrx):
 - Is there a use for this in LLVM?
 
 Fixed Point Facility:
-- Add PC Immediate Shifted: addpcis subpcis
-  . Thinking to use it on PC relative addressing mode?
-
-- 64-bit Fixed-Point Multiply-Add Low DWord: maddld
-  . SDAG:
-    (set i64:$rD, (add (mul $rA, $rB), $rC))
-
-- 64-bit Fixed-Point Multiply-Add High-DWord/High-DWord-Unsigned: maddhd maddhdu
-  . Use intrinsic:
-    (set i64:$rD, (int_ppc_maddhd i64:$rA, i64:$rB), i64:$rC))
-    (set i64:$rD, (int_ppc_maddhdu i64:$rA, i64:$rB), i64:$rC))
-
-- Modulo {Signed/Unsigned}-{Word/DWord}: modsw moduw modsd modud
-  . Map modulo signed to llvm srem, modulo unsigned to urem because each pair
-    has same semantics, as follows:
-
-    llvm srem:
-    1. This instruction returns the remainder of a division (where the result is
-       either zero or has the same sign as the dividend, op1)
-    2. Undefined behavior:
-       - <anything> % 0
-       - Overflow: e.g. -2147483648 % -1
-         In this case, the remainder doesn’t actually overflow, but this rule
-         lets srem be implemented using instructions that return both the result
-         of the division and the remainder.
-
-    Modulo Signed:
-    1. remainder = dividend - (quotient × divisor)
-        where
-                    0 ≤ remainder < |divisor|, if the dividend ≥ 0
-           -|divisor| < remainder ≤  0       , if the dividend < 0
-
-    2. Undefined behavior:
-      - <anything> % 0
-      - 0x8000_0000 % -1
-
-  . SDAG:
-    (set i32:$rD, (srem i32:$rA, i32:$rB))  // modsw
-    (set i32:$rD, (urem i32:$rA, i32:$rB))  // moduw
-    (set i64:$rD, (srem i64:$rA, i64:$rB))  // modsd
-    (set i64:$rD, (urem i64:$rA, i64:$rB))  // modud
-
-  . Note:
-    The quotient is not supplied as a result in modulo word (32-bit)
-    instructions
-
-- Deliver A Random Number: darn
-  . Intrinsic?
-    (set i64:$rD, (int_ppc_darn i2:$L))
-
-  . Thinking for using it on c/c++ rand() implementation
-
-- Extend-Sign Word and Shift Left Immediate: extswsli extswsli.
-  . SDAG:
-    (set i64:$rA, shl((sext i32:$rS, i64), i6$SH))
-
-- Set Boolean: setb
-  . Thinking to use it on:
-
-    if (cond)
-      return true;
-    return false;
-
-  . Need Intrinsic?
-    (set i64:rD, (int_ppc_setb i3:$BFA))
-
-- DFP Test Significance Immediate [Quad]: dtstsfi dtstsfiq
-  . Need write inline assembly to test paired floating point register
-    allocation for dtstsfiq
-
-  . Intrinsics:
-    (set i1:$BF, (int_ppc_dtstsfi i6:$UIM, f64:$FRB))
-    (set i1:$BF, (int_ppc_dtstsfiq i6:$UIM, f128:$FRBp))
 
 - Copy-Paste Facility: copy copy_first cp_abort paste paste. paste_last
   . Use instrinstics:

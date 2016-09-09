@@ -65,9 +65,9 @@ STATISTIC(RelaxedInstructions, "Number of relaxed instructions");
 
 /* *** */
 
-MCAssembler::MCAssembler(MCContext &Context_, MCAsmBackend &Backend_,
-                         MCCodeEmitter &Emitter_, MCObjectWriter &Writer_)
-    : Context(Context_), Backend(Backend_), Emitter(Emitter_), Writer(Writer_),
+MCAssembler::MCAssembler(MCContext &Context, MCAsmBackend &Backend,
+                         MCCodeEmitter &Emitter, MCObjectWriter &Writer)
+    : Context(Context), Backend(Backend), Emitter(Emitter), Writer(Writer),
       BundleAlignSize(0), RelaxAll(false), SubsectionsViaSymbols(false),
       IncrementalLinkerCompatible(false), ELFHeaderEFlags(0) {
   VersionMinInfo.Major = 0; // Major version == 0 for "none specified"
@@ -575,8 +575,8 @@ void MCAssembler::writeSectionData(const MCSection *Sec,
         // into a virtual section. This is to support clients which use standard
         // directives to fill the contents of virtual sections.
         const MCDataFragment &DF = cast<MCDataFragment>(F);
-        assert(DF.fixup_begin() == DF.fixup_end() &&
-               "Cannot have fixups in virtual section!");
+        if (DF.fixup_begin() != DF.fixup_end())
+          report_fatal_error("cannot have fixups in virtual section!");
         for (unsigned i = 0, e = DF.getContents().size(); i != e; ++i)
           if (DF.getContents()[i]) {
             if (auto *ELFSec = dyn_cast<const MCSectionELF>(Sec))
@@ -765,7 +765,7 @@ bool MCAssembler::relaxInstruction(MCAsmLayout &Layout,
   // Relax the fragment.
 
   MCInst Relaxed;
-  getBackend().relaxInstruction(F.getInst(), Relaxed);
+  getBackend().relaxInstruction(F.getInst(), F.getSubtargetInfo(), Relaxed);
 
   // Encode the new instruction.
   //
@@ -914,4 +914,5 @@ void MCAssembler::finishLayout(MCAsmLayout &Layout) {
   for (unsigned int i = 0, n = Layout.getSectionOrder().size(); i != n; ++i) {
     Layout.getFragmentOffset(&*Layout.getSectionOrder()[i]->rbegin());
   }
+  getBackend().finishLayout(*this, Layout);
 }

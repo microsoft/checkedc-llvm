@@ -26,7 +26,6 @@
 #include "llvm/IR/GlobalObject.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/raw_ostream.h"
@@ -48,7 +47,7 @@ static void addNonConstUser(ClusterMapType &GVtoClusterMap,
   if (const Instruction *I = dyn_cast<Instruction>(U)) {
     const GlobalValue *F = I->getParent()->getParent();
     GVtoClusterMap.unionSets(GV, F);
-  } else if (isa<GlobalAlias>(U) || isa<Function>(U) ||
+  } else if (isa<GlobalIndirectSymbol>(U) || isa<Function>(U) ||
              isa<GlobalVariable>(U)) {
     GVtoClusterMap.unionSets(GV, cast<GlobalValue>(U));
   } else {
@@ -108,8 +107,8 @@ static void findPartitions(Module *M, ClusterIDMapType &ClusterIDMap,
 
     // For aliases we should not separate them from their aliasees regardless
     // of linkage.
-    if (GlobalAlias *GA = dyn_cast<GlobalAlias>(&GV)) {
-      if (const GlobalObject *Base = GA->getBaseObject())
+    if (auto *GIS = dyn_cast<GlobalIndirectSymbol>(&GV)) {
+      if (const GlobalObject *Base = GIS->getBaseObject())
         GVtoClusterMap.unionSets(&GV, Base);
     }
 
@@ -206,8 +205,8 @@ static void externalize(GlobalValue *GV) {
 
 // Returns whether GV should be in partition (0-based) I of N.
 static bool isInPartition(const GlobalValue *GV, unsigned I, unsigned N) {
-  if (auto GA = dyn_cast<GlobalAlias>(GV))
-    if (const GlobalObject *Base = GA->getBaseObject())
+  if (auto *GIS = dyn_cast<GlobalIndirectSymbol>(GV))
+    if (const GlobalObject *Base = GIS->getBaseObject())
       GV = Base;
 
   StringRef Name;
@@ -228,7 +227,7 @@ static bool isInPartition(const GlobalValue *GV, unsigned I, unsigned N) {
 
 void llvm::SplitModule(
     std::unique_ptr<Module> M, unsigned N,
-    std::function<void(std::unique_ptr<Module> MPart)> ModuleCallback,
+    function_ref<void(std::unique_ptr<Module> MPart)> ModuleCallback,
     bool PreserveLocals) {
   if (!PreserveLocals) {
     for (Function &F : *M)
@@ -237,6 +236,8 @@ void llvm::SplitModule(
       externalize(&GV);
     for (GlobalAlias &GA : M->aliases())
       externalize(&GA);
+    for (GlobalIFunc &GIF : M->ifuncs())
+      externalize(&GIF);
   }
 
   // This performs splitting without a need for externalization, which might not

@@ -17,11 +17,11 @@
 #define LLVM_TARGET_TARGETREGISTERINFO_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineValueType.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/MC/MCRegisterInfo.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Printable.h"
 #include <cassert>
 #include <functional>
@@ -71,6 +71,9 @@ public:
   const uint8_t AllocationPriority;
   /// Whether the class supports two (or more) disjunct subregister indices.
   const bool HasDisjunctSubRegs;
+  /// Whether a combination of subregisters can cover every register in the
+  /// class. See also the CoveredBySubRegs description in Target.td.
+  const bool CoveredBySubRegs;
   const sc_iterator SuperClasses;
   ArrayRef<MCPhysReg> (*OrderFunc)(const MachineFunction&);
 
@@ -84,6 +87,11 @@ public:
 
   /// Return the number of registers in this class.
   unsigned getNumRegs() const { return MC->getNumRegs(); }
+  
+  iterator_range<SmallVectorImpl<MCPhysReg>::const_iterator>
+  getRegisters() const {
+    return make_range(MC->begin(), MC->end());
+  }
 
   /// Return the specified register in the class.
   unsigned getRegister(unsigned i) const {
@@ -225,7 +233,7 @@ public:
 
   /// Returns the combination of all lane masks of register in this class.
   /// The lane masks of the registers are the combination of all lane masks
-  /// of their subregisters.
+  /// of their subregisters. Returns 1 if there are no subregisters.
   LaneBitmask getLaneMask() const {
     return LaneMask;
   }
@@ -565,6 +573,20 @@ public:
     return composeSubRegIndexLaneMaskImpl(IdxA, Mask);
   }
 
+  /// Transform a lanemask given for a virtual register to the corresponding
+  /// lanemask before using subregister with index \p IdxA.
+  /// This is the reverse of composeSubRegIndexLaneMask(), assuming Mask is a
+  /// valie lane mask (no invalid bits set) the following holds:
+  /// X0 = composeSubRegIndexLaneMask(Idx, Mask)
+  /// X1 = reverseComposeSubRegIndexLaneMask(Idx, X0)
+  /// => X1 == Mask
+  LaneBitmask reverseComposeSubRegIndexLaneMask(unsigned IdxA,
+                                                LaneBitmask LaneMask) const {
+    if (!IdxA)
+      return LaneMask;
+    return reverseComposeSubRegIndexLaneMaskImpl(IdxA, LaneMask);
+  }
+
   /// Debugging helper: dump register in human readable form to dbgs() stream.
   static void dumpReg(unsigned Reg, unsigned SubRegIndex = 0,
                       const TargetRegisterInfo* TRI = nullptr);
@@ -578,6 +600,11 @@ protected:
   /// Overridden by TableGen in targets that have sub-registers.
   virtual LaneBitmask
   composeSubRegIndexLaneMaskImpl(unsigned, LaneBitmask) const {
+    llvm_unreachable("Target has no sub-registers");
+  }
+
+  virtual LaneBitmask reverseComposeSubRegIndexLaneMaskImpl(unsigned,
+                                                            LaneBitmask) const {
     llvm_unreachable("Target has no sub-registers");
   }
 
@@ -879,6 +906,17 @@ public:
   virtual void eliminateFrameIndex(MachineBasicBlock::iterator MI,
                                    int SPAdj, unsigned FIOperandNum,
                                    RegScavenger *RS = nullptr) const = 0;
+
+  /// Return the assembly name for \p Reg.
+  virtual StringRef getRegAsmName(unsigned Reg) const {
+    // FIXME: We are assuming that the assembly name is equal to the TableGen
+    // name converted to lower case
+    //
+    // The TableGen name is the name of the definition for this register in the
+    // target's tablegen files.  For example, the TableGen name of
+    // def EAX : Register <...>; is "EAX"
+    return StringRef(getName(Reg));
+  }
 
   //===--------------------------------------------------------------------===//
   /// Subtarget Hooks

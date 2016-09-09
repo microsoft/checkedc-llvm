@@ -105,6 +105,7 @@ void PPCSubtarget::initializeEnvironment() {
   HasFusion = false;
   HasFloat128 = false;
   IsISA3_0 = false;
+  UseLongCalls = false;
 
   HasPOPCNTD = POPCNTD_Unavailable;
 }
@@ -146,18 +147,20 @@ void PPCSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
   IsLittleEndian = (TargetTriple.getArch() == Triple::ppc64le);
 }
 
-/// hasLazyResolverStub - Return true if accesses to the specified global have
-/// to go through a dyld lazy resolution stub.  This means that an extra load
-/// is required to get the address of the global.
+/// Return true if accesses to the specified global have to go through a dyld
+/// lazy resolution stub.  This means that an extra load is required to get the
+/// address of the global.
 bool PPCSubtarget::hasLazyResolverStub(const GlobalValue *GV) const {
-  // We never have stubs if HasLazyResolverStubs=false or if in static mode.
-  if (!HasLazyResolverStubs || TM.getRelocationModel() == Reloc::Static)
+  if (!HasLazyResolverStubs)
     return false;
-  bool isDecl = GV->isDeclaration();
-  if (GV->hasHiddenVisibility() && !isDecl && !GV->hasCommonLinkage())
-    return false;
-  return GV->hasWeakLinkage() || GV->hasLinkOnceLinkage() ||
-         GV->hasCommonLinkage() || isDecl;
+  if (!TM.shouldAssumeDSOLocal(*GV->getParent(), GV))
+    return true;
+  // 32 bit macho has no relocation for a-b if a is undefined, even if b is in
+  // the section that is being relocated. This means we have to use o load even
+  // for GVs that are known to be local to the dso.
+  if (GV->isDeclarationForLinker() || GV->hasCommonLinkage())
+    return true;
+  return false;
 }
 
 // Embedded cores need aggressive scheduling (and some others also benefit).
@@ -170,6 +173,8 @@ static bool needsAggressiveScheduling(unsigned Directive) {
   case PPC::DIR_E5500:
   case PPC::DIR_PWR7:
   case PPC::DIR_PWR8:
+  // FIXME: Same as P8 until POWER9 scheduling info is available
+  case PPC::DIR_PWR9:
     return true;
   }
 }
@@ -195,8 +200,6 @@ void PPCSubtarget::getCriticalPathRCs(RegClassVector &CriticalPathRCs) const {
 }
 
 void PPCSubtarget::overrideSchedPolicy(MachineSchedPolicy &Policy,
-                                       MachineInstr *begin,
-                                       MachineInstr *end,
                                        unsigned NumRegionInstrs) const {
   if (needsAggressiveScheduling(DarwinDirective)) {
     Policy.OnlyTopDown = false;

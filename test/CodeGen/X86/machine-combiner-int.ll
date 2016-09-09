@@ -1,5 +1,5 @@
 ; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 | FileCheck %s
-; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -stop-after machine-combiner -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEAD
+; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -stop-after machine-combiner -o - | FileCheck %s --check-prefix=DEAD
 
 ; Verify that integer multiplies are reassociated. The first multiply in 
 ; each test should be independent of the result of the preceding add (lea).
@@ -10,9 +10,12 @@
 define i16 @reassociate_muls_i16(i16 %x0, i16 %x1, i16 %x2, i16 %x3) {
 ; CHECK-LABEL: reassociate_muls_i16:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    # kill
+; CHECK-NEXT:    # kill
 ; CHECK-NEXT:    leal   (%rdi,%rsi), %eax
 ; CHECK-NEXT:    imull  %ecx, %edx
 ; CHECK-NEXT:    imull  %edx, %eax
+; CHECK-NEXT:    # kill
 ; CHECK-NEXT:    retq
   %t0 = add i16 %x0, %x1
   %t1 = mul i16 %x2, %t0
@@ -23,6 +26,8 @@ define i16 @reassociate_muls_i16(i16 %x0, i16 %x1, i16 %x2, i16 %x3) {
 define i32 @reassociate_muls_i32(i32 %x0, i32 %x1, i32 %x2, i32 %x3) {
 ; CHECK-LABEL: reassociate_muls_i32:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    # kill
+; CHECK-NEXT:    # kill
 ; CHECK-NEXT:    leal   (%rdi,%rsi), %eax
 ; CHECK-NEXT:    imull  %ecx, %edx
 ; CHECK-NEXT:    imull  %edx, %eax
@@ -60,7 +65,7 @@ define i8 @reassociate_ands_i8(i8 %x0, i8 %x1, i8 %x2, i8 %x3) {
 ; CHECK-NEXT:    subb  %sil, %dil
 ; CHECK-NEXT:    andb  %cl, %dl
 ; CHECK-NEXT:    andb  %dil, %dl
-; CHECK-NEXT:    movb  %dl, %al
+; CHECK-NEXT:    movl  %edx, %eax
 ; CHECK-NEXT:    retq
   %t0 = sub i8 %x0, %x1
   %t1 = and i8 %x2, %t0
@@ -107,7 +112,7 @@ define i8 @reassociate_ors_i8(i8 %x0, i8 %x1, i8 %x2, i8 %x3) {
 ; CHECK-NEXT:    subb  %sil, %dil
 ; CHECK-NEXT:    orb   %cl, %dl
 ; CHECK-NEXT:    orb   %dil, %dl
-; CHECK-NEXT:    movb  %dl, %al
+; CHECK-NEXT:    movl  %edx, %eax
 ; CHECK-NEXT:    retq
   %t0 = sub i8 %x0, %x1
   %t1 = or i8 %x2, %t0
@@ -154,7 +159,7 @@ define i8 @reassociate_xors_i8(i8 %x0, i8 %x1, i8 %x2, i8 %x3) {
 ; CHECK-NEXT:    subb  %sil, %dil
 ; CHECK-NEXT:    xorb  %cl, %dl
 ; CHECK-NEXT:    xorb  %dil, %dl
-; CHECK-NEXT:    movb  %dl, %al
+; CHECK-NEXT:    movl  %edx, %eax
 ; CHECK-NEXT:    retq
   %t0 = sub i8 %x0, %x1
   %t1 = xor i8 %x2, %t0

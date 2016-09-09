@@ -1,11 +1,11 @@
-; RUN: opt < %s -S -loop-unroll -unroll-runtime -unroll-count=2 | FileCheck %s -check-prefix=EPILOG
+; RUN: opt < %s -S -loop-unroll -unroll-runtime -unroll-count=2 -unroll-runtime-epilog=true | FileCheck %s -check-prefix=EPILOG
 ; RUN: opt < %s -S -loop-unroll -unroll-runtime -unroll-count=2 -unroll-runtime-epilog=false | FileCheck %s -check-prefix=PROLOG
 
 ; This tests that setting the unroll count works
 
 
 ; EPILOG: for.body.preheader:
-; EPILOG:   br i1 %lcmp.mod, label %for.body.preheader.new, label %for.end.loopexit.unr-lcssa, !dbg [[PH_LOC:![0-9]+]]
+; EPILOG:   br i1 %1, label %for.end.loopexit.unr-lcssa, label %for.body.preheader.new, !dbg [[PH_LOC:![0-9]+]]
 ; EPILOG: for.body:
 ; EPILOG:   br i1 %niter.ncmp.1, label %for.end.loopexit.unr-lcssa.loopexit, label %for.body, !dbg [[BODY_LOC:![0-9]+]]
 ; EPILOG-NOT: br i1 %niter.ncmp.2, label %for.end.loopexit{{.*}}, label %for.body
@@ -61,13 +61,12 @@ for.end:                                          ; preds = %for.body, %entry
 !3 = !{}
 !4 = !DISubroutineType(types: !3)
 !5 = !DIFile(filename: "test.cpp", directory: "/tmp")
-!6 = distinct !DISubprogram(name: "test", scope: !5, file: !5, line: 99, type: !4, isLocal: false, isDefinition: true, scopeLine: 100, flags: DIFlagPrototyped, isOptimized: false, variables: !3)
+!6 = distinct !DISubprogram(name: "test", scope: !5, file: !5, line: 99, type: !4, isLocal: false, isDefinition: true, scopeLine: 100, flags: DIFlagPrototyped, isOptimized: false, unit: !11, variables: !3)
 !7 = !DILocation(line: 100, column: 1, scope: !6)
 !8 = !DILocation(line: 101, column: 1, scope: !6)
 !9 = !DILocation(line: 102, column: 1, scope: !6)
 !10 = !DILocation(line: 103, column: 1, scope: !6)
-!11 =  distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang",
+!11 = distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang",
                              file: !5,
                              isOptimized: true, flags: "-O2",
-                             splitDebugFilename: "abc.debug", emissionKind: 2, 
-                             subprograms: !{!6}) 
+                             splitDebugFilename: "abc.debug", emissionKind: 2) 

@@ -104,13 +104,13 @@ void LLVMAddReassociatePass(LLVMPassManagerRef PM);
 /** See llvm::createSCCPPass function. */
 void LLVMAddSCCPPass(LLVMPassManagerRef PM);
 
-/** See llvm::createScalarReplAggregatesPass function. */
+/** See llvm::createSROAPass function. */
 void LLVMAddScalarReplAggregatesPass(LLVMPassManagerRef PM);
 
-/** See llvm::createScalarReplAggregatesPass function. */
+/** See llvm::createSROAPass function. */
 void LLVMAddScalarReplAggregatesPassSSA(LLVMPassManagerRef PM);
 
-/** See llvm::createScalarReplAggregatesPass function. */
+/** See llvm::createSROAPass function. */
 void LLVMAddScalarReplAggregatesPassWithThreshold(LLVMPassManagerRef PM,
                                                   int Threshold);
 
@@ -134,6 +134,9 @@ void LLVMAddCorrelatedValuePropagationPass(LLVMPassManagerRef PM);
 
 /** See llvm::createEarlyCSEPass function */
 void LLVMAddEarlyCSEPass(LLVMPassManagerRef PM);
+
+/** See llvm::createEarlyCSEPass function */
+void LLVMAddEarlyCSEMemSSAPass(LLVMPassManagerRef PM);
 
 /** See llvm::createLowerExpectIntrinsicPass function */
 void LLVMAddLowerExpectIntrinsicPass(LLVMPassManagerRef PM);

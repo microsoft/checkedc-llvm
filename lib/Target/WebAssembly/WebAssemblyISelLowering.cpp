@@ -26,7 +26,6 @@
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -55,6 +54,12 @@ WebAssemblyTargetLowering::WebAssemblyTargetLowering(
   addRegisterClass(MVT::i64, &WebAssembly::I64RegClass);
   addRegisterClass(MVT::f32, &WebAssembly::F32RegClass);
   addRegisterClass(MVT::f64, &WebAssembly::F64RegClass);
+  if (Subtarget->hasSIMD128()) {
+    addRegisterClass(MVT::v16i8, &WebAssembly::V128RegClass);
+    addRegisterClass(MVT::v8i16, &WebAssembly::V128RegClass);
+    addRegisterClass(MVT::v4i32, &WebAssembly::V128RegClass);
+    addRegisterClass(MVT::v4f32, &WebAssembly::V128RegClass);
+  }
   // Compute derived properties from the register classes.
   computeRegisterProperties(Subtarget->getRegisterInfo());
 
@@ -155,9 +160,11 @@ MVT WebAssemblyTargetLowering::getScalarShiftAmountTy(const DataLayout & /*DL*/,
   if (BitWidth > 1 && BitWidth < 8) BitWidth = 8;
 
   if (BitWidth > 64) {
-    BitWidth = 64;
+    // The shift will be lowered to a libcall, and compiler-rt libcalls expect
+    // the count to be an i32.
+    BitWidth = 32;
     assert(BitWidth >= Log2_32_Ceil(VT.getSizeInBits()) &&
-           "64-bit shift counts ought to be enough for anyone");
+           "32-bit shift counts ought to be enough for anyone");
   }
 
   MVT Result = MVT::getIntegerVT(BitWidth);
@@ -189,6 +196,10 @@ WebAssemblyTargetLowering::getRegForInlineAsmConstraint(
     switch (Constraint[0]) {
       case 'r':
         assert(VT != MVT::iPTR && "Pointer MVT not expected here");
+        if (Subtarget->hasSIMD128() && VT.isVector()) {
+          if (VT.getSizeInBits() == 128)
+            return std::make_pair(0U, &WebAssembly::V128RegClass);
+        }
         if (VT.isInteger() && !VT.isVector()) {
           if (VT.getSizeInBits() <= 32)
             return std::make_pair(0U, &WebAssembly::I32RegClass);
@@ -242,6 +253,12 @@ bool WebAssemblyTargetLowering::allowsMisalignedMemoryAccesses(
   return true;
 }
 
+bool WebAssemblyTargetLowering::isIntDivCheap(EVT VT, AttributeSet Attr) const {
+  // The current thinking is that wasm engines will perform this optimization,
+  // so we can save on code size.
+  return true;
+}
+
 //===----------------------------------------------------------------------===//
 // WebAssembly Lowering private implementation.
 //===----------------------------------------------------------------------===//
@@ -250,7 +267,7 @@ bool WebAssemblyTargetLowering::allowsMisalignedMemoryAccesses(
 // Lowering Code
 //===----------------------------------------------------------------------===//
 
-static void fail(SDLoc DL, SelectionDAG &DAG, const char *msg) {
+static void fail(const SDLoc &DL, SelectionDAG &DAG, const char *msg) {
   MachineFunction &MF = DAG.getMachineFunction();
   DAG.getContext()->diagnose(
       DiagnosticInfoUnsupported(*MF.getFunction(), msg, DL.getDebugLoc()));
@@ -312,10 +329,10 @@ SDValue WebAssemblyTargetLowering::LowerCall(
     if (Out.Flags.isInConsecutiveRegsLast())
       fail(DL, DAG, "WebAssembly hasn't implemented cons regs last arguments");
     if (Out.Flags.isByVal() && Out.Flags.getByValSize() != 0) {
-      auto *MFI = MF.getFrameInfo();
-      int FI = MFI->CreateStackObject(Out.Flags.getByValSize(),
-                                      Out.Flags.getByValAlign(),
-                                      /*isSS=*/false);
+      auto &MFI = MF.getFrameInfo();
+      int FI = MFI.CreateStackObject(Out.Flags.getByValSize(),
+                                     Out.Flags.getByValAlign(),
+                                     /*isSS=*/false);
       SDValue SizeNode =
           DAG.getConstant(Out.Flags.getByValSize(), DL, MVT::i32);
       SDValue FINode = DAG.getFrameIndex(FI, getPointerTy(Layout));
@@ -358,9 +375,9 @@ SDValue WebAssemblyTargetLowering::LowerCall(
   if (IsVarArg && NumBytes) {
     // For non-fixed arguments, next emit stores to store the argument values
     // to the stack buffer at the offsets computed above.
-    int FI = MF.getFrameInfo()->CreateStackObject(NumBytes,
-                                                  Layout.getStackAlignment(),
-                                                  /*isSS=*/false);
+    int FI = MF.getFrameInfo().CreateStackObject(NumBytes,
+                                                 Layout.getStackAlignment(),
+                                                 /*isSS=*/false);
     unsigned ValNo = 0;
     SmallVector<SDValue, 8> Chains;
     for (SDValue Arg :
@@ -373,7 +390,7 @@ SDValue WebAssemblyTargetLowering::LowerCall(
                                 DAG.getConstant(Offset, DL, PtrVT));
       Chains.push_back(DAG.getStore(
           Chain, DL, Arg, Add,
-          MachinePointerInfo::getFixedStack(MF, FI, Offset), false, false, 0));
+          MachinePointerInfo::getFixedStack(MF, FI, Offset), 0));
     }
     if (!Chains.empty())
       Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, Chains);
@@ -434,7 +451,7 @@ bool WebAssemblyTargetLowering::CanLowerReturn(
 SDValue WebAssemblyTargetLowering::LowerReturn(
     SDValue Chain, CallingConv::ID CallConv, bool /*IsVarArg*/,
     const SmallVectorImpl<ISD::OutputArg> &Outs,
-    const SmallVectorImpl<SDValue> &OutVals, SDLoc DL,
+    const SmallVectorImpl<SDValue> &OutVals, const SDLoc &DL,
     SelectionDAG &DAG) const {
   assert(Outs.size() <= 1 && "WebAssembly can only return up to one value");
   if (!CallingConvSupported(CallConv))
@@ -462,8 +479,8 @@ SDValue WebAssemblyTargetLowering::LowerReturn(
 
 SDValue WebAssemblyTargetLowering::LowerFormalArguments(
     SDValue Chain, CallingConv::ID CallConv, bool IsVarArg,
-    const SmallVectorImpl<ISD::InputArg> &Ins, SDLoc DL, SelectionDAG &DAG,
-    SmallVectorImpl<SDValue> &InVals) const {
+    const SmallVectorImpl<ISD::InputArg> &Ins, const SDLoc &DL,
+    SelectionDAG &DAG, SmallVectorImpl<SDValue> &InVals) const {
   MachineFunction &MF = DAG.getMachineFunction();
   auto *MFI = MF.getInfo<WebAssemblyFunctionInfo>();
 
@@ -590,7 +607,7 @@ SDValue WebAssemblyTargetLowering::LowerFRAMEADDR(SDValue Op,
   if (Op.getConstantOperandVal(0) > 0)
     return SDValue();
 
-  DAG.getMachineFunction().getFrameInfo()->setFrameAddressIsTaken(true);
+  DAG.getMachineFunction().getFrameInfo().setFrameAddressIsTaken(true);
   EVT VT = Op.getValueType();
   unsigned FP =
       Subtarget->getRegisterInfo()->getFrameRegister(DAG.getMachineFunction());
@@ -675,7 +692,7 @@ SDValue WebAssemblyTargetLowering::LowerVASTART(SDValue Op,
   SDValue ArgN = DAG.getCopyFromReg(DAG.getEntryNode(), DL,
                                     MFI->getVarargBufferVreg(), PtrVT);
   return DAG.getStore(Op.getOperand(0), DL, ArgN, Op.getOperand(1),
-                      MachinePointerInfo(SV), false, false, 0);
+                      MachinePointerInfo(SV), 0);
 }
 
 //===----------------------------------------------------------------------===//

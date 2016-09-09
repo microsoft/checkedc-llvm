@@ -1,6 +1,7 @@
 ; RUN: opt -S -always-inline < %s | FileCheck %s
 
 declare i8 @llvm.experimental.deoptimize.i8(...)
+declare i32 @llvm.experimental.deoptimize.i32(...)
 
 define i8 @callee(i1* %c) alwaysinline {
   %c0 = load volatile i1, i1* %c

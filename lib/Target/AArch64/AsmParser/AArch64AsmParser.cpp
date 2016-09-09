@@ -13,8 +13,8 @@
 #include "Utils/AArch64BaseInfo.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/MC/MCContext.h"
@@ -29,8 +29,10 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/TargetParser.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdio>
@@ -70,6 +72,7 @@ private:
   bool Error(SMLoc L, const Twine &Msg) { return getParser().Error(L, Msg); }
   bool showMatchError(SMLoc Loc, unsigned ErrCode);
 
+  bool parseDirectiveArch(SMLoc L);
   bool parseDirectiveCPU(SMLoc L);
   bool parseDirectiveWord(unsigned Size, SMLoc L);
   bool parseDirectiveInst(SMLoc L);
@@ -207,9 +210,9 @@ private:
   };
 
   struct BarrierOp {
-    unsigned Val; // Not the enum since not all values have names.
     const char *Data;
     unsigned Length;
+    unsigned Val; // Not the enum since not all values have names.
   };
 
   struct SysRegOp {
@@ -225,15 +228,15 @@ private:
   };
 
   struct PrefetchOp {
-    unsigned Val;
     const char *Data;
     unsigned Length;
+    unsigned Val;
   };
 
   struct PSBHintOp {
-    unsigned Val;
     const char *Data;
     unsigned Length;
+    unsigned Val;
   };
 
   struct ShiftExtendOp {
@@ -867,14 +870,7 @@ public:
     if (!CE) return false;
     uint64_t Value = CE->getValue();
 
-    if (RegWidth == 32)
-      Value &= 0xffffffffULL;
-
-    // "lsl #0" takes precedence: in practice this only affects "#0, lsl #0".
-    if (Value == 0 && Shift != 0)
-      return false;
-
-    return (Value & ~(0xffffULL << Shift)) == 0;
+    return AArch64_AM::isMOVZMovAlias(Value, Shift, RegWidth);
   }
 
   template<int RegWidth, int Shift>
@@ -885,16 +881,7 @@ public:
     if (!CE) return false;
     uint64_t Value = CE->getValue();
 
-    // MOVZ takes precedence over MOVN.
-    for (int MOVZShift = 0; MOVZShift <= 48; MOVZShift += 16)
-      if ((Value & ~(0xffffULL << MOVZShift)) == 0)
-        return false;
-
-    Value = ~Value;
-    if (RegWidth == 32)
-      Value &= 0xffffffffULL;
-
-    return (Value & ~(0xffffULL << Shift)) == 0;
+    return AArch64_AM::isMOVNMovAlias(Value, Shift, RegWidth);
   }
 
   bool isFPImm() const { return Kind == k_FPImm; }
@@ -2088,12 +2075,9 @@ AArch64AsmParser::tryParsePrefetch(OperandVector &Operands) {
       return MatchOperand_ParseFail;
     }
 
-    bool Valid;
-    auto Mapper = AArch64PRFM::PRFMMapper();
-    StringRef Name = 
-        Mapper.toString(MCE->getValue(), getSTI().getFeatureBits(), Valid);
-    Operands.push_back(AArch64Operand::CreatePrefetch(prfop, Name,
-                                                      S, getContext()));
+    auto PRFM = AArch64PRFM::lookupPRFMByEncoding(MCE->getValue());
+    Operands.push_back(AArch64Operand::CreatePrefetch(
+        prfop, PRFM ? PRFM->Name : "", S, getContext()));
     return MatchOperand_Success;
   }
 
@@ -2102,18 +2086,15 @@ AArch64AsmParser::tryParsePrefetch(OperandVector &Operands) {
     return MatchOperand_ParseFail;
   }
 
-  bool Valid;
-  auto Mapper = AArch64PRFM::PRFMMapper();
-  unsigned prfop = 
-      Mapper.fromString(Tok.getString(), getSTI().getFeatureBits(), Valid);
-  if (!Valid) {
+  auto PRFM = AArch64PRFM::lookupPRFMByName(Tok.getString());
+  if (!PRFM) {
     TokError("pre-fetch hint expected");
     return MatchOperand_ParseFail;
   }
 
   Parser.Lex(); // Eat identifier token.
-  Operands.push_back(AArch64Operand::CreatePrefetch(prfop, Tok.getString(),
-                                                    S, getContext()));
+  Operands.push_back(AArch64Operand::CreatePrefetch(
+      PRFM->Encoding, Tok.getString(), S, getContext()));
   return MatchOperand_Success;
 }
 
@@ -2128,18 +2109,15 @@ AArch64AsmParser::tryParsePSBHint(OperandVector &Operands) {
     return MatchOperand_ParseFail;
   }
 
-  bool Valid;
-  auto Mapper = AArch64PSBHint::PSBHintMapper();
-  unsigned psbhint =
-      Mapper.fromString(Tok.getString(), getSTI().getFeatureBits(), Valid);
-  if (!Valid) {
+  auto PSB = AArch64PSBHint::lookupPSBByName(Tok.getString());
+  if (!PSB) {
     TokError("invalid operand for instruction");
     return MatchOperand_ParseFail;
   }
 
   Parser.Lex(); // Eat identifier token.
-  Operands.push_back(AArch64Operand::CreatePSBHint(psbhint, Tok.getString(),
-                                                   S, getContext()));
+  Operands.push_back(AArch64Operand::CreatePSBHint(
+      PSB->Encoding, Tok.getString(), S, getContext()));
   return MatchOperand_Success;
 }
 
@@ -2763,12 +2741,9 @@ AArch64AsmParser::tryParseBarrierOperand(OperandVector &Operands) {
       Error(ExprLoc, "barrier operand out of range");
       return MatchOperand_ParseFail;
     }
-    bool Valid;
-    auto Mapper = AArch64DB::DBarrierMapper();
-    StringRef Name = 
-        Mapper.toString(MCE->getValue(), getSTI().getFeatureBits(), Valid);
-    Operands.push_back( AArch64Operand::CreateBarrier(MCE->getValue(), Name,
-                                                      ExprLoc, getContext()));
+    auto DB = AArch64DB::lookupDBByEncoding(MCE->getValue());
+    Operands.push_back(AArch64Operand::CreateBarrier(
+        MCE->getValue(), DB ? DB->Name : "", ExprLoc, getContext()));
     return MatchOperand_Success;
   }
 
@@ -2777,23 +2752,20 @@ AArch64AsmParser::tryParseBarrierOperand(OperandVector &Operands) {
     return MatchOperand_ParseFail;
   }
 
-  bool Valid;
-  auto Mapper = AArch64DB::DBarrierMapper();
-  unsigned Opt = 
-      Mapper.fromString(Tok.getString(), getSTI().getFeatureBits(), Valid);
-  if (!Valid) {
+  auto DB = AArch64DB::lookupDBByName(Tok.getString());
+  if (!DB) {
     TokError("invalid barrier option name");
     return MatchOperand_ParseFail;
   }
 
   // The only valid named option for ISB is 'sy'
-  if (Mnemonic == "isb" && Opt != AArch64DB::SY) {
+  if (Mnemonic == "isb" && DB->Encoding != AArch64DB::sy) {
     TokError("'sy' or #imm operand expected");
     return MatchOperand_ParseFail;
   }
 
-  Operands.push_back( AArch64Operand::CreateBarrier(Opt, Tok.getString(),
-                                                    getLoc(), getContext()));
+  Operands.push_back(AArch64Operand::CreateBarrier(
+      DB->Encoding, Tok.getString(), getLoc(), getContext()));
   Parser.Lex(); // Consume the option
 
   return MatchOperand_Success;
@@ -2807,28 +2779,22 @@ AArch64AsmParser::tryParseSysReg(OperandVector &Operands) {
   if (Tok.isNot(AsmToken::Identifier))
     return MatchOperand_NoMatch;
 
-  bool IsKnown;
-  auto MRSMapper = AArch64SysReg::MRSMapper();
-  uint32_t MRSReg = MRSMapper.fromString(Tok.getString(),
-                                         getSTI().getFeatureBits(), IsKnown);
-  assert(IsKnown == (MRSReg != -1U) &&
-         "register should be -1 if and only if it's unknown");
+  int MRSReg, MSRReg;
+  auto SysReg = AArch64SysReg::lookupSysRegByName(Tok.getString());
+  if (SysReg && SysReg->haveFeatures(getSTI().getFeatureBits())) {
+    MRSReg = SysReg->Readable ? SysReg->Encoding : -1;
+    MSRReg = SysReg->Writeable ? SysReg->Encoding : -1;
+  } else
+    MRSReg = MSRReg = AArch64SysReg::parseGenericRegister(Tok.getString());
 
-  auto MSRMapper = AArch64SysReg::MSRMapper();
-  uint32_t MSRReg = MSRMapper.fromString(Tok.getString(),
-                                         getSTI().getFeatureBits(), IsKnown);
-  assert(IsKnown == (MSRReg != -1U) &&
-         "register should be -1 if and only if it's unknown");
+  auto PState = AArch64PState::lookupPStateByName(Tok.getString());
+  unsigned PStateImm = -1;
+  if (PState && PState->haveFeatures(getSTI().getFeatureBits()))
+    PStateImm = PState->Encoding;
 
-  auto PStateMapper = AArch64PState::PStateMapper();
-  uint32_t PStateField = 
-      PStateMapper.fromString(Tok.getString(),
-                              getSTI().getFeatureBits(), IsKnown);
-  assert(IsKnown == (PStateField != -1U) &&
-         "register should be -1 if and only if it's unknown");
-
-  Operands.push_back(AArch64Operand::CreateSysReg(
-      Tok.getString(), getLoc(), MRSReg, MSRReg, PStateField, getContext()));
+  Operands.push_back(
+      AArch64Operand::CreateSysReg(Tok.getString(), getLoc(), MRSReg, MSRReg,
+                                   PStateImm, getContext()));
   Parser.Lex(); // Eat identifier
 
   return MatchOperand_Success;
@@ -3491,7 +3457,7 @@ bool AArch64AsmParser::validateInstruction(MCInst &Inst,
     if (RI->isSubRegisterEq(Rn, Rt2))
       return Error(Loc[1], "unpredictable LDP instruction, writeback base "
                            "is also a destination");
-    // FALLTHROUGH
+    LLVM_FALLTHROUGH;
   }
   case AArch64::LDPDi:
   case AArch64::LDPQi:
@@ -4196,6 +4162,8 @@ bool AArch64AsmParser::ParseDirective(AsmToken DirectiveID) {
 
   StringRef IDVal = DirectiveID.getIdentifier();
   SMLoc Loc = DirectiveID.getLoc();
+  if (IDVal == ".arch")
+    return parseDirectiveArch(Loc);
   if (IDVal == ".cpu")
     return parseDirectiveCPU(Loc);
   if (IDVal == ".hword")
@@ -4227,6 +4195,7 @@ static const struct {
   { "crypto", {AArch64::FeatureCrypto} },
   { "fp", {AArch64::FeatureFPARMv8} },
   { "simd", {AArch64::FeatureNEON} },
+  { "ras", {AArch64::FeatureRAS} },
 
   // FIXME: Unsupported extensions
   { "lse", {} },
@@ -4235,6 +4204,63 @@ static const struct {
   { "rdma", {} },
   { "profile", {} },
 };
+
+/// parseDirectiveArch
+///   ::= .arch token
+bool AArch64AsmParser::parseDirectiveArch(SMLoc L) {
+  SMLoc ArchLoc = getLoc();
+
+  StringRef Arch, ExtensionString;
+  std::tie(Arch, ExtensionString) =
+      getParser().parseStringToEndOfStatement().trim().split('+');
+
+  unsigned ID = AArch64::parseArch(Arch);
+  if (ID == static_cast<unsigned>(AArch64::ArchKind::AK_INVALID)) {
+    Error(ArchLoc, "unknown arch name");
+    return false;
+  }
+
+  // Get the architecture and extension features.
+  std::vector<const char *> AArch64Features;
+  AArch64::getArchFeatures(ID, AArch64Features);
+  AArch64::getExtensionFeatures(AArch64::getDefaultExtensions("generic", ID),
+                                AArch64Features);
+
+  MCSubtargetInfo &STI = copySTI();
+  std::vector<std::string> ArchFeatures(AArch64Features.begin(), AArch64Features.end());
+  STI.setDefaultFeatures("generic", join(ArchFeatures.begin(), ArchFeatures.end(), ","));
+
+  SmallVector<StringRef, 4> RequestedExtensions;
+  if (!ExtensionString.empty())
+    ExtensionString.split(RequestedExtensions, '+');
+
+  FeatureBitset Features = STI.getFeatureBits();
+  for (auto Name : RequestedExtensions) {
+    bool EnableFeature = true;
+
+    if (Name.startswith_lower("no")) {
+      EnableFeature = false;
+      Name = Name.substr(2);
+    }
+
+    for (const auto &Extension : ExtensionMap) {
+      if (Extension.Name != Name)
+        continue;
+
+      if (Extension.Features.none())
+        report_fatal_error("unsupported architectural extension: " + Name);
+
+      FeatureBitset ToggleFeatures = EnableFeature
+                                         ? (~Features & Extension.Features)
+                                         : ( Features & Extension.Features);
+      uint64_t Features =
+          ComputeAvailableFeatures(STI.ToggleFeature(ToggleFeatures));
+      setAvailableFeatures(Features);
+      break;
+    }
+  }
+  return false;
+}
 
 /// parseDirectiveCPU
 ///   ::= .cpu id

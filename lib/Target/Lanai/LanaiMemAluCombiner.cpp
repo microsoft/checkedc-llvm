@@ -69,7 +69,7 @@ public:
 
   MachineFunctionProperties getRequiredProperties() const override {
     return MachineFunctionProperties().set(
-        MachineFunctionProperties::Property::AllVRegsAllocated);
+        MachineFunctionProperties::Property::NoVRegs);
   }
 
 private:
@@ -339,6 +339,9 @@ MbbIterator LanaiMemAluCombiner::findClosestSuitableAluInstr(
   while (First != Last) {
     Decrement ? --First : ++First;
 
+    if (First == Last)
+      break;
+
     // Skip over debug instructions
     if (First->isDebugValue())
       continue;
@@ -347,9 +350,12 @@ MbbIterator LanaiMemAluCombiner::findClosestSuitableAluInstr(
       return First;
     }
 
-    // Usage of the base register of a form not suitable for merging
-    if (First != Last && InstrUsesReg(First, Base)) {
-      break;
+    // Usage of the base or offset register is not a form suitable for merging.
+    if (First != Last) {
+      if (InstrUsesReg(First, Base))
+        break;
+      if (Offset->isReg() && InstrUsesReg(First, Offset))
+        break;
     }
   }
 

@@ -87,15 +87,20 @@ namespace llvm {
     VReg2SUnitOperIdxMultiMap;
 
   typedef PointerUnion<const Value *, const PseudoSourceValue *> ValueType;
-  typedef SmallVector<PointerIntPair<ValueType, 1, bool>, 4>
-          UnderlyingObjectsVector;
+  struct UnderlyingObject : PointerIntPair<ValueType, 1, bool> {
+    UnderlyingObject(ValueType V, bool MayAlias)
+        : PointerIntPair<ValueType, 1, bool>(V, MayAlias) {}
+    ValueType getValue() const { return getPointer(); }
+    bool mayAlias() const { return getInt(); }
+  };
+  typedef SmallVector<UnderlyingObject, 4> UnderlyingObjectsVector;
 
   /// ScheduleDAGInstrs - A ScheduleDAG subclass for scheduling lists of
   /// MachineInstrs.
   class ScheduleDAGInstrs : public ScheduleDAG {
   protected:
     const MachineLoopInfo *MLI;
-    const MachineFrameInfo *MFI;
+    const MachineFrameInfo &MFI;
 
     /// TargetSchedModel provides an interface to the machine model.
     TargetSchedModel SchedModel;

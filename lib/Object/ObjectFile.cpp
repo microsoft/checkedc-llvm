@@ -29,9 +29,12 @@ ObjectFile::ObjectFile(unsigned int Type, MemoryBufferRef Source)
     : SymbolicFile(Type, Source) {}
 
 bool SectionRef::containsSymbol(SymbolRef S) const {
-  ErrorOr<section_iterator> SymSec = S.getSection();
-  if (!SymSec)
+  Expected<section_iterator> SymSec = S.getSection();
+  if (!SymSec) {
+    // TODO: Actually report errors helpfully.
+    consumeError(SymSec.takeError());
     return false;
+  }
   return *this == **SymSec;
 }
 
@@ -46,9 +49,9 @@ uint64_t ObjectFile::getSymbolValue(DataRefImpl Ref) const {
 
 std::error_code ObjectFile::printSymbolName(raw_ostream &OS,
                                             DataRefImpl Symb) const {
-  ErrorOr<StringRef> Name = getSymbolName(Symb);
-  if (std::error_code EC = Name.getError())
-    return EC;
+  Expected<StringRef> Name = getSymbolName(Symb);
+  if (!Name)
+    return errorToErrorCode(Name.takeError());
   OS << *Name;
   return std::error_code();
 }

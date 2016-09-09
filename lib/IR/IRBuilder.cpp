@@ -34,7 +34,7 @@ GlobalVariable *IRBuilderBase::CreateGlobalString(StringRef Str,
                                           StrConstant, Name, nullptr,
                                           GlobalVariable::NotThreadLocal,
                                           AddressSpace);
-  GV->setUnnamedAddr(true);
+  GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
   return GV;
 }
 
@@ -191,6 +191,26 @@ CallInst *IRBuilderBase::CreateLifetimeEnd(Value *Ptr, ConstantInt *Size) {
   return createCallHelper(TheFn, Ops, this);
 }
 
+CallInst *IRBuilderBase::CreateInvariantStart(Value *Ptr, ConstantInt *Size) {
+
+  assert(isa<PointerType>(Ptr->getType()) &&
+         "invariant.start only applies to pointers.");
+  Ptr = getCastedInt8PtrValue(Ptr);
+  if (!Size)
+    Size = getInt64(-1);
+  else
+    assert(Size->getType() == getInt64Ty() &&
+           "invariant.start requires the size to be an i64");
+
+  Value *Ops[] = {Size, Ptr};
+  // Fill in the single overloaded type: memory object type.
+  Type *ObjectPtr[1] = {Ptr->getType()};
+  Module *M = BB->getParent()->getParent();
+  Value *TheFn =
+      Intrinsic::getDeclaration(M, Intrinsic::invariant_start, ObjectPtr);
+  return createCallHelper(TheFn, Ops, this);
+}
+
 CallInst *IRBuilderBase::CreateAssumption(Value *Cond) {
   assert(Cond->getType() == getInt1Ty() &&
          "an assumption condition must be of type i1");
@@ -212,13 +232,15 @@ CallInst *IRBuilderBase::CreateAssumption(Value *Cond) {
 CallInst *IRBuilderBase::CreateMaskedLoad(Value *Ptr, unsigned Align,
                                           Value *Mask, Value *PassThru,
                                           const Twine &Name) {
-  // DataTy is the overloaded type
-  Type *DataTy = cast<PointerType>(Ptr->getType())->getElementType();
+  PointerType *PtrTy = cast<PointerType>(Ptr->getType());
+  Type *DataTy = PtrTy->getElementType();
   assert(DataTy->isVectorTy() && "Ptr should point to a vector");
   if (!PassThru)
     PassThru = UndefValue::get(DataTy);
+  Type *OverloadedTypes[] = { DataTy, PtrTy };
   Value *Ops[] = { Ptr, getInt32(Align), Mask,  PassThru};
-  return CreateMaskedIntrinsic(Intrinsic::masked_load, Ops, DataTy, Name);
+  return CreateMaskedIntrinsic(Intrinsic::masked_load, Ops,
+                               OverloadedTypes, Name);
 }
 
 /// \brief Create a call to a Masked Store intrinsic.
@@ -229,19 +251,22 @@ CallInst *IRBuilderBase::CreateMaskedLoad(Value *Ptr, unsigned Align,
 ///            be accessed in memory
 CallInst *IRBuilderBase::CreateMaskedStore(Value *Val, Value *Ptr,
                                            unsigned Align, Value *Mask) {
+  PointerType *PtrTy = cast<PointerType>(Ptr->getType());
+  Type *DataTy = PtrTy->getElementType();
+  assert(DataTy->isVectorTy() && "Ptr should point to a vector");
+  Type *OverloadedTypes[] = { DataTy, PtrTy };
   Value *Ops[] = { Val, Ptr, getInt32(Align), Mask };
-  // Type of the data to be stored - the only one overloaded type
-  return CreateMaskedIntrinsic(Intrinsic::masked_store, Ops, Val->getType());
+  return CreateMaskedIntrinsic(Intrinsic::masked_store, Ops, OverloadedTypes);
 }
 
 /// Create a call to a Masked intrinsic, with given intrinsic Id,
-/// an array of operands - Ops, and one overloaded type - DataTy
+/// an array of operands - Ops, and an array of overloaded types -
+/// OverloadedTypes.
 CallInst *IRBuilderBase::CreateMaskedIntrinsic(Intrinsic::ID Id,
                                                ArrayRef<Value *> Ops,
-                                               Type *DataTy,
+                                               ArrayRef<Type *> OverloadedTypes,
                                                const Twine &Name) {
   Module *M = BB->getParent()->getParent();
-  Type *OverloadedTypes[] = { DataTy };
   Value *TheFn = Intrinsic::getDeclaration(M, Id, OverloadedTypes);
   return createCallHelper(TheFn, Ops, this, Name);
 }
@@ -270,7 +295,7 @@ CallInst *IRBuilderBase::CreateMaskedGather(Value *Ptrs, unsigned Align,
 
   // We specify only one type when we create this intrinsic. Types of other
   // arguments are derived from this type.
-  return CreateMaskedIntrinsic(Intrinsic::masked_gather, Ops, DataTy, Name);
+  return CreateMaskedIntrinsic(Intrinsic::masked_gather, Ops, { DataTy }, Name);
 }
 
 /// \brief Create a call to a Masked Scatter intrinsic.
@@ -300,7 +325,7 @@ CallInst *IRBuilderBase::CreateMaskedScatter(Value *Data, Value *Ptrs,
 
   // We specify only one type when we create this intrinsic. Types of other
   // arguments are derived from this type.
-  return CreateMaskedIntrinsic(Intrinsic::masked_scatter, Ops, DataTy);
+  return CreateMaskedIntrinsic(Intrinsic::masked_scatter, Ops, { DataTy });
 }
 
 template <typename T0, typename T1, typename T2, typename T3>

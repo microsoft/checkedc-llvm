@@ -25,6 +25,10 @@ In order to use the LLVM testing infrastructure, you will need all of the
 software required to build LLVM, as well as `Python <http://python.org>`_ 2.7 or
 later.
 
+If you intend to run the :ref:`test-suite <test-suite-overview>`, you will also
+need a development version of zlib (zlib1g-dev is known to work on several Linux
+distributions).
+
 LLVM testing infrastructure organization
 ========================================
 
@@ -383,6 +387,23 @@ depends on special features of sub-architectures, you must add the specific
 triple, test with the specific FileCheck and put it into the specific
 directory that will filter out all other architectures.
 
+REQUIRES and REQUIRES-ANY directive
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some tests can be enabled only in specific situation - like having
+debug build. Use ``REQUIRES`` directive to specify those requirements.
+
+.. code-block:: llvm
+
+    ; This test will be only enabled in the build with asserts
+    ; REQUIRES: asserts
+
+You can separate requirements by a comma.
+``REQUIRES`` means all listed requirements must be satisfied.
+``REQUIRES-ANY`` means at least one must be satisfied.
+
+List of features that can be used in ``REQUIRES`` and ``REQUIRES-ANY`` can be
+found in lit.cfg files.
 
 Substitutions
 -------------
@@ -534,6 +555,8 @@ the last RUN: line. This has two side effects:
 
 (b) it speeds things up for really big test cases by avoiding
     interpretation of the remainder of the file.
+
+.. _test-suite-overview:
 
 ``test-suite`` Overview
 =======================

@@ -17,6 +17,8 @@
 #define LLVM_IR_INTRINSICS_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/None.h"
+#include "llvm/ADT/Optional.h"
 #include <string>
 
 namespace llvm {
@@ -43,7 +45,16 @@ namespace Intrinsic {
   };
 
   /// Return the LLVM name for an intrinsic, such as "llvm.ppc.altivec.lvx".
-  std::string getName(ID id, ArrayRef<Type*> Tys = None);
+  /// Note, this version is for intrinsics with no overloads.  Use the other
+  /// version of getName if overloads are required.
+  StringRef getName(ID id);
+
+  /// Return the LLVM name for an intrinsic, such as "llvm.ppc.altivec.lvx".
+  /// Note, this version of getName supports overloads, but is less efficient
+  /// than the StringRef version of this function.  If no overloads are
+  /// requried, it is safe to use this version, but better to use the StringRef
+  /// version.
+  std::string getName(ID id, ArrayRef<Type*> Tys);
 
   /// Return the function type for an intrinsic.
   FunctionType *getType(LLVMContext &Context, ID id,
@@ -132,6 +143,25 @@ namespace Intrinsic {
   /// Return the IIT table descriptor for the specified intrinsic into an array
   /// of IITDescriptors.
   void getIntrinsicInfoTableEntries(ID id, SmallVectorImpl<IITDescriptor> &T);
+
+  /// Match the specified type (which comes from an intrinsic argument or return
+  /// value) with the type constraints specified by the .td file. If the given
+  /// type is an overloaded type it is pushed to the ArgTys vector.
+  ///
+  /// Returns false if the given type matches with the constraints, true
+  /// otherwise.
+  bool matchIntrinsicType(Type *Ty, ArrayRef<IITDescriptor> &Infos,
+                          SmallVectorImpl<Type*> &ArgTys);
+
+  /// Verify if the intrinsic has variable arguments. This method is intended to
+  /// be called after all the fixed arguments have been matched first.
+  ///
+  /// This method returns true on error.
+  bool matchIntrinsicVarArg(bool isVarArg, ArrayRef<IITDescriptor> &Infos);
+
+  // Checks if the intrinsic name matches with its signature and if not
+  // returns the declaration with the same signature and remangled name.
+  llvm::Optional<Function*> remangleIntrinsicFunction(Function *F);
 
 } // End Intrinsic namespace
 

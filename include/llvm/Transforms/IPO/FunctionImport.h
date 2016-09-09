@@ -12,15 +12,18 @@
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/ModuleSummaryIndex.h"
+#include "llvm/IR/PassManager.h"
 
 #include <functional>
 #include <map>
 #include <unordered_set>
+#include <utility>
 
 namespace llvm {
 class LLVMContext;
+class GlobalValueSummary;
 class Module;
-class ModuleSummaryIndex;
 
 /// The function importer is automatically importing function from other modules
 /// based on the provided summary informations.
@@ -44,10 +47,14 @@ public:
   FunctionImporter(
       const ModuleSummaryIndex &Index,
       std::function<std::unique_ptr<Module>(StringRef Identifier)> ModuleLoader)
-      : Index(Index), ModuleLoader(ModuleLoader) {}
+      : Index(Index), ModuleLoader(std::move(ModuleLoader)) {}
 
   /// Import functions in Module \p M based on the supplied import list.
-  bool importFunctions(Module &M, const ImportMapTy &ImportList);
+  /// \p ForceImportReferencedDiscardableSymbols will set the ModuleLinker in
+  /// a mode where referenced discarable symbols in the source modules will be
+  /// imported as well even if they are not present in the ImportList.
+  bool importFunctions(Module &M, const ImportMapTy &ImportList,
+                       bool ForceImportReferencedDiscardableSymbols = false);
 
 private:
   /// The summaries index used to trigger importing.
@@ -57,7 +64,21 @@ private:
   std::function<std::unique_ptr<Module>(StringRef Identifier)> ModuleLoader;
 };
 
+/// The function importing pass
+class FunctionImportPass : public PassInfoMixin<FunctionImportPass> {
+public:
+  FunctionImportPass(const ModuleSummaryIndex *Index = nullptr)
+      : Index(Index) {}
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+
+private:
+  const ModuleSummaryIndex *Index;
+};
+
 /// Compute all the imports and exports for every module in the Index.
+///
+/// \p ModuleToDefinedGVSummaries contains for each Module a map
+/// (GUID -> Summary) for every global defined in the module.
 ///
 /// \p ImportLists will be populated with an entry for every Module we are
 /// importing into. This entry is itself a map that can be passed to
@@ -68,8 +89,48 @@ private:
 /// is the set of globals that need to be promoted/renamed appropriately.
 void ComputeCrossModuleImport(
     const ModuleSummaryIndex &Index,
+    const StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
     StringMap<FunctionImporter::ImportMapTy> &ImportLists,
     StringMap<FunctionImporter::ExportSetTy> &ExportLists);
+
+/// Compute all the imports for the given module using the Index.
+///
+/// \p ImportList will be populated with a map that can be passed to
+/// FunctionImporter::importFunctions() above (see description there).
+void ComputeCrossModuleImportForModule(
+    StringRef ModulePath, const ModuleSummaryIndex &Index,
+    FunctionImporter::ImportMapTy &ImportList);
+
+/// Compute the set of summaries needed for a ThinLTO backend compilation of
+/// \p ModulePath.
+//
+/// This includes summaries from that module (in case any global summary based
+/// optimizations were recorded) and from any definitions in other modules that
+/// should be imported.
+//
+/// \p ModuleToSummariesForIndex will be populated with the needed summaries
+/// from each required module path. Use a std::map instead of StringMap to get
+/// stable order for bitcode emission.
+void gatherImportedSummariesForModule(
+    StringRef ModulePath,
+    const StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
+    const FunctionImporter::ImportMapTy &ImportList,
+    std::map<std::string, GVSummaryMapTy> &ModuleToSummariesForIndex);
+
+/// Emit into \p OutputFilename the files module \p ModulePath will import from.
+std::error_code
+EmitImportsFiles(StringRef ModulePath, StringRef OutputFilename,
+                 const FunctionImporter::ImportMapTy &ModuleImports);
+
+/// Resolve WeakForLinker values in \p TheModule based on the information
+/// recorded in the summaries during global summary-based analysis.
+void thinLTOResolveWeakForLinkerModule(Module &TheModule,
+                                       const GVSummaryMapTy &DefinedGlobals);
+
+/// Internalize \p TheModule based on the information recorded in the summaries
+/// during global summary-based analysis.
+void thinLTOInternalizeModule(Module &TheModule,
+                              const GVSummaryMapTy &DefinedGlobals);
 }
 
 #endif // LLVM_FUNCTIONIMPORT_H

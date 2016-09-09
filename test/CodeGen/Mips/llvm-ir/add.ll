@@ -1,35 +1,35 @@
 ; RUN: llc < %s -march=mips -mcpu=mips2 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=NOT-R2-R6 -check-prefix=GP32
+; RUN:    -check-prefixes=ALL,NOT-R2-R6,GP32
 ; RUN: llc < %s -march=mips -mcpu=mips32 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=NOT-R2-R6 -check-prefix=GP32
+; RUN:    -check-prefixes=ALL,NOT-R2-R6,GP32
 ; RUN: llc < %s -march=mips -mcpu=mips32r2 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=R2-R6 -check-prefix=GP32
+; RUN:    -check-prefixes=ALL,R2-R6,GP32
 ; RUN: llc < %s -march=mips -mcpu=mips32r3 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=R2-R6 -check-prefix=GP32
+; RUN:    -check-prefixes=ALL,R2-R6,GP32
 ; RUN: llc < %s -march=mips -mcpu=mips32r5 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=R2-R6 -check-prefix=GP32
+; RUN:    -check-prefixes=ALL,R2-R6,GP32
 ; RUN: llc < %s -march=mips -mcpu=mips32r6 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=R2-R6 -check-prefix=GP32
+; RUN:    -check-prefixes=ALL,R2-R6,GP32
 ; RUN: llc < %s -march=mips64 -mcpu=mips3 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=NOT-R2-R6 -check-prefix=GP64
+; RUN:    -check-prefixes=ALL,NOT-R2-R6,GP64
 ; RUN: llc < %s -march=mips64 -mcpu=mips4 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=NOT-R2-R6 -check-prefix=GP64
+; RUN:    -check-prefixes=ALL,NOT-R2-R6,GP64
 ; RUN: llc < %s -march=mips64 -mcpu=mips64 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=NOT-R2-R6 -check-prefix=GP64
+; RUN:    -check-prefixes=ALL,NOT-R2-R6,GP64
 ; RUN: llc < %s -march=mips64 -mcpu=mips64r2 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=R2-R6 -check-prefix=GP64
+; RUN:    -check-prefixes=ALL,R2-R6,GP64
 ; RUN: llc < %s -march=mips64 -mcpu=mips64r3 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=R2-R6 -check-prefix=GP64
+; RUN:    -check-prefixes=ALL,R2-R6,GP64
 ; RUN: llc < %s -march=mips64 -mcpu=mips64r5 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=R2-R6 -check-prefix=GP64
+; RUN:    -check-prefixes=ALL,R2-R6,GP64
 ; RUN: llc < %s -march=mips64 -mcpu=mips64r6 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=R2-R6 -check-prefix=GP64
+; RUN:    -check-prefixes=ALL,R2-R6,GP64
 ; RUN: llc < %s -march=mips -mcpu=mips32r3 -mattr=+micromips -O2 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=MMR6 -check-prefix=MM32
+; RUN:    -check-prefixes=ALL,MMR6,MM32
 ; RUN: llc < %s -march=mips -mcpu=mips32r6 -mattr=+micromips -O2 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=MMR6 -check-prefix=MM32
-; RUN: llc < %s -march=mips -mcpu=mips64r6 -mattr=+micromips -O2 | FileCheck %s \
-; RUN:    -check-prefix=ALL -check-prefix=MMR6 -check-prefix=MM64
+; RUN:    -check-prefixes=ALL,MMR6,MM32
+; RUN: llc < %s -march=mips -mcpu=mips64r6 -target-abi n64 -mattr=+micromips -O2 | FileCheck %s \
+; RUN:    -check-prefixes=ALL,MMR6,MM64
 
 define signext i1 @add_i1(i1 signext %a, i1 signext %b) {
 entry:
@@ -157,10 +157,10 @@ entry:
   ; MM32:       sltu      $[[T6:[0-9]+]], $[[T5]], $[[T3]]
   ; MM32:       lw        $[[T7:[0-9]+]], 20($sp)
   ; MM32:       addu      $[[T8:[0-9]+]], $[[T6]], $[[T7]]
-  ; MM32:       addu      $[[T9:[0-9]+]], $5, $[[T8]]
-  ; MM32:       sltu      $[[T10:[0-9]+]], $[[T9]], $[[T7]]
-  ; MM32:       lw        $[[T11:[0-9]+]], 16($sp)
-  ; MM32:       addu      $[[T12:[0-9]+]], $[[T10]], $[[T11]]
+  ; MM32:       lw        $[[T9:[0-9]+]], 16($sp)
+  ; MM32:       addu      $[[T10:[0-9]+]], $5, $[[T8]]
+  ; MM32:       sltu      $[[T11:[0-9]+]], $[[T10]], $[[T7]]
+  ; MM32:       addu      $[[T12:[0-9]+]], $[[T11]], $[[T9]]
   ; MM32:       addu      $[[T13:[0-9]+]], $4, $[[T12]]
   ; MM32:       move      $4, $[[T5]]
   ; MM32:       move      $5, $[[T1]]
@@ -284,7 +284,7 @@ define signext i128 @add_i128_4(i128 signext %a) {
   ; MM32:       li16    $[[T1:[0-9]+]], 4
   ; MM32:       sltu    $[[T1]], $[[T0]], $[[T1]]
   ; MM32:       addu    $[[T2:[0-9]+]], $6, $[[T1]]
-  ; MM32:       lui     $[[T1]], 0
+  ; MM32:       li16    $[[T1]], 0
   ; MM32:       sltu    $[[T3:[0-9]+]], $[[T2]], $[[T1]]
   ; MM32:       addu    $[[T3]], $5, $[[T3]]
   ; MM32:       sltu    $[[T1]], $[[T3]], $[[T1]]
@@ -414,7 +414,7 @@ define signext i128 @add_i128_3(i128 signext %a) {
   ; MM32:       li16    $[[T1:[0-9]+]], 3
   ; MM32:       sltu    $[[T1]], $[[T0]], $[[T1]]
   ; MM32:       addu    $[[T2:[0-9]+]], $6, $[[T1]]
-  ; MM32:       lui     $[[T3:[0-9]+]], 0
+  ; MM32:       li16    $[[T3:[0-9]+]], 0
   ; MM32:       sltu    $[[T4:[0-9]+]], $[[T2]], $[[T3]]
   ; MM32:       addu    $[[T4]], $5, $[[T4]]
   ; MM32:       sltu    $[[T5:[0-9]+]], $[[T4]], $[[T3]]

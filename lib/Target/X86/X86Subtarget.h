@@ -35,11 +35,10 @@ class TargetMachine;
 ///
 namespace PICStyles {
 enum Style {
-  StubPIC,          // Used on i386-darwin in -fPIC mode.
-  StubDynamicNoPIC, // Used on i386-darwin in -mdynamic-no-pic mode.
-  GOT,              // Used on many 32-bit unices in -fPIC mode.
-  RIPRel,           // Used on X86-64 when not in -static mode.
-  None              // Set when in -static mode (not PIC or DynamicNoPIC mode).
+  StubPIC,          // Used on i386-darwin in pic mode.
+  GOT,              // Used on 32 bit elf on when in pic mode.
+  RIPRel,           // Used on X86-64 when in pic mode.
+  None              // Set when not in pic mode.
 };
 }
 
@@ -63,6 +62,8 @@ protected:
 
   /// Which PIC style to use
   PICStyles::Style PICStyle;
+
+  const TargetMachine &TM;
 
   /// SSE1, SSE2, SSE3, SSSE3, SSE41, SSE42, or none supported.
   X86SSEEnum X86SSELevel;
@@ -164,6 +165,9 @@ protected:
   /// Processor has LAHF/SAHF instructions.
   bool HasLAHFSAHF;
 
+  /// Processor has MONITORX/MWAITX instructions.
+  bool HasMWAITX;
+
   /// Processor has Prefetch with intent to Write instruction
   bool HasPFPREFETCHWT1;
 
@@ -194,6 +198,14 @@ protected:
   /// True if there is no performance penalty to writing only the lower parts
   /// of a YMM register without clearing the upper part.
   bool HasFastPartialYMMWrite;
+
+  /// True if hardware SQRTSS instruction is at least as fast (latency) as
+  /// RSQRTSS followed by a Newton-Raphson iteration.
+  bool HasFastScalarFSQRT;
+
+  /// True if hardware SQRTPS/VSQRTPS instructions are at least as fast
+  /// (throughput) as RSQRTPS/VRSQRTPS followed by a Newton-Raphson iteration.
+  bool HasFastVectorFSQRT;
 
   /// True if 8-bit divisions are significantly faster than
   /// 32-bit divisions and should be used when possible.
@@ -308,7 +320,7 @@ public:
   /// This constructor initializes the data members to match that
   /// of the specified triple.
   ///
-  X86Subtarget(const Triple &TT, const std::string &CPU, const std::string &FS,
+  X86Subtarget(const Triple &TT, StringRef CPU, StringRef FS,
                const X86TargetMachine &TM, unsigned StackAlignOverride);
 
   const X86TargetLowering *getTargetLowering() const override {
@@ -421,6 +433,7 @@ public:
   bool hasPRFCHW() const { return HasPRFCHW; }
   bool hasRDSEED() const { return HasRDSEED; }
   bool hasLAHFSAHF() const { return HasLAHFSAHF; }
+  bool hasMWAITX() const { return HasMWAITX; }
   bool isBTMemSlow() const { return IsBTMemSlow; }
   bool isSHLDSlow() const { return IsSHLDSlow; }
   bool isUnalignedMem16Slow() const { return IsUAMem16Slow; }
@@ -429,6 +442,8 @@ public:
   bool hasCmpxchg16b() const { return HasCmpxchg16b; }
   bool useLeaForSP() const { return UseLeaForSP; }
   bool hasFastPartialYMMWrite() const { return HasFastPartialYMMWrite; }
+  bool hasFastScalarFSQRT() const { return HasFastScalarFSQRT; }
+  bool hasFastVectorFSQRT() const { return HasFastVectorFSQRT; }
   bool hasSlowDivide32() const { return HasSlowDivide32; }
   bool hasSlowDivide64() const { return HasSlowDivide64; }
   bool padShortFunctions() const { return PadShortFunctions; }
@@ -467,6 +482,8 @@ public:
   bool isTargetMachO() const { return TargetTriple.isOSBinFormatMachO(); }
 
   bool isTargetLinux() const { return TargetTriple.isOSLinux(); }
+  bool isTargetKFreeBSD() const { return TargetTriple.isOSKFreeBSD(); }
+  bool isTargetGlibc() const { return TargetTriple.isOSGlibc(); }
   bool isTargetAndroid() const { return TargetTriple.isAndroid(); }
   bool isTargetNaCl() const { return TargetTriple.isOSNaCl(); }
   bool isTargetNaCl32() const { return isTargetNaCl() && !is64Bit(); }
@@ -509,7 +526,6 @@ public:
     return !In64BitMode && (isTargetCygMing() || isTargetKnownWindowsMSVC());
   }
 
-  bool isPICStyleSet() const { return PICStyle != PICStyles::None; }
   bool isPICStyleGOT() const { return PICStyle == PICStyles::GOT; }
   bool isPICStyleRIPRel() const { return PICStyle == PICStyles::RIPRel; }
 
@@ -517,13 +533,7 @@ public:
     return PICStyle == PICStyles::StubPIC;
   }
 
-  bool isPICStyleStubNoDynamic() const {
-    return PICStyle == PICStyles::StubDynamicNoPIC;
-  }
-  bool isPICStyleStubAny() const {
-    return PICStyle == PICStyles::StubDynamicNoPIC ||
-           PICStyle == PICStyles::StubPIC;
-  }
+  bool isPositionIndependent() const { return TM.isPositionIndependent(); }
 
   bool isCallingConvWin64(CallingConv::ID CC) const {
     switch (CC) {
@@ -548,18 +558,25 @@ public:
     }
   }
 
-  /// ClassifyGlobalReference - Classify a global variable reference for the
-  /// current subtarget according to how we should reference it in a non-pcrel
-  /// context.
-  unsigned char ClassifyGlobalReference(const GlobalValue *GV,
-                                        const TargetMachine &TM)const;
+  /// Classify a global variable reference for the current subtarget according
+  /// to how we should reference it in a non-pcrel context.
+  unsigned char classifyLocalReference(const GlobalValue *GV) const;
+
+  unsigned char classifyGlobalReference(const GlobalValue *GV,
+                                        const Module &M) const;
+  unsigned char classifyGlobalReference(const GlobalValue *GV) const;
+
+  /// Classify a global function reference for the current subtarget.
+  unsigned char classifyGlobalFunctionReference(const GlobalValue *GV,
+                                                const Module &M) const;
+  unsigned char classifyGlobalFunctionReference(const GlobalValue *GV) const;
 
   /// Classify a blockaddress reference for the current subtarget according to
   /// how we should reference it in a non-pcrel context.
-  unsigned char ClassifyBlockAddressReference() const;
+  unsigned char classifyBlockAddressReference() const;
 
   /// Return true if the subtarget allows calls to immediate address.
-  bool IsLegalToCallImmediateAddr(const TargetMachine &TM) const;
+  bool isLegalToCallImmediateAddr() const;
 
   /// This function returns the name of a function which has an interface
   /// like the non-standard bzero function, if such a function exists on

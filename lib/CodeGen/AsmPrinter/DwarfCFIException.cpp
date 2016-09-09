@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "DwarfException.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/AsmPrinter.h"
@@ -67,12 +66,12 @@ DwarfCFIException::~DwarfCFIException() {}
 /// endModule - Emit all exception information that should come after the
 /// content.
 void DwarfCFIException::endModule() {
-  if (moveTypeModule == AsmPrinter::CFI_M_Debug)
-    Asm->OutStreamer->EmitCFISections(false, true);
-
   // SjLj uses this pass and it doesn't need this info.
   if (!Asm->MAI->usesCFIForEH())
     return;
+
+  if (moveTypeModule == AsmPrinter::CFI_M_Debug)
+    Asm->OutStreamer->EmitCFISections(false, true);
 
   const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
 
@@ -134,7 +133,8 @@ void DwarfCFIException::beginFunction(const MachineFunction *MF) {
   shouldEmitLSDA = shouldEmitPersonality &&
     LSDAEncoding != dwarf::DW_EH_PE_omit;
 
-  shouldEmitCFI = shouldEmitPersonality || shouldEmitMoves;
+  shouldEmitCFI = MF->getMMI().getContext().getAsmInfo()->usesCFIForEH() &&
+                  (shouldEmitPersonality || shouldEmitMoves);
   beginFragment(&*MF->begin(), getExceptionSym);
 }
 

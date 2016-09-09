@@ -76,6 +76,7 @@ add_llvm_library(LLVMSupport
   RandomNumberGenerator.cpp
   Regex.cpp
   ScaledNumber.cpp
+  ScopedPrinter.cpp
   SHA1.cpp
   SmallPtrSet.cpp
   SmallVector.cpp
@@ -129,6 +130,7 @@ add_llvm_library(LLVMSupport
   ADDITIONAL_HEADER_DIRS
   Unix
   Windows
+  ${LLVM_MAIN_INCLUDE_DIR}/llvm/ADT
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Support
 
   LINK_LIBS ${system_libs}

@@ -145,11 +145,11 @@ void WebAssemblyInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
     if (int(WAReg) >= 0)
       printRegName(O, WAReg);
     else if (OpNo >= MII.get(MI->getOpcode()).getNumDefs())
-      O << "$pop" << (WAReg & INT32_MAX);
+      O << "$pop" << WebAssemblyFunctionInfo::getWARegStackId(WAReg);
     else if (WAReg != WebAssemblyFunctionInfo::UnusedReg)
-      O << "$push" << (WAReg & INT32_MAX);
+      O << "$push" << WebAssemblyFunctionInfo::getWARegStackId(WAReg);
     else
-      O << "$discard";
+      O << "$drop";
     // Add a '=' suffix if this is a def.
     if (OpNo < MII.get(MI->getOpcode()).getNumDefs())
       O << '=';
@@ -210,6 +210,11 @@ const char *llvm::WebAssembly::TypeToString(MVT Ty) {
     return "f32";
   case MVT::f64:
     return "f64";
+  case MVT::v16i8:
+  case MVT::v8i16:
+  case MVT::v4i32:
+  case MVT::v4f32:
+    return "v128";
   default:
     llvm_unreachable("unsupported type");
   }

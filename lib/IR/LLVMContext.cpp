@@ -13,23 +13,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "LLVMContextImpl.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
-#include "llvm/IR/Instruction.h"
 #include "llvm/IR/Metadata.h"
-#include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/SourceMgr.h"
-#include <cctype>
+#include "llvm/IR/Module.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cassert>
+#include <cstdlib>
+#include <string>
+#include <utility>
+
 using namespace llvm;
-
-static ManagedStatic<LLVMContext> GlobalContext;
-
-LLVMContext& llvm::getGlobalContext() {
-  return *GlobalContext;
-}
 
 LLVMContext::LLVMContext() : pImpl(new LLVMContextImpl(*this)) {
   // Create the fixed metadata kinds. This is done in the same order as the
@@ -133,6 +134,10 @@ LLVMContext::LLVMContext() : pImpl(new LLVMContextImpl(*this)) {
   assert(LoopID == MD_loop && "llvm.loop kind id drifted");
   (void)LoopID;
 
+  unsigned TypeID = getMDKindID("type");
+  assert(TypeID == MD_type && "type kind id drifted");
+  (void)TypeID;
+
   auto *DeoptEntry = pImpl->getOrInsertBundleTag("deopt");
   assert(DeoptEntry->second == LLVMContext::OB_deopt &&
          "deopt operand bundle id drifted!");
@@ -148,6 +153,7 @@ LLVMContext::LLVMContext() : pImpl(new LLVMContextImpl(*this)) {
          "gc-transition operand bundle id drifted!");
   (void)GCTransitionEntry;
 }
+
 LLVMContext::~LLVMContext() { delete pImpl; }
 
 void LLVMContext::addModule(Module *M) {
@@ -190,6 +196,13 @@ void LLVMContext::setDiagnosticHandler(DiagnosticHandlerTy DiagnosticHandler,
   pImpl->RespectDiagnosticFilters = RespectFilters;
 }
 
+void LLVMContext::setDiagnosticHotnessRequested(bool Requested) {
+  pImpl->DiagnosticHotnessRequested = Requested;
+}
+bool LLVMContext::getDiagnosticHotnessRequested() const {
+  return pImpl->DiagnosticHotnessRequested;
+}
+
 LLVMContext::DiagnosticHandlerTy LLVMContext::getDiagnosticHandler() const {
   return pImpl->DiagnosticHandler;
 }
@@ -229,7 +242,8 @@ static bool isDiagnosticEnabled(const DiagnosticInfo &DI) {
   return true;
 }
 
-static const char *getDiagnosticMessagePrefix(DiagnosticSeverity Severity) {
+const char *
+LLVMContext::getDiagnosticMessagePrefix(DiagnosticSeverity Severity) {
   switch (Severity) {
   case DS_Error:
     return "error";
@@ -306,9 +320,11 @@ void LLVMContext::setGC(const Function &Fn, std::string GCName) {
   }
   It->second = std::move(GCName);
 }
+
 const std::string &LLVMContext::getGC(const Function &Fn) {
   return pImpl->GCNames[&Fn];
 }
+
 void LLVMContext::deleteGC(const Function &Fn) {
   pImpl->GCNames.erase(&Fn);
 }
@@ -317,6 +333,21 @@ bool LLVMContext::shouldDiscardValueNames() const {
   return pImpl->DiscardValueNames;
 }
 
+bool LLVMContext::isODRUniquingDebugTypes() const { return !!pImpl->DITypeMap; }
+
+void LLVMContext::enableDebugTypeODRUniquing() {
+  if (pImpl->DITypeMap)
+    return;
+
+  pImpl->DITypeMap.emplace();
+}
+
+void LLVMContext::disableDebugTypeODRUniquing() { pImpl->DITypeMap.reset(); }
+
 void LLVMContext::setDiscardValueNames(bool Discard) {
   pImpl->DiscardValueNames = Discard;
+}
+
+OptBisect &LLVMContext::getOptBisect() {
+  return pImpl->getOptBisect();
 }

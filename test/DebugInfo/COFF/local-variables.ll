@@ -22,41 +22,44 @@
 ; 17: }
 
 ; ASM: f:                                      # @f
+; ASM:         .cv_func_id 0
 ; ASM:         .cv_file        1 "D:\\src\\llvm\\build\\t.cpp"
 ; ASM:         .cv_loc 0 1 7 0 is_stmt 0       # t.cpp:7:0
 ; ASM: .seh_proc f
 ; ASM: # BB#0:                                 # %entry
 ; ASM:         subq    $56, %rsp
-; ASM:         #DEBUG_VALUE: f:param <- [%RSP+44]
-; ASM:         movl    %ecx, 44(%rsp)
+; ASM:         #DEBUG_VALUE: f:param <- [%RSP+52]
+; ASM:         movl    %ecx, 52(%rsp)
 ; ASM: [[prologue_end:\.Ltmp.*]]:
 ; ASM:         .cv_loc 0 1 8 7                 # t.cpp:8:7
 ; ASM:         testl   %ecx, %ecx
 ; ASM:         je      .LBB0_2
 ; ASM: [[if_start:\.Ltmp.*]]:
 ; ASM: # BB#1:                                 # %if.then
-; ASM:         #DEBUG_VALUE: f:param <- [%RSP+44]
+; ASM:         #DEBUG_VALUE: f:param <- [%RSP+52]
 ; ASM:         #DEBUG_VALUE: a <- [%RSP+40]
 ; ASM:         .cv_loc 0 1 9 9                 # t.cpp:9:9
 ; ASM:         movl    $42, 40(%rsp)
 ; ASM: [[inline_site1:\.Ltmp.*]]:
+; ASM:         .cv_inline_site_id 1 within 0 inlined_at 1 10 5
 ; ASM:         .cv_loc 1 1 4 7                 # t.cpp:4:7
-; ASM:         movl    $3, 48(%rsp)
-; ASM:         leaq    48(%rsp), %rcx
+; ASM:         movl    $3, 44(%rsp)
+; ASM:         leaq    44(%rsp), %rcx
 ; ASM:         .cv_loc 1 1 5 3                 # t.cpp:5:3
 ; ASM:         callq   capture
 ; ASM:         leaq    40(%rsp), %rcx
 ; ASM:         jmp     .LBB0_3
 ; ASM: [[else_start:\.Ltmp.*]]:
 ; ASM: .LBB0_2:                                # %if.else
-; ASM:         #DEBUG_VALUE: f:param <- [%RSP+44]
+; ASM:         #DEBUG_VALUE: f:param <- [%RSP+52]
 ; ASM:         #DEBUG_VALUE: b <- [%RSP+36]
 ; ASM:         .cv_loc 0 1 13 9                # t.cpp:13:9
 ; ASM:         movl    $42, 36(%rsp)
 ; ASM: [[inline_site2:\.Ltmp.*]]:
+; ASM:         .cv_inline_site_id 2 within 0 inlined_at 1 14 5
 ; ASM:         .cv_loc 2 1 4 7                 # t.cpp:4:7
-; ASM:         movl    $3, 52(%rsp)
-; ASM:         leaq    52(%rsp), %rcx
+; ASM:         movl    $3, 48(%rsp)
+; ASM:         leaq    48(%rsp), %rcx
 ; ASM:         .cv_loc 2 1 5 3                 # t.cpp:5:3
 ; ASM:         callq   capture
 ; ASM:         leaq    36(%rsp), %rcx
@@ -75,7 +78,7 @@
 ; ASM: .long   116                     # TypeIndex
 ; ASM: .short  1                       # Flags
 ; ASM: .asciz  "param"
-; ASM: .cv_def_range    [[prologue_end]] [[param_end]], "E\021O\001\000\000,\000\000\000"
+; ASM: .cv_def_range    [[prologue_end]] [[param_end]], "E\021O\001\000\0004\000\000\000"
 ; ASM: .short  4414                    # Record kind: S_LOCAL
 ; ASM: .long   116                     # TypeIndex
 ; ASM: .short  0                       # Flags
@@ -91,14 +94,14 @@
 ; ASM: .long   116                     # TypeIndex
 ; ASM: .short  0                       # Flags
 ; ASM: .asciz  "v"
-; ASM: .cv_def_range    [[inline_site1]] [[else_start]], "E\021O\001\000\0000\000\000\000"
+; ASM: .cv_def_range    [[inline_site1]] [[else_start]], "E\021O\001\000\000,\000\000\000"
 ; ASM: .short  4430                    # Record kind: S_INLINESITE_END
 ; ASM: .short  4429                    # Record kind: S_INLINESITE
 ; ASM: .short  4414                    # Record kind: S_LOCAL
 ; ASM: .long   116                     # TypeIndex
 ; ASM: .short  0                       # Flags
 ; ASM: .asciz  "v"
-; ASM: .cv_def_range    [[inline_site2]] [[inline_site2_end]], "E\021O\001\000\0004\000\000\000"
+; ASM: .cv_def_range    [[inline_site2]] [[inline_site2_end]], "E\021O\001\000\0000\000\000\000"
 ; ASM: .short  4430                    # Record kind: S_INLINESITE_END
 
 ; OBJ:  Subsection [
@@ -118,7 +121,7 @@
 ; OBJ:      BaseRegister: 335
 ; OBJ:      HasSpilledUDTMember: No
 ; OBJ:      OffsetInParent: 0
-; OBJ:      BasePointerOffset: 44
+; OBJ:      BasePointerOffset: 52
 ; OBJ:      LocalVariableAddrRange {
 ; OBJ:        OffsetStart: .text+0x8
 ; OBJ:        ISectStart: 0x0
@@ -180,7 +183,7 @@
 ; OBJ:      BaseRegister: 335
 ; OBJ:      HasSpilledUDTMember: No
 ; OBJ:      OffsetInParent: 0
-; OBJ:      BasePointerOffset: 48
+; OBJ:      BasePointerOffset: 44
 ; OBJ:      LocalVariableAddrRange {
 ; OBJ:        OffsetStart: .text+0x14
 ; OBJ:        ISectStart: 0x0
@@ -210,7 +213,7 @@
 ; OBJ:      BaseRegister: 335
 ; OBJ:      HasSpilledUDTMember: No
 ; OBJ:      OffsetInParent: 0
-; OBJ:      BasePointerOffset: 52
+; OBJ:      BasePointerOffset: 48
 ; OBJ:      LocalVariableAddrRange {
 ; OBJ:        OffsetStart: .text+0x35
 ; OBJ:        ISectStart: 0x0
@@ -276,15 +279,14 @@ attributes #3 = { nounwind }
 !llvm.module.flags = !{!11, !12, !13}
 !llvm.ident = !{!14}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.9.0 ", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, subprograms: !3)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.9.0 ", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !2)
 !1 = !DIFile(filename: "t.cpp", directory: "D:\5Csrc\5Cllvm\5Cbuild")
 !2 = !{}
-!3 = !{!4, !8}
-!4 = distinct !DISubprogram(name: "f", scope: !1, file: !1, line: 7, type: !5, isLocal: false, isDefinition: true, scopeLine: 7, flags: DIFlagPrototyped, isOptimized: false, variables: !2)
+!4 = distinct !DISubprogram(name: "f", scope: !1, file: !1, line: 7, type: !5, isLocal: false, isDefinition: true, scopeLine: 7, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
 !5 = !DISubroutineType(types: !6)
 !6 = !{null, !7}
 !7 = !DIBasicType(name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
-!8 = distinct !DISubprogram(name: "will_be_inlined", linkageName: "\01?will_be_inlined@@YAXXZ", scope: !1, file: !1, line: 3, type: !9, isLocal: true, isDefinition: true, scopeLine: 3, flags: DIFlagPrototyped, isOptimized: false, variables: !2)
+!8 = distinct !DISubprogram(name: "will_be_inlined", linkageName: "\01?will_be_inlined@@YAXXZ", scope: !1, file: !1, line: 3, type: !9, isLocal: true, isDefinition: true, scopeLine: 3, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
 !9 = !DISubroutineType(types: !10)
 !10 = !{null}
 !11 = !{i32 2, !"CodeView", i32 1}

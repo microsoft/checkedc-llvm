@@ -59,9 +59,8 @@ LLVMTargetRef LLVMGetNextTarget(LLVMTargetRef T) {
 
 LLVMTargetRef LLVMGetTargetFromName(const char *Name) {
   StringRef NameRef = Name;
-  auto I = std::find_if(
-      TargetRegistry::targets().begin(), TargetRegistry::targets().end(),
-      [&](const Target &T) { return T.getName() == NameRef; });
+  auto I = find_if(TargetRegistry::targets(),
+                   [&](const Target &T) { return T.getName() == NameRef; });
   return I != TargetRegistry::targets().end() ? wrap(&*I) : nullptr;
 }
 
@@ -105,7 +104,7 @@ LLVMTargetMachineRef LLVMCreateTargetMachine(LLVMTargetRef T,
         const char* Triple, const char* CPU, const char* Features,
         LLVMCodeGenOptLevel Level, LLVMRelocMode Reloc,
         LLVMCodeModel CodeModel) {
-  Reloc::Model RM;
+  Optional<Reloc::Model> RM;
   switch (Reloc){
     case LLVMRelocStatic:
       RM = Reloc::Static;
@@ -117,7 +116,6 @@ LLVMTargetMachineRef LLVMCreateTargetMachine(LLVMTargetRef T,
       RM = Reloc::DynamicNoPIC;
       break;
     default:
-      RM = Reloc::Default;
       break;
   }
 

@@ -87,9 +87,6 @@
 // Finally, it fixes the undef in %y' so that
 //   %y' = phi float addrspace(3)* [ %input, %y2' ]
 //
-// TODO: This pass is experimental and not enabled by default. Users can turn it
-// on by setting the -nvptx-use-infer-addrspace flag of llc. We plan to replace
-// NVPTXNonFavorGenericAddrSpaces with this pass shortly.
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "nvptx-infer-addrspace"
@@ -103,7 +100,6 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -420,6 +416,9 @@ static unsigned joinAddressSpaces(unsigned AS1, unsigned AS2) {
 }
 
 bool NVPTXInferAddressSpaces::runOnFunction(Function &F) {
+  if (skipFunction(F))
+    return false;
+
   // Collects all generic address expressions in postorder.
   std::vector<Value *> Postorder = collectGenericAddressExpressions(F);
 

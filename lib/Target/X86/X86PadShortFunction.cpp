@@ -57,7 +57,7 @@ namespace {
 
     MachineFunctionProperties getRequiredProperties() const override {
       return MachineFunctionProperties().set(
-          MachineFunctionProperties::Property::AllVRegsAllocated);
+          MachineFunctionProperties::Property::NoVRegs);
     }
 
     const char *getPassName() const override {
@@ -98,6 +98,9 @@ FunctionPass *llvm::createX86PadShortFunctions() {
 /// runOnMachineFunction - Loop over all of the basic blocks, inserting
 /// NOOP instructions before early exits.
 bool PadShortFunc::runOnMachineFunction(MachineFunction &MF) {
+  if (skipFunction(*MF.getFunction()))
+    return false;
+
   if (MF.getFunction()->optForSize()) {
     return false;
   }
@@ -184,13 +187,11 @@ bool PadShortFunc::cyclesUntilReturn(MachineBasicBlock *MBB,
 
   unsigned int CyclesToEnd = 0;
 
-  for (MachineBasicBlock::iterator MBBI = MBB->begin();
-        MBBI != MBB->end(); ++MBBI) {
-    MachineInstr *MI = MBBI;
+  for (MachineInstr &MI : *MBB) {
     // Mark basic blocks with a return instruction. Calls to other
     // functions do not count because the called function will be padded,
     // if necessary.
-    if (MI->isReturn() && !MI->isCall()) {
+    if (MI.isReturn() && !MI.isCall()) {
       VisitedBBs[MBB] = VisitedBBInfo(true, CyclesToEnd);
       Cycles += CyclesToEnd;
       return true;

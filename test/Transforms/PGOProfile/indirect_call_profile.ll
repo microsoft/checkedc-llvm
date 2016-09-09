@@ -1,6 +1,11 @@
 ; RUN: opt < %s -pgo-instr-gen -S | FileCheck %s --check-prefix=GEN
+; RUN: opt < %s -passes=pgo-instr-gen -S | FileCheck %s --check-prefix=GEN
+; RUN: opt < %s -passes=pgo-instr-gen,instrprof -S | FileCheck %s --check-prefix=LOWER
+
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
+
+$foo3 = comdat any
 
 @bar = external global void ()*, align 8
 ; GEN: @__profn_foo = private constant [3 x i8] c"foo"
@@ -8,10 +13,10 @@ target triple = "x86_64-unknown-linux-gnu"
 define void @foo() {
 entry:
 ; GEN: entry:
-; GEN-NEXT: call void @llvm.instrprof.increment(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @__profn_foo, i32 0, i32 0), i64 12884901887, i32 1, i32 0)
+; GEN-NEXT: call void @llvm.instrprof.increment(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @__profn_foo, i32 0, i32 0), i64 [[FOO_HASH:[0-9]+]], i32 1, i32 0)
   %tmp = load void ()*, void ()** @bar, align 8
 ; GEN: [[ICALL_TARGET:%[0-9]+]] = ptrtoint void ()* %tmp to i64
-; GEN-NEXT: call void @llvm.instrprof.value.profile(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @__profn_foo, i32 0, i32 0), i64 12884901887, i64 [[ICALL_TARGET]], i32 0, i32 0)
+; GEN-NEXT: call void @llvm.instrprof.value.profile(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @__profn_foo, i32 0, i32 0), i64 [[FOO_HASH]], i64 [[ICALL_TARGET]], i32 0, i32 0)
   call void %tmp()
   ret void
 }
@@ -25,7 +30,7 @@ bb:
   invoke void %tmp2()
           to label %bb10 unwind label %bb2
 ; GEN: [[ICALL_TARGET2:%[0-9]+]] = ptrtoint void ()* %tmp2 to i64
-; GEN-NEXT: call void @llvm.instrprof.value.profile(i8* getelementptr inbounds ([4 x i8], [4 x i8]* @__profn_foo2, i32 0, i32 0), i64 38432627612, i64 [[ICALL_TARGET2]], i32 0, i32 0)
+; GEN-NEXT: call void @llvm.instrprof.value.profile(i8* getelementptr inbounds ([4 x i8], [4 x i8]* @__profn_foo2, i32 0, i32 0), i64 [[FOO2_HASH:[0-9]+]], i64 [[ICALL_TARGET2]], i32 0, i32 0)
 
 bb2:                                              ; preds = %bb
   %tmp3 = landingpad { i8*, i32 }
@@ -46,6 +51,13 @@ bb10:                                             ; preds = %bb7, %bb
 
 bb11:                                             ; preds = %bb2
   resume { i8*, i32 } %tmp3
+}
+
+; Test that comdat function's address is recorded.
+; LOWER: @__profd_foo3.[[FOO3_HASH:[0-9]+]] = linkonce_odr{{.*}}@foo3.[[FOO3_HASH]]
+; Function Attrs: nounwind uwtable
+define linkonce_odr i32 @foo3()  comdat  {
+  ret i32 1
 }
 
 declare i32 @__gxx_personality_v0(...)

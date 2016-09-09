@@ -7,9 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "gtest/gtest.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/DataTypes.h"
+#include "gtest/gtest.h"
 #include <tuple>
 using namespace llvm;
 
@@ -457,7 +458,7 @@ struct NonMoveableNonCopyableType {
 // Test that we can "emplace" an element in the map without involving map/move
 TEST(StringMapCustomTest, EmplaceTest) {
   StringMap<NonMoveableNonCopyableType> Map;
-  Map.emplace_second("abcd", 42);
+  Map.try_emplace("abcd", 42);
   EXPECT_EQ(1u, Map.count("abcd"));
   EXPECT_EQ(42, Map["abcd"].Data);
 }

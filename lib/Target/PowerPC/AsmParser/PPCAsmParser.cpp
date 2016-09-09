@@ -1,4 +1,4 @@
-//===-- PPCAsmParser.cpp - Parse PowerPC asm to MCInst instructions ---------===//
+//===-- PPCAsmParser.cpp - Parse PowerPC asm to MCInst instructions -------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -11,8 +11,6 @@
 #include "MCTargetDesc/PPCMCTargetDesc.h"
 #include "PPCTargetStreamer.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/MC/MCContext.h"
@@ -294,7 +292,7 @@ public:
                const MCInstrInfo &MII, const MCTargetOptions &Options)
     : MCTargetAsmParser(Options, STI), MII(MII) {
     // Check for 64-bit vs. 32-bit pointer mode.
-    Triple TheTriple(STI.getTargetTriple());
+    const Triple &TheTriple = STI.getTargetTriple();
     IsPPC64 = (TheTriple.getArch() == Triple::ppc64 ||
                TheTriple.getArch() == Triple::ppc64le);
     IsDarwin = TheTriple.isMacOSX();
@@ -396,13 +394,15 @@ public:
     return Imm.Val;
   }
   int64_t getImmS16Context() const {
-    assert((Kind == Immediate || Kind == ContextImmediate) && "Invalid access!");
+    assert((Kind == Immediate || Kind == ContextImmediate) &&
+           "Invalid access!");
     if (Kind == Immediate)
       return Imm.Val;
     return static_cast<int16_t>(Imm.Val);
   }
   int64_t getImmU16Context() const {
-    assert((Kind == Immediate || Kind == ContextImmediate) && "Invalid access!");
+    assert((Kind == Immediate || Kind == ContextImmediate) &&
+           "Invalid access!");
     return Imm.Val;
   }
 
@@ -447,7 +447,9 @@ public:
   }
 
   bool isToken() const override { return Kind == Token; }
-  bool isImm() const override { return Kind == Immediate || Kind == Expression; }
+  bool isImm() const override {
+    return Kind == Immediate || Kind == Expression;
+  }
   bool isU1Imm() const { return Kind == Immediate && isUInt<1>(getImm()); }
   bool isU2Imm() const { return Kind == Immediate && isUInt<2>(getImm()); }
   bool isU3Imm() const { return Kind == Immediate && isUInt<3>(getImm()); }
@@ -466,7 +468,7 @@ public:
   bool isU8ImmX8() const { return Kind == Immediate &&
                                   isUInt<8>(getImm()) &&
                                   (getImm() & 7) == 0; }
-  
+
   bool isU10Imm() const { return Kind == Immediate && isUInt<10>(getImm()); }
   bool isU12Imm() const { return Kind == Immediate && isUInt<12>(getImm()); }
   bool isU16Imm() const {
@@ -530,11 +532,9 @@ public:
                                  (Kind == Immediate && isInt<16>(getImm()) &&
                                   (getImm() & 3) == 0); }
   bool isRegNumber() const { return Kind == Immediate && isUInt<5>(getImm()); }
-  bool isD8RCRegNumber() const { return Kind == Immediate &&
-                                        isUInt<5>(getImm()) &&
-                                        // required even register id
-                                        !(getImm() & 0x1); }
-  bool isVSRegNumber() const { return Kind == Immediate && isUInt<6>(getImm()); }
+  bool isVSRegNumber() const {
+    return Kind == Immediate && isUInt<6>(getImm());
+  }
   bool isCCRegNumber() const { return (Kind == Expression
                                        && isUInt<3>(getExprCRVal())) ||
                                       (Kind == Immediate
@@ -545,6 +545,7 @@ public:
                                        && isUInt<5>(getImm())); }
   bool isCRBitMask() const { return Kind == Immediate && isUInt<8>(getImm()) &&
                                     isPowerOf2_32(getImm()); }
+  bool isATBitsAsHint() const { return false; }
   bool isMem() const override { return false; }
   bool isReg() const override { return false; }
 
@@ -592,11 +593,6 @@ public:
   }
 
   void addRegF8RCOperands(MCInst &Inst, unsigned N) const {
-    assert(N == 1 && "Invalid number of operands!");
-    Inst.addOperand(MCOperand::createReg(FRegs[getReg()]));
-  }
-
-  void addRegD8RCOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands!");
     Inst.addOperand(MCOperand::createReg(FRegs[getReg()]));
   }
@@ -874,6 +870,23 @@ void PPCAsmParser::ProcessInstruction(MCInst &Inst,
     MCInst TmpInst;
     TmpInst.setOpcode(PPC::DCBTST);
     TmpInst.addOperand(Inst.getOperand(2));
+    TmpInst.addOperand(Inst.getOperand(0));
+    TmpInst.addOperand(Inst.getOperand(1));
+    Inst = TmpInst;
+    break;
+  }
+  case PPC::DCBFx:
+  case PPC::DCBFL:
+  case PPC::DCBFLP: {
+    int L = 0;
+    if (Opcode == PPC::DCBFL)
+      L = 1;
+    else if (Opcode == PPC::DCBFLP)
+      L = 3;
+
+    MCInst TmpInst;
+    TmpInst.setOpcode(PPC::DCBF);
+    TmpInst.addOperand(MCOperand::createImm(L));
     TmpInst.addOperand(Inst.getOperand(0));
     TmpInst.addOperand(Inst.getOperand(1));
     Inst = TmpInst;
@@ -1231,19 +1244,6 @@ void PPCAsmParser::ProcessInstruction(MCInst &Inst,
     Inst = TmpInst;
     break;
   }
-  // ISA3.0 Instructions:
-  case PPC::SUBPCIS:
-  case PPC::LNIA: {
-    MCInst TmpInst;
-    TmpInst.setOpcode(PPC::ADDPCIS);
-    TmpInst.addOperand(Inst.getOperand(0));
-    if (Opcode == PPC::SUBPCIS)
-      addNegOperand(TmpInst, Inst.getOperand(1), getContext());
-    else
-      TmpInst.addOperand(MCOperand::createImm(0));
-    Inst = TmpInst;
-    break;
-  }
   }
 }
 
@@ -1508,8 +1508,8 @@ ParseExpression(const MCExpr *&EVal) {
 /// This differs from the default "parseExpression" in that it handles detection
 /// of the \code hi16(), ha16() and lo16() \endcode modifiers.  At present,
 /// parseExpression() doesn't recognise the modifiers when in the Darwin/MachO
-/// syntax form so it is done here.  TODO: Determine if there is merit in arranging
-/// for this to be done at a higher level.
+/// syntax form so it is done here.  TODO: Determine if there is merit in
+/// arranging for this to be done at a higher level.
 bool PPCAsmParser::
 ParseDarwinExpression(const MCExpr *&EVal) {
   MCAsmParser &Parser = getParser();
@@ -1589,7 +1589,8 @@ bool PPCAsmParser::ParseOperand(OperandVector &Operands) {
         return false;
       }
     }
-  // Fall-through to process non-register-name identifiers as expression.
+    // Fall-through to process non-register-name identifiers as expression.
+    LLVM_FALLTHROUGH;
   // All other expressions
   case AsmToken::LParen:
   case AsmToken::Plus:
@@ -1662,7 +1663,7 @@ bool PPCAsmParser::ParseOperand(OperandVector &Operands) {
         break;
       }
     }
-    // Fall-through..
+    LLVM_FALLTHROUGH;
 
     default:
       return Error(S, "invalid memory operand");
@@ -1728,7 +1729,7 @@ bool PPCAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
   while (getLexer().isNot(AsmToken::EndOfStatement) &&
          getLexer().is(AsmToken::Comma)) {
     // Consume the comma token
-    getLexer().Lex();
+    Lex();
 
     // Parse the next operand
     if (ParseOperand(Operands))

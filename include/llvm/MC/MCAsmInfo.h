@@ -18,6 +18,7 @@
 
 #include "llvm/MC/MCDirectives.h"
 #include "llvm/MC/MCDwarf.h"
+#include "llvm/MC/MCTargetOptions.h"
 #include <cassert>
 #include <vector>
 
@@ -41,17 +42,15 @@ enum class EncodingType {
 };
 }
 
-enum class ExceptionHandling {
-  None,     /// No exception support
-  DwarfCFI, /// DWARF-like instruction based exceptions
-  SjLj,     /// setjmp/longjmp based exceptions
-  ARM,      /// ARM EHABI
-  WinEH,    /// Windows Exception Handling
-};
-
 namespace LCOMM {
 enum LCOMMType { NoAlignment, ByteAlignment, Log2Alignment };
 }
+
+enum class DebugCompressionType {
+  DCT_None,    // no compression
+  DCT_Zlib,    // zlib style complession
+  DCT_ZlibGnu  // zlib-gnu style compression
+};
 
 /// This class is intended to be used as a base class for asm
 /// properties and features specific to the target.
@@ -85,12 +84,6 @@ protected:
   /// True if this is a MachO target that supports the macho-specific .tbss
   /// directive for emitting thread local BSS Symbols.  Default is false.
   bool HasMachoTBSSDirective;
-
-  /// True if the compiler should emit a ".reference .constructors_used" or
-  /// ".reference .destructors_used" directive after the static ctor/dtor
-  /// list.  This directive is only emitted in Static relocation model.  Default
-  /// is false.
-  bool HasStaticCtorDtorReferenceInStaticMode;
 
   /// This is the maximum possible length of an instruction, which is needed to
   /// compute the size of an inline asm.  Defaults to 4.
@@ -199,6 +192,14 @@ protected:
   /// relocated as a 32-bit GP-relative offset, e.g. .gpword on Mips or .gprel32
   /// on Alpha.  Defaults to NULL.
   const char *GPRel32Directive;
+
+  /// If non-null, directives that are used to emit a word/dword which should
+  /// be relocated as a 32/64-bit DTP/TP-relative offset, e.g. .dtprelword/
+  /// .dtpreldword/.tprelword/.tpreldword on Mips.
+  const char *DTPRel32Directive = nullptr;
+  const char *DTPRel64Directive = nullptr;
+  const char *TPRel32Directive = nullptr;
+  const char *TPRel64Directive = nullptr;
 
   /// This is true if this target uses "Sun Style" syntax for section switching
   /// ("#alloc,#write" etc) instead of the normal ELF syntax (,"a,w") in
@@ -356,12 +357,23 @@ protected:
   /// construction (see LLVMTargetMachine::initAsmInfo()).
   bool UseIntegratedAssembler;
 
-  /// Compress DWARF debug sections. Defaults to false.
-  bool CompressDebugSections;
+  /// Preserve Comments in assembly
+  bool PreserveAsmComments;
+
+  /// Compress DWARF debug sections. Defaults to no compression.
+  DebugCompressionType CompressDebugSections;
 
   /// True if the integrated assembler should interpret 'a >> b' constant
   /// expressions as logical rather than arithmetic.
   bool UseLogicalShr;
+
+  // If true, emit GOTPCRELX/REX_GOTPCRELX instead of GOTPCREL, on
+  // X86_64 ELF.
+  bool RelaxELFRelocations = true;
+
+  // If true, then the lexer and expression parser will support %neg(),
+  // %hi(), and similar unary operators.
+  bool HasMipsExpressions = false;
 
 public:
   explicit MCAsmInfo();
@@ -392,6 +404,10 @@ public:
   const char *getData64bitsDirective() const { return Data64bitsDirective; }
   const char *getGPRel64Directive() const { return GPRel64Directive; }
   const char *getGPRel32Directive() const { return GPRel32Directive; }
+  const char *getDTPRel64Directive() const { return DTPRel64Directive; }
+  const char *getDTPRel32Directive() const { return DTPRel32Directive; }
+  const char *getTPRel64Directive() const { return TPRel64Directive; }
+  const char *getTPRel32Directive() const { return TPRel32Directive; }
 
   /// Targets can implement this method to specify a section to switch to if the
   /// translation unit doesn't have any trampolines that require an executable
@@ -443,9 +459,6 @@ public:
 
   bool hasMachoZeroFillDirective() const { return HasMachoZeroFillDirective; }
   bool hasMachoTBSSDirective() const { return HasMachoTBSSDirective; }
-  bool hasStaticCtorDtorReferenceInStaticMode() const {
-    return HasStaticCtorDtorReferenceInStaticMode;
-  }
   unsigned getMaxInstLength() const { return MaxInstLength; }
   unsigned getMinInstAlignment() const { return MinInstAlignment; }
   bool getDollarIsPC() const { return DollarIsPC; }
@@ -487,7 +500,7 @@ public:
   bool getAlignmentIsInBytes() const { return AlignmentIsInBytes; }
   unsigned getTextAlignFillValue() const { return TextAlignFillValue; }
   const char *getGlobalDirective() const { return GlobalDirective; }
-  bool doesSetDirectiveSuppressesReloc() const {
+  bool doesSetDirectiveSuppressReloc() const {
     return SetDirectiveSuppressesReloc;
   }
   bool hasAggressiveSymbolFolding() const { return HasAggressiveSymbolFolding; }
@@ -525,6 +538,10 @@ public:
   ExceptionHandling getExceptionHandlingType() const { return ExceptionsType; }
   WinEH::EncodingType getWinEHEncodingType() const { return WinEHEncodingType; }
 
+  void setExceptionsType(ExceptionHandling EH) {
+    ExceptionsType = EH;
+  }
+
   /// Returns true if the exception handling method for the platform uses call
   /// frame information to unwind.
   bool usesCFIForEH() const {
@@ -561,13 +578,27 @@ public:
     UseIntegratedAssembler = Value;
   }
 
-  bool compressDebugSections() const { return CompressDebugSections; }
+  /// Return true if assembly (inline or otherwise) should be parsed.
+  bool preserveAsmComments() const { return PreserveAsmComments; }
 
-  void setCompressDebugSections(bool CompressDebugSections) {
+  /// Set whether assembly (inline or otherwise) should be parsed.
+  virtual void setPreserveAsmComments(bool Value) {
+    PreserveAsmComments = Value;
+  }
+
+  DebugCompressionType compressDebugSections() const {
+    return CompressDebugSections;
+  }
+
+  void setCompressDebugSections(DebugCompressionType CompressDebugSections) {
     this->CompressDebugSections = CompressDebugSections;
   }
 
   bool shouldUseLogicalShr() const { return UseLogicalShr; }
+
+  bool canRelaxRelocations() const { return RelaxELFRelocations; }
+  void setRelaxELFRelocations(bool V) { RelaxELFRelocations = V; }
+  bool hasMipsExpressions() const { return HasMipsExpressions; }
 };
 }
 

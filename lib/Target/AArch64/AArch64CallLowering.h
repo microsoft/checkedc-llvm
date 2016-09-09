@@ -16,21 +16,36 @@
 #define LLVM_LIB_TARGET_AARCH64_AARCH64CALLLOWERING
 
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
+#include "llvm/CodeGen/CallingConvLower.h"
+#include "llvm/CodeGen/ValueTypes.h"
 
 namespace llvm {
 
 class AArch64TargetLowering;
-  
+
 class AArch64CallLowering: public CallLowering {
  public:
   AArch64CallLowering(const AArch64TargetLowering &TLI);
-  
-  bool LowerReturn(MachineIRBuilder &MIRBuiler, const Value *Val,
+
+  bool lowerReturn(MachineIRBuilder &MIRBuiler, const Value *Val,
                    unsigned VReg) const override;
-  bool
-  LowerFormalArguments(MachineIRBuilder &MIRBuilder,
-                       const Function::ArgumentListType &Args,
-                       const SmallVectorImpl<unsigned> &VRegs) const override;
+
+  bool lowerFormalArguments(MachineIRBuilder &MIRBuilder,
+                            const Function::ArgumentListType &Args,
+                            ArrayRef<unsigned> VRegs) const override;
+
+  bool lowerCall(MachineIRBuilder &MIRBuilder, const MachineOperand &Callee,
+                 ArrayRef<Type *> ResTys, ArrayRef<unsigned> ResRegs,
+                 ArrayRef<Type *> ArgTys,
+                 ArrayRef<unsigned> ArgRegs) const override;
+
+private:
+  typedef std::function<void(MachineIRBuilder &, Type *, unsigned, unsigned)>
+      AssignFnTy;
+
+  bool handleAssignments(MachineIRBuilder &MIRBuilder, CCAssignFn *AssignFn,
+                         ArrayRef<Type *> ArgsTypes, ArrayRef<unsigned> ArgRegs,
+                         AssignFnTy AssignValToReg) const;
 };
 } // End of namespace llvm;
 #endif

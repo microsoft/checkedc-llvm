@@ -24,7 +24,6 @@
 #include "llvm/TableGen/Record.h"
 #include "llvm/TableGen/TableGenBackend.h"
 #include "llvm/Support/Debug.h"
-#include <list>
 #include <map>
 #include <string>
 #include <queue>
@@ -710,7 +709,7 @@ int DFAPacketizerEmitter::collectAllComboFuncs(
       Record *ComboFunc = FuncData->getValueAsDef("TheComboFunc");
       const std::vector<Record*> &FuncList =
                                    FuncData->getValueAsListOfDefs("FuncList");
-      std::string ComboFuncName = ComboFunc->getName();
+      const std::string &ComboFuncName = ComboFunc->getName();
       unsigned ComboBit = FUNameToBitsMap[ComboFuncName];
       unsigned ComboResources = ComboBit;
       DEBUG(dbgs() << "      combo: " << ComboFuncName

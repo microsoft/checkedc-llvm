@@ -101,9 +101,14 @@ void LLVMMoveToNextSection(LLVMSectionIteratorRef SI) {
 
 void LLVMMoveToContainingSection(LLVMSectionIteratorRef Sect,
                                  LLVMSymbolIteratorRef Sym) {
-  ErrorOr<section_iterator> SecOrErr = (*unwrap(Sym))->getSection();
-  if (std::error_code ec = SecOrErr.getError())
-    report_fatal_error(ec.message());
+  Expected<section_iterator> SecOrErr = (*unwrap(Sym))->getSection();
+  if (!SecOrErr) {
+   std::string Buf;
+   raw_string_ostream OS(Buf);
+   logAllUnhandledErrors(SecOrErr.takeError(), OS, "");
+   OS.flush();
+   report_fatal_error(Buf);
+  }
   *unwrap(Sect) = *SecOrErr;
 }
 
@@ -178,16 +183,26 @@ void LLVMMoveToNextRelocation(LLVMRelocationIteratorRef SI) {
 
 // SymbolRef accessors
 const char *LLVMGetSymbolName(LLVMSymbolIteratorRef SI) {
-  ErrorOr<StringRef> Ret = (*unwrap(SI))->getName();
-  if (std::error_code EC = Ret.getError())
-    report_fatal_error(EC.message());
+  Expected<StringRef> Ret = (*unwrap(SI))->getName();
+  if (!Ret) {
+    std::string Buf;
+    raw_string_ostream OS(Buf);
+    logAllUnhandledErrors(Ret.takeError(), OS, "");
+    OS.flush();
+    report_fatal_error(Buf);
+  }
   return Ret->data();
 }
 
 uint64_t LLVMGetSymbolAddress(LLVMSymbolIteratorRef SI) {
-  ErrorOr<uint64_t> Ret = (*unwrap(SI))->getAddress();
-  if (std::error_code EC = Ret.getError())
-    report_fatal_error(EC.message());
+  Expected<uint64_t> Ret = (*unwrap(SI))->getAddress();
+  if (!Ret) {
+    std::string Buf;
+    raw_string_ostream OS(Buf);
+    logAllUnhandledErrors(Ret.takeError(), OS, "");
+    OS.flush();
+    report_fatal_error(Buf);
+  }
   return *Ret;
 }
 

@@ -10,10 +10,7 @@ define void @cmp_2_floats() {
 ; CHECK-NEXT:    cmpordps %xmm0, %xmm0
 ; CHECK-NEXT:    pmovzxdq {{.*#+}} xmm0 = xmm0[0],zero,xmm0[1],zero
 ; CHECK-NEXT:    psllq $32, %xmm0
-; CHECK-NEXT:    pshufd {{.*#+}} xmm1 = xmm0[1,1,3,3]
-; CHECK-NEXT:    psrad $31, %xmm0
-; CHECK-NEXT:    pblendw {{.*#+}} xmm0 = xmm1[0,1],xmm0[2,3],xmm1[4,5],xmm0[6,7]
-; CHECK-NEXT:    pshufd {{.*#+}} xmm0 = xmm0[0,2,2,3]
+; CHECK-NEXT:    pshufd {{.*#+}} xmm0 = xmm0[1,3,2,3]
 ; CHECK-NEXT:    pslld $31, %xmm0
 ; CHECK-NEXT:    blendvps %xmm0, %xmm0
 ; CHECK-NEXT:    movlps %xmm0, (%rax)
@@ -42,7 +39,7 @@ entry:
 define void @mp_11193(<8 x float> * nocapture %aFOO, <8 x float>* nocapture %RET) nounwind {
 ; CHECK-LABEL: mp_11193:
 ; CHECK:       # BB#0: # %allocas
-; CHECK-NEXT:    movl $-1082130432, (%rsi) # imm = 0xFFFFFFFFBF800000
+; CHECK-NEXT:    movl $-1082130432, (%rsi) # imm = 0xBF800000
 ; CHECK-NEXT:    retq
 allocas:
   %bincmp = fcmp olt <8 x float> <float 1.000000e+00, float 1.000000e+00, float 1.000000e+00, float 1.000000e+00, float 9.000000e+00, float 1.000000e+00, float 9.000000e+00, float 1.000000e+00> , <float 3.000000e+00, float 3.000000e+00, float 3.000000e+00, float 3.000000e+00, float 3.000000e+00, float 3.000000e+00, float 3.000000e+00, float 3.000000e+00>

@@ -17,6 +17,7 @@
 
 #include "llvm-objdump.h"
 #include "llvm/Object/COFF.h"
+#include "llvm/Object/COFFImportFile.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/SourceMgr.h"
@@ -161,13 +162,13 @@ static std::error_code
 resolveSectionAndAddress(const COFFObjectFile *Obj, const SymbolRef &Sym,
                          const coff_section *&ResolvedSection,
                          uint64_t &ResolvedAddr) {
-  ErrorOr<uint64_t> ResolvedAddrOrErr = Sym.getAddress();
-  if (std::error_code EC = ResolvedAddrOrErr.getError())
-    return EC;
+  Expected<uint64_t> ResolvedAddrOrErr = Sym.getAddress();
+  if (!ResolvedAddrOrErr)
+    return errorToErrorCode(ResolvedAddrOrErr.takeError());
   ResolvedAddr = *ResolvedAddrOrErr;
-  ErrorOr<section_iterator> Iter = Sym.getSection();
-  if (std::error_code EC = Iter.getError())
-    return EC;
+  Expected<section_iterator> Iter = Sym.getSection();
+  if (!Iter)
+    return errorToErrorCode(Iter.takeError());
   ResolvedSection = Obj->getCOFFSection(**Iter);
   return std::error_code();
 }
@@ -215,9 +216,9 @@ static std::error_code resolveSymbolName(const std::vector<RelocationRef> &Rels,
   SymbolRef Sym;
   if (std::error_code EC = resolveSymbol(Rels, Offset, Sym))
     return EC;
-  ErrorOr<StringRef> NameOrErr = Sym.getName();
-  if (std::error_code EC = NameOrErr.getError())
-    return EC;
+  Expected<StringRef> NameOrErr = Sym.getName();
+  if (!NameOrErr)
+    return errorToErrorCode(NameOrErr.takeError());
   Name = *NameOrErr;
   return std::error_code();
 }
@@ -352,11 +353,11 @@ static void printImportTables(const COFFObjectFile *Obj) {
   if (I == E)
     return;
   outs() << "The Import Tables:\n";
-  for (; I != E; I = ++I) {
-    const import_directory_table_entry *Dir;
+  for (const ImportDirectoryEntryRef &DirRef : Obj->import_directories()) {
+    const coff_import_directory_table_entry *Dir;
     StringRef Name;
-    if (I->getImportTableEntry(Dir)) return;
-    if (I->getName(Name)) return;
+    if (DirRef.getImportTableEntry(Dir)) return;
+    if (DirRef.getName(Name)) return;
 
     outs() << format("  lookup %08x time %08x fwd %08x name %08x addr %08x\n\n",
                      static_cast<uint32_t>(Dir->ImportLookupTableRVA),
@@ -366,17 +367,23 @@ static void printImportTables(const COFFObjectFile *Obj) {
                      static_cast<uint32_t>(Dir->ImportAddressTableRVA));
     outs() << "    DLL Name: " << Name << "\n";
     outs() << "    Hint/Ord  Name\n";
-    const import_lookup_table_entry32 *entry;
-    if (I->getImportLookupEntry(entry))
-      return;
-    for (; entry->Data; ++entry) {
-      if (entry->isOrdinal()) {
-        outs() << format("      % 6d\n", entry->getOrdinal());
+    for (const ImportedSymbolRef &Entry : DirRef.imported_symbols()) {
+      bool IsOrdinal;
+      if (Entry.isOrdinal(IsOrdinal))
+        return;
+      if (IsOrdinal) {
+        uint16_t Ordinal;
+        if (Entry.getOrdinal(Ordinal))
+          return;
+        outs() << format("      % 6d\n", Ordinal);
         continue;
       }
+      uint32_t HintNameRVA;
+      if (Entry.getHintNameRVA(HintNameRVA))
+        return;
       uint16_t Hint;
       StringRef Name;
-      if (Obj->getHintName(entry->getHintNameRVA(), Hint, Name))
+      if (Obj->getHintName(HintNameRVA, Hint, Name))
         return;
       outs() << format("      % 6d  ", Hint) << Name << "\n";
     }
@@ -611,6 +618,29 @@ void llvm::printCOFFFileHeader(const object::ObjectFile *Obj) {
   printExportTable(file);
 }
 
+void llvm::printCOFFSymbolTable(const object::COFFImportFile *i) {
+  unsigned Index = 0;
+  bool IsCode = i->getCOFFImportHeader()->getType() == COFF::IMPORT_CODE;
+
+  for (const object::BasicSymbolRef &Sym : i->symbols()) {
+    std::string Name;
+    raw_string_ostream NS(Name);
+
+    Sym.printName(NS);
+    NS.flush();
+
+    outs() << "[" << format("%2d", Index) << "]"
+           << "(sec " << format("%2d", 0) << ")"
+           << "(fl 0x00)" // Flag bits, which COFF doesn't have.
+           << "(ty " << format("%3x", (IsCode && Index) ? 32 : 0) << ")"
+           << "(scl " << format("%3x", 0) << ") "
+           << "(nx " << 0 << ") "
+           << "0x" << format("%08x", 0) << " " << Name << '\n';
+
+    ++Index;
+  }
+}
+
 void llvm::printCOFFSymbolTable(const COFFObjectFile *coff) {
   for (unsigned SI = 0, SE = coff->getNumberOfSymbols(); SI != SE; ++SI) {
     ErrorOr<COFFSymbolRef> Symbol = coff->getSymbol(SI);
@@ -653,6 +683,13 @@ void llvm::printCOFFSymbolTable(const COFFObjectFile *coff) {
 
         SI = SI + Symbol->getNumberOfAuxSymbols();
         break;
+      } else if (Symbol->isWeakExternal()) {
+        const coff_aux_weak_external *awe;
+        error(coff->getAuxSymbol<coff_aux_weak_external>(SI + 1, awe));
+
+        outs() << "AUX " << format("indx %d srch %d\n",
+                                   static_cast<uint32_t>(awe->TagIndex),
+                                   static_cast<uint32_t>(awe->Characteristics));
       } else {
         outs() << "AUX Unknown\n";
       }

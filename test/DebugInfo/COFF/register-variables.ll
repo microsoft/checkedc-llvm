@@ -38,10 +38,10 @@
 ; ASM:         testl   %esi, %esi
 ; ASM:         je      .LBB0_2
 ; ASM: # BB#1:                                 # %if.then
-; ASM:         #DEBUG_VALUE: c <- %EAX
-; ASM:         #DEBUG_VALUE: inlineinc:a <- %EAX
-; ASM:         #DEBUG_VALUE: a <- %EAX
-; ASM:         #DEBUG_VALUE: f:p <- %ESI
+; ASM-DAG:     #DEBUG_VALUE: c <- %EAX
+; ASM-DAG:     #DEBUG_VALUE: inlineinc:a <- %EAX
+; ASM-DAG:     #DEBUG_VALUE: a <- %EAX
+; ASM-DAG:     #DEBUG_VALUE: f:p <- %ESI
 ; ASM:         incl    %eax
 ; ASM: [[after_inc_eax:\.Ltmp.*]]:
 ; ASM:         #DEBUG_VALUE: inlineinc:b <- %EAX
@@ -54,7 +54,7 @@
 ; ASM:         addq    $32, %rsp
 ; ASM:         popq    %rsi
 ; ASM: [[func_end:\.Ltmp.*]]:
-; ASM:         rex64 jmp       putint          # TAILCALL
+; ASM:         jmp     putint                  # TAILCALL
 
 ; ASM:         .short  4414                    # Record kind: S_LOCAL
 ; ASM:         .asciz  "p"
@@ -239,11 +239,10 @@ attributes #3 = { nounwind }
 !llvm.module.flags = !{!25, !26, !27}
 !llvm.ident = !{!28}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.9.0 (trunk 260617) (llvm/trunk 260619)", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, subprograms: !3, globals: !22)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 3.9.0 (trunk 260617) (llvm/trunk 260619)", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, globals: !22)
 !1 = !DIFile(filename: "t.cpp", directory: "D:\5Csrc\5Cllvm\5Cbuild")
 !2 = !{}
-!3 = !{!4, !16}
-!4 = distinct !DISubprogram(name: "f", scope: !1, file: !1, line: 9, type: !5, isLocal: false, isDefinition: true, scopeLine: 9, flags: DIFlagPrototyped, isOptimized: true, variables: !8)
+!4 = distinct !DISubprogram(name: "f", scope: !1, file: !1, line: 9, type: !5, isLocal: false, isDefinition: true, scopeLine: 9, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !8)
 !5 = !DISubroutineType(types: !6)
 !6 = !{null, !7}
 !7 = !DIBasicType(name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
@@ -255,7 +254,7 @@ attributes #3 = { nounwind }
 !13 = !DILocalVariable(name: "b", scope: !11, file: !1, line: 12, type: !7)
 !14 = !DILocalVariable(name: "c", scope: !15, file: !1, line: 15, type: !7)
 !15 = distinct !DILexicalBlock(scope: !12, file: !1, line: 14, column: 10)
-!16 = distinct !DISubprogram(name: "inlineinc", scope: !1, file: !1, line: 4, type: !17, isLocal: true, isDefinition: true, scopeLine: 4, flags: DIFlagPrototyped, isOptimized: true, variables: !19)
+!16 = distinct !DISubprogram(name: "inlineinc", scope: !1, file: !1, line: 4, type: !17, isLocal: true, isDefinition: true, scopeLine: 4, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !19)
 !17 = !DISubroutineType(types: !18)
 !18 = !{!7, !7}
 !19 = !{!20, !21}

@@ -13,7 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/LowerGuardIntrinsic.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
@@ -21,17 +21,25 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
+#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 using namespace llvm;
 
+static cl::opt<uint32_t> PredicatePassBranchWeight(
+    "guards-predicate-pass-branch-weight", cl::Hidden, cl::init(1 << 20),
+    cl::desc("The probability of a guard failing is assumed to be the "
+             "reciprocal of this value (default = 1 << 20)"));
+
 namespace {
-struct LowerGuardIntrinsic : public FunctionPass {
+struct LowerGuardIntrinsicLegacyPass : public FunctionPass {
   static char ID;
-  LowerGuardIntrinsic() : FunctionPass(ID) {
-    initializeLowerGuardIntrinsicPass(*PassRegistry::getPassRegistry());
+  LowerGuardIntrinsicLegacyPass() : FunctionPass(ID) {
+    initializeLowerGuardIntrinsicLegacyPassPass(
+        *PassRegistry::getPassRegistry());
   }
 
   bool runOnFunction(Function &F) override;
@@ -56,6 +64,13 @@ static void MakeGuardControlFlowExplicit(Function *DeoptIntrinsic,
   CheckBI->getSuccessor(0)->setName("guarded");
   CheckBI->getSuccessor(1)->setName("deopt");
 
+  if (auto *MD = CI->getMetadata(LLVMContext::MD_make_implicit))
+    CheckBI->setMetadata(LLVMContext::MD_make_implicit, MD);
+
+  MDBuilder MDB(CI->getContext());
+  CheckBI->setMetadata(LLVMContext::MD_prof,
+                       MDB.createBranchWeights(PredicatePassBranchWeight, 1));
+
   IRBuilder<> B(DeoptBlockTerm);
   auto *DeoptCall = B.CreateCall(DeoptIntrinsic, Args, {DeoptOB}, "");
 
@@ -66,10 +81,11 @@ static void MakeGuardControlFlowExplicit(Function *DeoptIntrinsic,
     B.CreateRet(DeoptCall);
   }
 
+  DeoptCall->setCallingConv(CI->getCallingConv());
   DeoptBlockTerm->eraseFromParent();
 }
 
-bool LowerGuardIntrinsic::runOnFunction(Function &F) {
+static bool lowerGuardIntrinsic(Function &F) {
   // Check if we can cheaply rule out the possibility of not having any work to
   // do.
   auto *GuardDecl = F.getParent()->getFunction(
@@ -89,6 +105,7 @@ bool LowerGuardIntrinsic::runOnFunction(Function &F) {
 
   auto *DeoptIntrinsic = Intrinsic::getDeclaration(
       F.getParent(), Intrinsic::experimental_deoptimize, {F.getReturnType()});
+  DeoptIntrinsic->setCallingConv(GuardDecl->getCallingConv());
 
   for (auto *CI : ToLower) {
     MakeGuardControlFlowExplicit(DeoptIntrinsic, CI);
@@ -98,11 +115,23 @@ bool LowerGuardIntrinsic::runOnFunction(Function &F) {
   return true;
 }
 
-char LowerGuardIntrinsic::ID = 0;
-INITIALIZE_PASS(LowerGuardIntrinsic, "lower-guard-intrinsic",
+bool LowerGuardIntrinsicLegacyPass::runOnFunction(Function &F) {
+  return lowerGuardIntrinsic(F);
+}
+
+char LowerGuardIntrinsicLegacyPass::ID = 0;
+INITIALIZE_PASS(LowerGuardIntrinsicLegacyPass, "lower-guard-intrinsic",
                 "Lower the guard intrinsic to normal control flow", false,
                 false)
 
 Pass *llvm::createLowerGuardIntrinsicPass() {
-  return new LowerGuardIntrinsic();
+  return new LowerGuardIntrinsicLegacyPass();
+}
+
+PreservedAnalyses LowerGuardIntrinsicPass::run(Function &F,
+                                               FunctionAnalysisManager &AM) {
+  if (lowerGuardIntrinsic(F))
+    return PreservedAnalyses::none();
+
+  return PreservedAnalyses::all();
 }

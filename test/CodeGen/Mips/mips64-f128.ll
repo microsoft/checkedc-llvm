@@ -1,11 +1,11 @@
 ; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips4 -mattr=+soft-float -O1 \
-; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefix=ALL -check-prefix=C_CC_FMT -check-prefix=PRER6
+; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefixes=ALL,C_CC_FMT,PRER6
 ; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips64 -mattr=+soft-float -O1 \
-; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefix=ALL -check-prefix=C_CC_FMT -check-prefix=PRER6
+; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefixes=ALL,C_CC_FMT,PRER6
 ; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips64r2 -mattr=+soft-float -O1 \
-; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefix=ALL -check-prefix=C_CC_FMT -check-prefix=PRER6
+; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefixes=ALL,C_CC_FMT,PRER6
 ; RUN: llc -mtriple=mips64el-unknown-unknown -mcpu=mips64r6 -mattr=+soft-float -O1 \
-; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefix=ALL -check-prefix=CMP_CC_FMT -check-prefix=R6
+; RUN:     -disable-mips-delay-filler < %s | FileCheck %s -check-prefixes=ALL,CMP_CC_FMT,R6
 
 @gld0 = external global fp128
 @gld1 = external global fp128
@@ -548,7 +548,7 @@ entry:
 ; ALL:   lw   $4, 0($[[R0]])
 ; ALL:   ld   $25, %call16(__extendsftf2)
 ; PRER6: jalr $25
-; R6:    jialc $25, 0
+; R6:    jalrc $25
 
 define fp128 @load_LD_float() {
 entry:
@@ -562,7 +562,7 @@ entry:
 ; ALL:   ld   $4, 0($[[R0]])
 ; ALL:   ld   $25, %call16(__extenddftf2)
 ; PRER6: jalr $25
-; R6:    jialc $25, 0
+; R6:    jalrc $25
 
 define fp128 @load_LD_double() {
 entry:
@@ -592,7 +592,7 @@ entry:
 ; ALL:   ld   $5, 8($[[R0]])
 ; ALL:   ld   $25, %call16(__trunctfsf2)
 ; PRER6: jalr $25
-; R6:    jialc $25, 0
+; R6:    jalrc $25
 ; ALL:   ld   $[[R1:[0-9]+]], %got_disp(gf1)
 ; ALL:   sw   $2, 0($[[R1]])
 
@@ -610,7 +610,7 @@ entry:
 ; ALL:   ld   $5, 8($[[R0]])
 ; ALL:   ld   $25, %call16(__trunctfdf2)
 ; PRER6: jalr $25
-; R6:    jialc $25, 0
+; R6:    jalrc $25
 ; ALL:   ld   $[[R1:[0-9]+]], %got_disp(gd1)
 ; ALL:   sd   $2, 0($[[R1]])
 
@@ -653,7 +653,7 @@ entry:
 ; ALL:           move $[[R3:[0-9]+]], $8
 ; ALL:           ld   $25, %call16(__gttf2)($gp)
 ; PRER6:         jalr $25
-; R6:            jialc $25, 0
+; R6:            jalrc $25
 
 ; C_CC_FMT:      slti $[[CC:[0-9]+]], $2, 1
 ; C_CC_FMT:      movz $[[R1]], $[[R3]], $[[CC]]

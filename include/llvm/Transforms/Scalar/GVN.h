@@ -45,7 +45,7 @@ class GVN : public PassInfoMixin<GVN> {
 public:
 
   /// \brief Run the pass over the function.
-  PreservedAnalyses run(Function &F, AnalysisManager<Function> &AM);
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 
   /// This removes the specified instruction from
   /// our various maps and marks it for deletion.
@@ -58,11 +58,7 @@ public:
   AliasAnalysis *getAliasAnalysis() const { return VN.getAliasAnalysis(); }
   MemoryDependenceResults &getMemDep() const { return *MD; }
 
-private:
-  friend class gvn::GVNLegacyPass;
-
   struct Expression;
-  friend struct DenseMapInfo<Expression>;
 
   /// This class holds the mapping between values and value numbers.  It is used
   /// as an efficient mechanism to determine the expression-wise equivalence of
@@ -76,12 +72,11 @@ private:
 
     uint32_t nextValueNumber;
 
-    Expression create_expression(Instruction *I);
-    Expression create_cmp_expression(unsigned Opcode,
-                                     CmpInst::Predicate Predicate, Value *LHS,
-                                     Value *RHS);
-    Expression create_extractvalue_expression(ExtractValueInst *EI);
-    uint32_t lookup_or_add_call(CallInst *C);
+    Expression createExpr(Instruction *I);
+    Expression createCmpExpr(unsigned Opcode, CmpInst::Predicate Predicate,
+                             Value *LHS, Value *RHS);
+    Expression createExtractvalueExpr(ExtractValueInst *EI);
+    uint32_t lookupOrAddCall(CallInst *C);
 
   public:
     ValueTable();
@@ -89,10 +84,10 @@ private:
     ValueTable(ValueTable &&Arg);
     ~ValueTable();
 
-    uint32_t lookup_or_add(Value *V);
+    uint32_t lookupOrAdd(Value *V);
     uint32_t lookup(Value *V) const;
-    uint32_t lookup_or_add_cmp(unsigned Opcode, CmpInst::Predicate Pred,
-                               Value *LHS, Value *RHS);
+    uint32_t lookupOrAddCmp(unsigned Opcode, CmpInst::Predicate Pred,
+                            Value *LHS, Value *RHS);
     bool exists(Value *V) const;
     void add(Value *V, uint32_t num);
     void clear();
@@ -104,6 +99,10 @@ private:
     uint32_t getNextUnusedValueNumber() { return nextValueNumber; }
     void verifyRemoved(const Value *) const;
   };
+
+private:
+  friend class gvn::GVNLegacyPass;
+  friend struct DenseMapInfo<Expression>;
 
   MemoryDependenceResults *MD;
   DominatorTree *DT;
@@ -228,6 +227,13 @@ private:
 /// Create a legacy GVN pass. This also allows parameterizing whether or not
 /// loads are eliminated by the pass.
 FunctionPass *createGVNPass(bool NoLoads = false);
+
+/// \brief A simple and fast domtree-based GVN pass to hoist common expressions
+/// from sibling branches.
+struct GVNHoistPass : PassInfoMixin<GVNHoistPass> {
+  /// \brief Run the pass over the function.
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+};
 
 }
 

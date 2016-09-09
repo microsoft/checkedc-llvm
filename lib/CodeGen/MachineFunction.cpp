@@ -54,23 +54,29 @@ static cl::opt<unsigned>
 
 void MachineFunctionInitializer::anchor() {}
 
-void MachineFunctionProperties::print(raw_ostream &ROS) const {
-  // Leave this function even in NDEBUG as an out-of-line anchor.
-#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-  for (BitVector::size_type i = 0; i < Properties.size(); ++i) {
-    bool HasProperty = Properties[i];
-    switch(static_cast<Property>(i)) {
-      case Property::IsSSA:
-        ROS << (HasProperty ? "SSA, " : "Post SSA, ");
-        break;
-      case Property::AllVRegsAllocated:
-        ROS << (HasProperty ? "AllVRegsAllocated" : "HasVRegs");
-        break;
-      default:
-        break;
-    }
+static const char *getPropertyName(MachineFunctionProperties::Property Prop) {
+  typedef MachineFunctionProperties::Property P;
+  switch(Prop) {
+  case P::FailedISel: return "FailedISel";
+  case P::IsSSA: return "IsSSA";
+  case P::Legalized: return "Legalized";
+  case P::NoPHIs: return "NoPHIs";
+  case P::NoVRegs: return "NoVRegs";
+  case P::RegBankSelected: return "RegBankSelected";
+  case P::Selected: return "Selected";
+  case P::TracksLiveness: return "TracksLiveness";
   }
-#endif
+  llvm_unreachable("Invalid machine function property");
+}
+
+void MachineFunctionProperties::print(raw_ostream &OS) const {
+  const char *Separator = "";
+  for (BitVector::size_type I = 0; I < Properties.size(); ++I) {
+    if (!Properties[I])
+      continue;
+    OS << Separator << getPropertyName(static_cast<Property>(I));
+    Separator = ", ";
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -80,26 +86,43 @@ void MachineFunctionProperties::print(raw_ostream &ROS) const {
 // Out-of-line virtual method.
 MachineFunctionInfo::~MachineFunctionInfo() {}
 
-void ilist_traits<MachineBasicBlock>::deleteNode(MachineBasicBlock *MBB) {
+void ilist_alloc_traits<MachineBasicBlock>::deleteNode(MachineBasicBlock *MBB) {
   MBB->getParent()->DeleteMachineBasicBlock(MBB);
+}
+
+static inline unsigned getFnStackAlignment(const TargetSubtargetInfo *STI,
+                                           const Function *Fn) {
+  if (Fn->hasFnAttribute(Attribute::StackAlignment))
+    return Fn->getFnStackAlignment();
+  return STI->getFrameLowering()->getStackAlignment();
 }
 
 MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
                                  unsigned FunctionNum, MachineModuleInfo &mmi)
     : Fn(F), Target(TM), STI(TM.getSubtargetImpl(*F)), Ctx(mmi.getContext()),
       MMI(mmi) {
-  // Assume the function starts in SSA form.
+  FunctionNumber = FunctionNum;
+  init();
+}
+
+void MachineFunction::init() {
+  // Assume the function starts in SSA form with correct liveness.
   Properties.set(MachineFunctionProperties::Property::IsSSA);
+  Properties.set(MachineFunctionProperties::Property::TracksLiveness);
   if (STI->getRegisterInfo())
     RegInfo = new (Allocator) MachineRegisterInfo(this);
   else
     RegInfo = nullptr;
 
   MFInfo = nullptr;
-  FrameInfo = new (Allocator)
-      MachineFrameInfo(STI->getFrameLowering()->getStackAlignment(),
-                       STI->getFrameLowering()->isStackRealignable(),
-                       !F->hasFnAttribute("no-realign-stack"));
+  // We can realign the stack if the target supports it and the user hasn't
+  // explicitly asked us not to.
+  bool CanRealignSP = STI->getFrameLowering()->isStackRealignable() &&
+                      !Fn->hasFnAttribute("no-realign-stack");
+  FrameInfo = new (Allocator) MachineFrameInfo(
+      getFnStackAlignment(STI, Fn), /*StackRealignable=*/CanRealignSP,
+      /*ForceRealign=*/CanRealignSP &&
+          Fn->hasFnAttribute(Attribute::StackAlignment));
 
   if (Fn->hasFnAttribute(Attribute::StackAlignment))
     FrameInfo->ensureMaxAlignment(Fn->getFnStackAlignment());
@@ -116,15 +139,14 @@ MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
   if (AlignAllFunctions)
     Alignment = AlignAllFunctions;
 
-  FunctionNumber = FunctionNum;
   JumpTableInfo = nullptr;
 
   if (isFuncletEHPersonality(classifyEHPersonality(
-          F->hasPersonalityFn() ? F->getPersonalityFn() : nullptr))) {
+          Fn->hasPersonalityFn() ? Fn->getPersonalityFn() : nullptr))) {
     WinEHInfo = new (Allocator) WinEHFuncInfo();
   }
 
-  assert(TM.isCompatibleDataLayout(getDataLayout()) &&
+  assert(Target.isCompatibleDataLayout(getDataLayout()) &&
          "Can't create a MachineFunction using a Module with a "
          "Target-incompatible DataLayout attached\n");
 
@@ -132,6 +154,11 @@ MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
 }
 
 MachineFunction::~MachineFunction() {
+  clear();
+}
+
+void MachineFunction::clear() {
+  Properties.reset();
   // Don't call destructors on MachineInstr and MachineOperand. All of their
   // memory comes from the BumpPtrAllocator which is about to be purged.
   //
@@ -230,9 +257,9 @@ void MachineFunction::RenumberBlocks(MachineBasicBlock *MBB) {
 }
 
 /// Allocate a new MachineInstr. Use this instead of `new MachineInstr'.
-MachineInstr *
-MachineFunction::CreateMachineInstr(const MCInstrDesc &MCID,
-                                    DebugLoc DL, bool NoImp) {
+MachineInstr *MachineFunction::CreateMachineInstr(const MCInstrDesc &MCID,
+                                                  const DebugLoc &DL,
+                                                  bool NoImp) {
   return new (InstructionRecycler.Allocate<MachineInstr>(Allocator))
     MachineInstr(*this, MCID, DL, NoImp);
 }
@@ -277,13 +304,11 @@ MachineFunction::DeleteMachineBasicBlock(MachineBasicBlock *MBB) {
   BasicBlockRecycler.Deallocate(Allocator, MBB);
 }
 
-MachineMemOperand *
-MachineFunction::getMachineMemOperand(MachinePointerInfo PtrInfo, unsigned f,
-                                      uint64_t s, unsigned base_alignment,
-                                      const AAMDNodes &AAInfo,
-                                      const MDNode *Ranges) {
-  return new (Allocator) MachineMemOperand(PtrInfo, f, s, base_alignment,
-                                           AAInfo, Ranges);
+MachineMemOperand *MachineFunction::getMachineMemOperand(
+    MachinePointerInfo PtrInfo, MachineMemOperand::Flags f, uint64_t s,
+    unsigned base_alignment, const AAMDNodes &AAInfo, const MDNode *Ranges) {
+  return new (Allocator)
+      MachineMemOperand(PtrInfo, f, s, base_alignment, AAInfo, Ranges);
 }
 
 MachineMemOperand *
@@ -389,16 +414,9 @@ StringRef MachineFunction::getName() const {
   return getFunction()->getName();
 }
 
-void MachineFunction::print(raw_ostream &OS, SlotIndexes *Indexes) const {
+void MachineFunction::print(raw_ostream &OS, const SlotIndexes *Indexes) const {
   OS << "# Machine code for function " << getName() << ": ";
-  OS << "Properties: <";
   getProperties().print(OS);
-  OS << "> : ";
-  if (RegInfo) {
-    if (!RegInfo->tracksLiveness())
-      OS << "not tracking liveness";
-  }
-  OS << '\n';
 
   // Print Frame Information
   FrameInfo->print(*this, OS);
@@ -546,7 +564,7 @@ MCSymbol *MachineFunction::getPICBaseSymbol() const {
 
 /// Make sure the function is at least Align bytes aligned.
 void MachineFrameInfo::ensureMaxAlignment(unsigned Align) {
-  if (!StackRealignable || !RealignOption)
+  if (!StackRealignable)
     assert(Align <= StackAlignment &&
            "For targets without stack realignment, Align is out of limit!");
   if (MaxAlignment < Align) MaxAlignment = Align;
@@ -568,8 +586,7 @@ static inline unsigned clampStackAlignment(bool ShouldClamp, unsigned Align,
 int MachineFrameInfo::CreateStackObject(uint64_t Size, unsigned Alignment,
                       bool isSS, const AllocaInst *Alloca) {
   assert(Size != 0 && "Cannot allocate zero size stack objects!");
-  Alignment = clampStackAlignment(!StackRealignable || !RealignOption,
-                                  Alignment, StackAlignment);
+  Alignment = clampStackAlignment(!StackRealignable, Alignment, StackAlignment);
   Objects.push_back(StackObject(Size, Alignment, 0, false, isSS, Alloca,
                                 !isSS));
   int Index = (int)Objects.size() - NumFixedObjects - 1;
@@ -582,8 +599,7 @@ int MachineFrameInfo::CreateStackObject(uint64_t Size, unsigned Alignment,
 /// returning a nonnegative identifier to represent it.
 int MachineFrameInfo::CreateSpillStackObject(uint64_t Size,
                                              unsigned Alignment) {
-  Alignment = clampStackAlignment(!StackRealignable || !RealignOption,
-                                  Alignment, StackAlignment);
+  Alignment = clampStackAlignment(!StackRealignable, Alignment, StackAlignment);
   CreateStackObject(Size, Alignment, true);
   int Index = (int)Objects.size() - NumFixedObjects - 1;
   ensureMaxAlignment(Alignment);
@@ -596,8 +612,7 @@ int MachineFrameInfo::CreateSpillStackObject(uint64_t Size,
 int MachineFrameInfo::CreateVariableSizedObject(unsigned Alignment,
                                                 const AllocaInst *Alloca) {
   HasVarSizedObjects = true;
-  Alignment = clampStackAlignment(!StackRealignable || !RealignOption,
-                                  Alignment, StackAlignment);
+  Alignment = clampStackAlignment(!StackRealignable, Alignment, StackAlignment);
   Objects.push_back(StackObject(0, Alignment, 0, false, false, Alloca, true));
   ensureMaxAlignment(Alignment);
   return (int)Objects.size()-NumFixedObjects-1;
@@ -613,10 +628,11 @@ int MachineFrameInfo::CreateFixedObject(uint64_t Size, int64_t SPOffset,
   // The alignment of the frame index can be determined from its offset from
   // the incoming frame position.  If the frame object is at offset 32 and
   // the stack is guaranteed to be 16-byte aligned, then we know that the
-  // object is 16-byte aligned.
-  unsigned Align = MinAlign(SPOffset, StackAlignment);
-  Align = clampStackAlignment(!StackRealignable || !RealignOption, Align,
-                              StackAlignment);
+  // object is 16-byte aligned. Note that unlike the non-fixed case, if the
+  // stack needs realignment, we can't assume that the stack will in fact be
+  // aligned.
+  unsigned Align = MinAlign(SPOffset, ForcedRealign ? 1 : StackAlignment);
+  Align = clampStackAlignment(!StackRealignable, Align, StackAlignment);
   Objects.insert(Objects.begin(), StackObject(Size, Align, SPOffset, Immutable,
                                               /*isSS*/   false,
                                               /*Alloca*/ nullptr, isAliased));
@@ -626,12 +642,11 @@ int MachineFrameInfo::CreateFixedObject(uint64_t Size, int64_t SPOffset,
 /// Create a spill slot at a fixed location on the stack.
 /// Returns an index with a negative value.
 int MachineFrameInfo::CreateFixedSpillStackObject(uint64_t Size,
-                                                  int64_t SPOffset) {
-  unsigned Align = MinAlign(SPOffset, StackAlignment);
-  Align = clampStackAlignment(!StackRealignable || !RealignOption, Align,
-                              StackAlignment);
-  Objects.insert(Objects.begin(), StackObject(Size, Align, SPOffset,
-                                              /*Immutable*/ true,
+                                                  int64_t SPOffset,
+                                                  bool Immutable) {
+  unsigned Align = MinAlign(SPOffset, ForcedRealign ? 1 : StackAlignment);
+  Align = clampStackAlignment(!StackRealignable, Align, StackAlignment);
+  Objects.insert(Objects.begin(), StackObject(Size, Align, SPOffset, Immutable,
                                               /*isSS*/ true,
                                               /*Alloca*/ nullptr,
                                               /*isAliased*/ false));

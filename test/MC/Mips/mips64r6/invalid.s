@@ -20,7 +20,24 @@ local_label:
         break 7, -1       # CHECK: :[[@LINE]]:18: error: expected 10-bit unsigned immediate
         break 7, 1024     # CHECK: :[[@LINE]]:18: error: expected 10-bit unsigned immediate
         break 1024, 1024  # CHECK: :[[@LINE]]:15: error: expected 10-bit unsigned immediate
-        // FIXME: Following tests are temporarely disabled, until "PredicateControl not in hierarchy" problem is resolved
+        dati $2, $3, 1    # CHECK: :[[@LINE]]:9: error: source and destination must match
+        lh  $33, 8($4)    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        lhe $34, 8($2)    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        lhu $35, 8($2)    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        lhue $36, 8($2)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        lh  $2, 8($34)    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        lhe $4, 8($33)    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 9-bit signed offset
+        lhu $4, 8($35)    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        lhue $4, 8($37)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 9-bit signed offset
+        lh  $2, -65536($4) # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        lh  $2, 65536($4)  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        lhe $4, -512($2)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 9-bit signed offset
+        lhe $4, 512($2)    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 9-bit signed offset
+        lhu $4, -65536($2) # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        lhu $4, 65536($2)  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        lhue $4, -512($2)  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 9-bit signed offset
+        lhue $4, 512($2)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 9-bit signed offset
+        // FIXME: Following tests are temporarily disabled, until "PredicateControl not in hierarchy" problem is resolved
         bltl  $7, $8, local_label  # -CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
         bltul $7, $8, local_label  # -CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
         blel  $7, $8, local_label  # -CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
@@ -29,6 +46,68 @@ local_label:
         bgeul $7, $8, local_label  # -CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
         bgtl  $7, $8, local_label  # -CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
         bgtul $7, $8, local_label  # -CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
+        beqc  $0, $2, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand ($zero) for instruction
+        bnec  $0, $2, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand ($zero) for instruction
+        bgec  $2, $2, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: registers must be different
+        bltc  $2, $2, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: registers must be different
+        bgeuc $2, $2, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: registers must be different
+        bltuc $2, $2, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: registers must be different
+        beqc  $2, $2, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: registers must be different
+        bnec  $2, $2, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: registers must be different
+        blezc $0, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand ($zero) for instruction
+        bgezc $0, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand ($zero) for instruction
+        bgtzc $0, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand ($zero) for instruction
+        bltzc $0, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand ($zero) for instruction
+        beqzc $0, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand ($zero) for instruction
+        bnezc $0, local_label # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand ($zero) for instruction
+        bgec  $2, $4, -131076    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bgec  $2, $4, -131071    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bgec  $2, $4, 131072     # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bgec  $2, $4, 131071     # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bltc  $2, $4, -131076    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bltc  $2, $4, -131071    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bltc  $2, $4, 131072     # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bltc  $2, $4, 131071     # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bgeuc  $2, $4, -131076   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bgeuc  $2, $4, -131071   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bgeuc  $2, $4, 131072    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bgeuc  $2, $4, 131071    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bltuc  $2, $4, -131076   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bltuc  $2, $4, -131071   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bltuc  $2, $4, 131072    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bltuc  $2, $4, 131071    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        beqc  $2, $4, -131076    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        beqc  $2, $4, -131071    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        beqc  $2, $4, 131072     # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        beqc  $2, $4, 131071     # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bnec  $2, $4, -131076    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bnec  $2, $4, -131071    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bnec  $2, $4, 131072     # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bnec  $2, $4, 131071     # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        blezc $2, -131076        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        blezc $2, -131071        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        blezc $2, 131072         # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        blezc $2, 131071         # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bgezc $2, -131076        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bgezc $2, -131071        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bgezc $2, 131072         # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bgezc $2, 131071         # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bgtzc $2, -131076        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bgtzc $2, -131071        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bgtzc $2, 131072         # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bgtzc $2, 131071         # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bltzc $2, -131076        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bltzc $2, -131071        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bltzc $2, 131072         # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bltzc $2, 131071         # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        beqzc $2, -4194308       # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        beqzc $2, -4194303       # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        beqzc $2, 4194304        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        beqzc $2, 4194303        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bnezc $2, -4194308       # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bnezc $2, -4194303       # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
+        bnezc $2, 4194304        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch target out of range
+        bnezc $2, 4194303        # CHECK: :[[@LINE]]:{{[0-9]+}}: error: branch to misaligned address
         cache -1, 255($7)    # CHECK: :[[@LINE]]:15: error: expected 5-bit unsigned immediate
         cache 32, 255($7)    # CHECK: :[[@LINE]]:15: error: expected 5-bit unsigned immediate
         dalign  $4, $2, $3, -1    # CHECK: :[[@LINE]]:29: error: expected 3-bit unsigned immediate
@@ -47,3 +126,55 @@ local_label:
         dmtc0  $4, $3, 8     # CHECK: :[[@LINE]]:24: error: expected 3-bit unsigned immediate
         dmfc0  $4, $3, -1    # CHECK: :[[@LINE]]:24: error: expected 3-bit unsigned immediate
         dmfc0  $4, $3, 8     # CHECK: :[[@LINE]]:24: error: expected 3-bit unsigned immediate
+        ld $2, 65536($4)     # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        ld  $2, -65536($4)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        ld $32, 65536($32)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        lld  $2, -65536($4)  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        lld  $2, 65536($4)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        sd  $2, -65536($4)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        lld $32, 4096($32)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        sd  $2, 65536($4)    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected memory with 16-bit signed offset
+        sd $32, 65536($32)   # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        dsrl $2, $4, 64      # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected 6-bit unsigned immediate
+        dsrl $2, $4, -2      # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected 6-bit unsigned immediate
+        dsrl $32, $32, 32    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        dsrl32 $2, $4, 32    # CHECK: :[[@LINE]]:{{[0-9]+}}: error: expected 5-bit unsigned immediate
+        dsrl32 $32, $32, 32  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        dsrlv $2, $4, 2      # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        dsrlv $32, $32, $32  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: invalid operand for instruction
+        lb $32, 8($5)        # CHECK: :[[@LINE]]:12: error: invalid operand for instruction
+        lb $4, -32769($5)    # CHECK: :[[@LINE]]:16: error: expected memory with 16-bit signed offset
+        lb $4, 32768($5)     # CHECK: :[[@LINE]]:16: error: expected memory with 16-bit signed offset
+        lb $4, 8($32)        # CHECK: :[[@LINE]]:16: error: expected memory with 16-bit signed offset
+        lbu $32, 8($5)       # CHECK: :[[@LINE]]:13: error: invalid operand for instruction
+        lbu $4, -32769($5)   # CHECK: :[[@LINE]]:17: error: expected memory with 16-bit signed offset
+        lbu $4, 32768($5)    # CHECK: :[[@LINE]]:17: error: expected memory with 16-bit signed offset
+        lbu $4, 8($32)       # CHECK: :[[@LINE]]:17: error: expected memory with 16-bit signed offset
+        ldc1 $f32, 300($10)   # CHECK: :[[@LINE]]:14: error: invalid operand for instruction
+        ldc1 $f7, -32769($10) # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        ldc1 $f7, 32768($10)  # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        ldc1 $f7, 300($32)    # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        sdc1 $f32, 64($10)    # CHECK: :[[@LINE]]:14: error: invalid operand for instruction
+        sdc1 $f7, -32769($10) # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        sdc1 $f7, 32768($10)  # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        sdc1 $f7, 64($32)     # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        lwc1 $f32, 32($5)     # CHECK: :[[@LINE]]:14: error: invalid operand for instruction
+        lwc1 $f2, -32769($5)  # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        lwc1 $f2, 32768($5)   # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        lwc1 $f2, 32($32)     # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        swc1 $f32, 369($13)   # CHECK: :[[@LINE]]:14: error: invalid operand for instruction
+        swc1 $f6, -32769($13) # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        swc1 $f6, 32768($13)  # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        swc1 $f6, 369($32)    # CHECK: :[[@LINE]]:19: error: expected memory with 16-bit signed offset
+        ldc2 $32, 1023($12)  # CHECK: :[[@LINE]]:14: error: invalid operand for instruction
+        ldc2 $11, -1025($12) # CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
+        ldc2 $11, 1024($12)  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
+        sdc2 $32, 8($16)     # CHECK: :[[@LINE]]:14: error: invalid operand for instruction
+        sdc2 $11, -1025($12) # CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
+        sdc2 $11, 1024($12)  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
+        lwc2 $32, 16($4)     # CHECK: :[[@LINE]]:14: error: invalid operand for instruction
+        lwc2 $11, -1025($12) # CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
+        lwc2 $11, 1024($12)  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
+        swc2 $32, 777($17)   # CHECK: :[[@LINE]]:14: error: invalid operand for instruction
+        swc2 $11, -1025($12) # CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled
+        swc2 $11, 1024($12)  # CHECK: :[[@LINE]]:{{[0-9]+}}: error: instruction requires a CPU feature not currently enabled

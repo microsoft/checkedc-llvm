@@ -106,10 +106,6 @@ namespace llvm {
       /// 0s or 1s.  Generally DTRT for C/C++ with NaNs.
       FSETCC,
 
-      /// X86 MOVMSK{pd|ps}, extracts sign bits of two or four FP values,
-      /// result in an integer GPR.  Needs masking for scalar result.
-      FGETSIGNx86,
-
       /// X86 conditional moves. Operand 0 and operand 1 are the two values
       /// to select from. Operand 2 is the condition code, and operand 3 is the
       /// flag operand produced by a CMP or TEST instruction. It also writes a
@@ -217,6 +213,7 @@ namespace llvm {
       VGETMANT,
       // FP Scale.
       SCALEF,
+      SCALEFS,
 
       // Integer add/sub with unsigned saturation.
       ADDUS,
@@ -253,6 +250,7 @@ namespace llvm {
       /// Note that these typically require refinement
       /// in order to obtain suitable precision.
       FRSQRT, FRCP,
+      FRSQRTS, FRCPS,
 
       // Thread Local Storage.
       TLSADDR,
@@ -273,6 +271,9 @@ namespace llvm {
 
       // SjLj exception handling longjmp.
       EH_SJLJ_LONGJMP,
+
+      // SjLj exception handling dispatch.
+      EH_SJLJ_SETUP_DISPATCH,
 
       /// Tail call return. See X86TargetLowering::LowerCall for
       /// the list of operands.
@@ -308,6 +309,11 @@ namespace llvm {
 
       // Vector shift elements
       VSHL, VSRL, VSRA,
+
+      // Vector variable shift right arithmetic.
+      // Unlike ISD::SRA, in case shift count greater then element size
+      // use sign bit to fill destination data element.
+      VSRAV,
 
       // Vector shift elements by immediate
       VSHLI, VSRLI, VSRAI,
@@ -450,6 +456,8 @@ namespace llvm {
       VPCOM, VPCOMU,
       // XOP packed permute bytes.
       VPPERM,
+      // XOP two source permutation.
+      VPERMIL2,
 
       // Vector multiply packed unsigned doubleword integers.
       PMULUDQ,
@@ -507,8 +515,6 @@ namespace llvm {
       // Memory barriers.
       MEMBARRIER,
       MFENCE,
-      SFENCE,
-      LFENCE,
 
       // Store FP status word into i16 register.
       FNSTSW16r,
@@ -744,9 +750,8 @@ namespace llvm {
     bool hasCopyImplyingStackAdjustment(MachineFunction *MF) const override;
 
     MachineBasicBlock *
-      EmitInstrWithCustomInserter(MachineInstr *MI,
-                                  MachineBasicBlock *MBB) const override;
-
+    EmitInstrWithCustomInserter(MachineInstr &MI,
+                                MachineBasicBlock *MBB) const override;
 
     /// This method returns the name of a target specific DAG node.
     const char *getTargetNodeName(unsigned Opcode) const override;
@@ -754,6 +759,32 @@ namespace llvm {
     bool isCheapToSpeculateCttz() const override;
 
     bool isCheapToSpeculateCtlz() const override;
+
+    bool hasBitPreservingFPLogic(EVT VT) const override {
+      return VT == MVT::f32 || VT == MVT::f64 || VT.isVector();
+    }
+
+    bool isMultiStoresCheaperThanBitsMerge(SDValue Lo,
+                                           SDValue Hi) const override {
+      // If the pair to store is a mixture of float and int values, we will
+      // save two bitwise instructions and one float-to-int instruction and
+      // increase one store instruction. There is potentially a more
+      // significant benefit because it avoids the float->int domain switch
+      // for input value. So It is more likely a win.
+      if (Lo.getOpcode() == ISD::BITCAST || Hi.getOpcode() == ISD::BITCAST) {
+        SDValue Opd = (Lo.getOpcode() == ISD::BITCAST) ? Lo.getOperand(0)
+                                                       : Hi.getOperand(0);
+        if (Opd.getValueType().isFloatingPoint())
+          return true;
+      }
+      // If the pair only contains int values, we will save two bitwise
+      // instructions and increase one store instruction (costing one more
+      // store buffer). Since the benefit is more blurred so we leave
+      // such pair out until we get testcase to prove it is a win.
+      return false;
+    }
+
+    bool hasAndNotCompare(SDValue Y) const override;
 
     /// Return the value type to use for ISD::SETCC.
     EVT getSetCCResultType(const DataLayout &DL, LLVMContext &Context,
@@ -962,7 +993,12 @@ namespace llvm {
 
     /// If the target has a standard location for the stack protector cookie,
     /// returns the address of that location. Otherwise, returns nullptr.
-    Value *getStackCookieLocation(IRBuilder<> &IRB) const override;
+    Value *getIRStackGuard(IRBuilder<> &IRB) const override;
+
+    bool useLoadStackGuardNode() const override;
+    void insertSSPDeclarations(Module &M) const override;
+    Value *getSDagStackGuard(const Module &M) const override;
+    Value *getSSPStackGuardCheck(const Module &M) const override;
 
     /// Return true if the target stores SafeStack pointer at a fixed offset in
     /// some non-standard address space, and populates the address space and
@@ -974,11 +1010,14 @@ namespace llvm {
 
     bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override;
 
-    bool useLoadStackGuardNode() const override;
     /// \brief Customize the preferred legalization strategy for certain types.
     LegalizeTypeAction getPreferredVectorAction(EVT VT) const override;
 
     bool isIntDivCheap(EVT VT, AttributeSet Attr) const override;
+
+    bool supportSwiftError() const override {
+      return true;
+    }
 
   protected:
     std::pair<const TargetRegisterClass *, uint8_t>
@@ -1008,16 +1047,15 @@ namespace llvm {
     SDValue LowerCallResult(SDValue Chain, SDValue InFlag,
                             CallingConv::ID CallConv, bool isVarArg,
                             const SmallVectorImpl<ISD::InputArg> &Ins,
-                            SDLoc dl, SelectionDAG &DAG,
+                            const SDLoc &dl, SelectionDAG &DAG,
                             SmallVectorImpl<SDValue> &InVals) const;
-    SDValue LowerMemArgument(SDValue Chain,
-                             CallingConv::ID CallConv,
+    SDValue LowerMemArgument(SDValue Chain, CallingConv::ID CallConv,
                              const SmallVectorImpl<ISD::InputArg> &ArgInfo,
-                             SDLoc dl, SelectionDAG &DAG,
-                             const CCValAssign &VA,  MachineFrameInfo *MFI,
-                              unsigned i) const;
+                             const SDLoc &dl, SelectionDAG &DAG,
+                             const CCValAssign &VA, MachineFrameInfo &MFI,
+                             unsigned i) const;
     SDValue LowerMemOpCallTo(SDValue Chain, SDValue StackPtr, SDValue Arg,
-                             SDLoc dl, SelectionDAG &DAG,
+                             const SDLoc &dl, SelectionDAG &DAG,
                              const CCValAssign &VA,
                              ISD::ArgFlagsTy Flags) const;
 
@@ -1036,8 +1074,9 @@ namespace llvm {
                                     const SmallVectorImpl<ISD::InputArg> &Ins,
                                            SelectionDAG& DAG) const;
     SDValue EmitTailCallLoadRetAddr(SelectionDAG &DAG, SDValue &OutRetAddr,
-                                SDValue Chain, bool IsTailCall, bool Is64Bit,
-                                int FPDiff, SDLoc dl) const;
+                                    SDValue Chain, bool IsTailCall,
+                                    bool Is64Bit, int FPDiff,
+                                    const SDLoc &dl) const;
 
     unsigned GetAlignedArgumentStackSize(unsigned StackSize,
                                          SelectionDAG &DAG) const;
@@ -1058,7 +1097,7 @@ namespace llvm {
     SDValue LowerINSERT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerConstantPool(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerBlockAddress(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerGlobalAddress(const GlobalValue *GV, SDLoc dl,
+    SDValue LowerGlobalAddress(const GlobalValue *GV, const SDLoc &dl,
                                int64_t Offset, SelectionDAG &DAG) const;
     SDValue LowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const;
@@ -1071,8 +1110,8 @@ namespace llvm {
     SDValue LowerTRUNCATE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFP_TO_SINT(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFP_TO_UINT(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerToBT(SDValue And, ISD::CondCode CC,
-                      SDLoc dl, SelectionDAG &DAG) const;
+    SDValue LowerToBT(SDValue And, ISD::CondCode CC, const SDLoc &dl,
+                      SelectionDAG &DAG) const;
     SDValue LowerSETCC(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerSETCCE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerSELECT(SDValue Op, SelectionDAG &DAG) const;
@@ -1087,6 +1126,7 @@ namespace llvm {
     SDValue LowerEH_RETURN(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerEH_SJLJ_SETJMP(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerEH_SJLJ_LONGJMP(SDValue Op, SelectionDAG &DAG) const;
+    SDValue lowerEH_SJLJ_SETUP_DISPATCH(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerINIT_TRAMPOLINE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFLT_ROUNDS_(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerWin64_i128OP(SDValue Op, SelectionDAG &DAG) const;
@@ -1094,19 +1134,17 @@ namespace llvm {
     SDValue LowerGC_TRANSITION_END(SDValue Op, SelectionDAG &DAG) const;
 
     SDValue
-      LowerFormalArguments(SDValue Chain,
-                           CallingConv::ID CallConv, bool isVarArg,
-                           const SmallVectorImpl<ISD::InputArg> &Ins,
-                           SDLoc dl, SelectionDAG &DAG,
-                           SmallVectorImpl<SDValue> &InVals) const override;
+    LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv, bool isVarArg,
+                         const SmallVectorImpl<ISD::InputArg> &Ins,
+                         const SDLoc &dl, SelectionDAG &DAG,
+                         SmallVectorImpl<SDValue> &InVals) const override;
     SDValue LowerCall(CallLoweringInfo &CLI,
                       SmallVectorImpl<SDValue> &InVals) const override;
 
-    SDValue LowerReturn(SDValue Chain,
-                        CallingConv::ID CallConv, bool isVarArg,
+    SDValue LowerReturn(SDValue Chain, CallingConv::ID CallConv, bool isVarArg,
                         const SmallVectorImpl<ISD::OutputArg> &Outs,
                         const SmallVectorImpl<SDValue> &OutVals,
-                        SDLoc dl, SelectionDAG &DAG) const override;
+                        const SDLoc &dl, SelectionDAG &DAG) const override;
 
     bool supportSplitCSR(MachineFunction *MF) const override {
       return MF->getFunction()->getCallingConv() == CallingConv::CXX_FAST_TLS &&
@@ -1142,61 +1180,67 @@ namespace llvm {
 
     bool needsCmpXchgNb(Type *MemType) const;
 
+    void SetupEntryBlockForSjLj(MachineInstr &MI, MachineBasicBlock *MBB,
+                                MachineBasicBlock *DispatchBB, int FI) const;
+
     // Utility function to emit the low-level va_arg code for X86-64.
-    MachineBasicBlock *EmitVAARG64WithCustomInserter(
-                       MachineInstr *MI,
-                       MachineBasicBlock *MBB) const;
+    MachineBasicBlock *
+    EmitVAARG64WithCustomInserter(MachineInstr &MI,
+                                  MachineBasicBlock *MBB) const;
 
     /// Utility function to emit the xmm reg save portion of va_start.
-    MachineBasicBlock *EmitVAStartSaveXMMRegsWithCustomInserter(
-                                                   MachineInstr *BInstr,
-                                                   MachineBasicBlock *BB) const;
+    MachineBasicBlock *
+    EmitVAStartSaveXMMRegsWithCustomInserter(MachineInstr &BInstr,
+                                             MachineBasicBlock *BB) const;
 
-    MachineBasicBlock *EmitLoweredSelect(MachineInstr *I,
+    MachineBasicBlock *EmitLoweredSelect(MachineInstr &I,
                                          MachineBasicBlock *BB) const;
 
-    MachineBasicBlock *EmitLoweredAtomicFP(MachineInstr *I,
+    MachineBasicBlock *EmitLoweredAtomicFP(MachineInstr &I,
                                            MachineBasicBlock *BB) const;
 
-    MachineBasicBlock *EmitLoweredWinAlloca(MachineInstr *MI,
-                                              MachineBasicBlock *BB) const;
-
-    MachineBasicBlock *EmitLoweredCatchRet(MachineInstr *MI,
+    MachineBasicBlock *EmitLoweredCatchRet(MachineInstr &MI,
                                            MachineBasicBlock *BB) const;
 
-    MachineBasicBlock *EmitLoweredCatchPad(MachineInstr *MI,
+    MachineBasicBlock *EmitLoweredCatchPad(MachineInstr &MI,
                                            MachineBasicBlock *BB) const;
 
-    MachineBasicBlock *EmitLoweredSegAlloca(MachineInstr *MI,
+    MachineBasicBlock *EmitLoweredSegAlloca(MachineInstr &MI,
                                             MachineBasicBlock *BB) const;
 
-    MachineBasicBlock *EmitLoweredTLSAddr(MachineInstr *MI,
+    MachineBasicBlock *EmitLoweredTLSAddr(MachineInstr &MI,
                                           MachineBasicBlock *BB) const;
 
-    MachineBasicBlock *EmitLoweredTLSCall(MachineInstr *MI,
+    MachineBasicBlock *EmitLoweredTLSCall(MachineInstr &MI,
                                           MachineBasicBlock *BB) const;
 
-    MachineBasicBlock *emitEHSjLjSetJmp(MachineInstr *MI,
+    MachineBasicBlock *emitEHSjLjSetJmp(MachineInstr &MI,
                                         MachineBasicBlock *MBB) const;
 
-    MachineBasicBlock *emitEHSjLjLongJmp(MachineInstr *MI,
+    MachineBasicBlock *emitEHSjLjLongJmp(MachineInstr &MI,
                                          MachineBasicBlock *MBB) const;
 
-    MachineBasicBlock *emitFMA3Instr(MachineInstr *MI,
+    MachineBasicBlock *emitFMA3Instr(MachineInstr &MI,
                                      MachineBasicBlock *MBB) const;
+
+    MachineBasicBlock *EmitSjLjDispatchBlock(MachineInstr &MI,
+                                             MachineBasicBlock *MBB) const;
 
     /// Emit nodes that will be selected as "test Op0,Op0", or something
     /// equivalent, for use with the given x86 condition code.
-    SDValue EmitTest(SDValue Op0, unsigned X86CC, SDLoc dl,
+    SDValue EmitTest(SDValue Op0, unsigned X86CC, const SDLoc &dl,
                      SelectionDAG &DAG) const;
 
     /// Emit nodes that will be selected as "cmp Op0,Op1", or something
     /// equivalent, for use with the given x86 condition code.
-    SDValue EmitCmp(SDValue Op0, SDValue Op1, unsigned X86CC, SDLoc dl,
+    SDValue EmitCmp(SDValue Op0, SDValue Op1, unsigned X86CC, const SDLoc &dl,
                     SelectionDAG &DAG) const;
 
     /// Convert a comparison if required by the subtarget.
     SDValue ConvertCmpIfNecessary(SDValue Cmp, SelectionDAG &DAG) const;
+
+    /// Check if replacement of SQRT with RSQRT should be disabled.
+    bool isFsqrtCheap(SDValue Operand, SelectionDAG &DAG) const override;
 
     /// Use rsqrt* to speed up sqrt calculations.
     SDValue getRsqrtEstimate(SDValue Operand, DAGCombinerInfo &DCI,

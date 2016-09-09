@@ -32,7 +32,6 @@ define void @bitcast_fp_to_vector_extract_0(i32 addrspace(1)* %out, double addrs
 ; GCN-LABEL: {{^}}bitcast_int_to_fpvector_extract_0:
 ; GCN: buffer_load_dwordx2
 ; GCN: v_add_i32
-; GCN: v_addc_u32
 ; GCN: buffer_store_dword
 define void @bitcast_int_to_fpvector_extract_0(float addrspace(1)* %out, i64 addrspace(1)* %in, i64 %b) {
    %a = load i64, i64 addrspace(1)* %in
@@ -41,4 +40,38 @@ define void @bitcast_int_to_fpvector_extract_0(float addrspace(1)* %out, i64 add
    %extract = extractelement <2 x float> %val.bc, i32 0
    store float %extract, float addrspace(1)* %out
    ret void
+}
+
+; GCN-LABEL: {{^}}no_extract_volatile_load_extract0:
+; GCN: buffer_load_dwordx4
+; GCN: buffer_store_dword v
+define void @no_extract_volatile_load_extract0(i32 addrspace(1)* %out, <4 x i32> addrspace(1)* %in) {
+entry:
+  %vec = load volatile <4 x i32>, <4 x i32> addrspace(1)* %in
+  %elt0 = extractelement <4 x i32> %vec, i32 0
+  store i32 %elt0, i32 addrspace(1)* %out
+  ret void
+}
+
+; GCN-LABEL: {{^}}no_extract_volatile_load_extract2:
+; GCN: buffer_load_dwordx4
+; GCN: buffer_store_dword v
+
+define void @no_extract_volatile_load_extract2(i32 addrspace(1)* %out, <4 x i32> addrspace(1)* %in) {
+entry:
+  %vec = load volatile <4 x i32>, <4 x i32> addrspace(1)* %in
+  %elt2 = extractelement <4 x i32> %vec, i32 2
+  store i32 %elt2, i32 addrspace(1)* %out
+  ret void
+}
+
+; GCN-LABEL: {{^}}no_extract_volatile_load_dynextract:
+; GCN: buffer_load_dwordx4
+; GCN: buffer_store_dword v
+define void @no_extract_volatile_load_dynextract(i32 addrspace(1)* %out, <4 x i32> addrspace(1)* %in, i32 %idx) {
+entry:
+  %vec = load volatile <4 x i32>, <4 x i32> addrspace(1)* %in
+  %eltN = extractelement <4 x i32> %vec, i32 %idx
+  store i32 %eltN, i32 addrspace(1)* %out
+  ret void
 }

@@ -274,13 +274,13 @@ def : VFP2MnemonicAlias<"fstmdbd", "vstmdb">;
 def : VFP2MnemonicAlias<"fstmead", "vstmia">;
 def : VFP2MnemonicAlias<"fstmfdd", "vstmdb">;
 
-def : InstAlias<"vpush${p} $r", (VSTMDDB_UPD SP, pred:$p, dpr_reglist:$r)>,
+def : InstAlias<"vpush${p} $r", (VSTMDDB_UPD SP, pred:$p, dpr_reglist:$r), 0>,
                 Requires<[HasVFP2]>;
-def : InstAlias<"vpush${p} $r", (VSTMSDB_UPD SP, pred:$p, spr_reglist:$r)>,
+def : InstAlias<"vpush${p} $r", (VSTMSDB_UPD SP, pred:$p, spr_reglist:$r), 0>,
                 Requires<[HasVFP2]>;
-def : InstAlias<"vpop${p} $r",  (VLDMDIA_UPD SP, pred:$p, dpr_reglist:$r)>,
+def : InstAlias<"vpop${p} $r",  (VLDMDIA_UPD SP, pred:$p, dpr_reglist:$r), 0>,
                 Requires<[HasVFP2]>;
-def : InstAlias<"vpop${p} $r",  (VLDMSIA_UPD SP, pred:$p, spr_reglist:$r)>,
+def : InstAlias<"vpop${p} $r",  (VLDMSIA_UPD SP, pred:$p, spr_reglist:$r), 0>,
                 Requires<[HasVFP2]>;
 defm : VFPDTAnyInstAlias<"vpush${p}", "$r",
                          (VSTMSDB_UPD SP, pred:$p, spr_reglist:$r)>;
@@ -624,7 +624,7 @@ def VCMPZH  : AHuI<0b11101, 0b11, 0b0101, 0b01, 0,
 def VCVTDS  : ASuI<0b11101, 0b11, 0b0111, 0b11, 0,
                    (outs DPR:$Dd), (ins SPR:$Sm),
                    IIC_fpCVTDS, "vcvt", ".f64.f32\t$Dd, $Sm",
-                   [(set DPR:$Dd, (fextend SPR:$Sm))]> {
+                   [(set DPR:$Dd, (fpextend SPR:$Sm))]> {
   // Instruction operands.
   bits<5> Dd;
   bits<5> Sm;
@@ -641,7 +641,7 @@ def VCVTDS  : ASuI<0b11101, 0b11, 0b0111, 0b11, 0,
 // Special case encoding: bits 11-8 is 0b1011.
 def VCVTSD  : VFPAI<(outs SPR:$Sd), (ins DPR:$Dm), VFPUnaryFrm,
                     IIC_fpCVTSD, "vcvt", ".f32.f64\t$Sd, $Dm",
-                    [(set SPR:$Sd, (fround DPR:$Dm))]> {
+                    [(set SPR:$Sd, (fpround DPR:$Dm))]> {
   // Instruction operands.
   bits<5> Sd;
   bits<5> Dm;
@@ -838,7 +838,7 @@ multiclass vcvt_inst<string opc, bits<2> rm,
   }
 }
 
-defm VCVTA : vcvt_inst<"a", 0b00, frnd>;
+defm VCVTA : vcvt_inst<"a", 0b00, fround>;
 defm VCVTN : vcvt_inst<"n", 0b01>;
 defm VCVTP : vcvt_inst<"p", 0b10, fceil>;
 defm VCVTM : vcvt_inst<"m", 0b11, ffloor>;
@@ -890,13 +890,13 @@ multiclass vrint_inst_zrx<string opc, bit op, bit op2, SDPatternOperator node> {
   }
 
   def : InstAlias<!strconcat("vrint", opc, "$p.f16.f16\t$Sd, $Sm"),
-                  (!cast<Instruction>(NAME#"H") SPR:$Sd, SPR:$Sm, pred:$p)>,
+                  (!cast<Instruction>(NAME#"H") SPR:$Sd, SPR:$Sm, pred:$p), 0>,
         Requires<[HasFullFP16]>;
   def : InstAlias<!strconcat("vrint", opc, "$p.f32.f32\t$Sd, $Sm"),
-                  (!cast<Instruction>(NAME#"S") SPR:$Sd, SPR:$Sm, pred:$p)>,
+                  (!cast<Instruction>(NAME#"S") SPR:$Sd, SPR:$Sm, pred:$p), 0>,
         Requires<[HasFPARMv8]>;
   def : InstAlias<!strconcat("vrint", opc, "$p.f64.f64\t$Dd, $Dm"),
-                  (!cast<Instruction>(NAME#"D") DPR:$Dd, DPR:$Dm, pred:$p)>,
+                  (!cast<Instruction>(NAME#"D") DPR:$Dd, DPR:$Dm, pred:$p), 0>,
         Requires<[HasFPARMv8,HasDPVFP]>;
 }
 
@@ -931,14 +931,14 @@ multiclass vrint_inst_anpm<string opc, bits<2> rm,
   }
 
   def : InstAlias<!strconcat("vrint", opc, ".f32.f32\t$Sd, $Sm"),
-                  (!cast<Instruction>(NAME#"S") SPR:$Sd, SPR:$Sm)>,
+                  (!cast<Instruction>(NAME#"S") SPR:$Sd, SPR:$Sm), 0>,
         Requires<[HasFPARMv8]>;
   def : InstAlias<!strconcat("vrint", opc, ".f64.f64\t$Dd, $Dm"),
-                  (!cast<Instruction>(NAME#"D") DPR:$Dd, DPR:$Dm)>,
+                  (!cast<Instruction>(NAME#"D") DPR:$Dd, DPR:$Dm), 0>,
         Requires<[HasFPARMv8,HasDPVFP]>;
 }
 
-defm VRINTA : vrint_inst_anpm<"a", 0b00, frnd>;
+defm VRINTA : vrint_inst_anpm<"a", 0b00, fround>;
 defm VRINTN : vrint_inst_anpm<"n", 0b01>;
 defm VRINTP : vrint_inst_anpm<"p", 0b10, fceil>;
 defm VRINTM : vrint_inst_anpm<"m", 0b11, ffloor>;

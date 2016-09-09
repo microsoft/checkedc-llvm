@@ -124,23 +124,34 @@ public:
                                  const MCSymbol *Label);
   void EmitCVLocDirective(unsigned FunctionId, unsigned FileNo, unsigned Line,
                           unsigned Column, bool PrologueEnd, bool IsStmt,
-                          StringRef FileName) override;
+                          StringRef FileName, SMLoc Loc) override;
   void EmitCVLinetableDirective(unsigned FunctionId, const MCSymbol *Begin,
                                 const MCSymbol *End) override;
-  void EmitCVInlineLinetableDirective(
-      unsigned PrimaryFunctionId, unsigned SourceFileId, unsigned SourceLineNum,
-      const MCSymbol *FnStartSym, const MCSymbol *FnEndSym,
-      ArrayRef<unsigned> SecondaryFunctionIds) override;
+  void EmitCVInlineLinetableDirective(unsigned PrimaryFunctionId,
+                                      unsigned SourceFileId,
+                                      unsigned SourceLineNum,
+                                      const MCSymbol *FnStartSym,
+                                      const MCSymbol *FnEndSym) override;
   void EmitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
       StringRef FixedSizePortion) override;
   void EmitCVStringTableDirective() override;
   void EmitCVFileChecksumsDirective() override;
+  void EmitDTPRel32Value(const MCExpr *Value) override;
+  void EmitDTPRel64Value(const MCExpr *Value) override;
+  void EmitTPRel32Value(const MCExpr *Value) override;
+  void EmitTPRel64Value(const MCExpr *Value) override;
   void EmitGPRel32Value(const MCExpr *Value) override;
   void EmitGPRel64Value(const MCExpr *Value) override;
   bool EmitRelocDirective(const MCExpr &Offset, StringRef Name,
                           const MCExpr *Expr, SMLoc Loc) override;
-  void EmitFill(uint64_t NumBytes, uint8_t FillValue) override;
+  using MCStreamer::emitFill;
+  void emitFill(uint64_t NumBytes, uint8_t FillValue) override;
+  void emitFill(const MCExpr &NumBytes, uint64_t FillValue,
+                SMLoc Loc = SMLoc()) override;
+  void emitFill(const MCExpr &NumValues, int64_t Size, int64_t Expr,
+                SMLoc Loc = SMLoc()) override;
+
   void FinishImpl() override;
 
   /// Emit the absolute difference between two symbols if possible.

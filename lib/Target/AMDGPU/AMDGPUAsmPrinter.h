@@ -40,6 +40,12 @@ private:
       NumVGPR(0),
       NumSGPR(0),
       FlatUsed(false),
+      NumSGPRsForWavesPerEU(0),
+      NumVGPRsForWavesPerEU(0),
+      ReservedVGPRFirst(0),
+      ReservedVGPRCount(0),
+      DebuggerWavefrontPrivateSegmentOffsetSGPR((uint16_t)-1),
+      DebuggerPrivateSegmentBufferSGPR((uint16_t)-1),
       VCCUsed(false),
       CodeLen(0) {}
 
@@ -67,6 +73,28 @@ private:
     uint32_t LDSSize;
     bool FlatUsed;
 
+    // Number of SGPRs that meets number of waves per execution unit request.
+    uint32_t NumSGPRsForWavesPerEU;
+
+    // Number of VGPRs that meets number of waves per execution unit request.
+    uint32_t NumVGPRsForWavesPerEU;
+
+    // If ReservedVGPRCount is 0 then must be 0. Otherwise, this is the first
+    // fixed VGPR number reserved.
+    uint16_t ReservedVGPRFirst;
+
+    // The number of consecutive VGPRs reserved.
+    uint16_t ReservedVGPRCount;
+
+    // Fixed SGPR number used to hold wave scratch offset for entire kernel
+    // execution, or uint16_t(-1) if the register is not used or not known.
+    uint16_t DebuggerWavefrontPrivateSegmentOffsetSGPR;
+
+    // Fixed SGPR number of the first 4 SGPRs used to hold scratch V# for entire
+    // kernel execution, or uint16_t(-1) if the register is not used or not
+    // known.
+    uint16_t DebuggerPrivateSegmentBufferSGPR;
+
     // Bonus information for debugging.
     bool VCCUsed;
     uint64_t CodeLen;
@@ -90,9 +118,7 @@ public:
 
   bool runOnMachineFunction(MachineFunction &MF) override;
 
-  const char *getPassName() const override {
-    return "AMDGPU Assembly Printer";
-  }
+  const char *getPassName() const override;
 
   /// Implemented in AMDGPUMCInstLower.cpp
   void EmitInstruction(const MachineInstr *MI) override;
@@ -108,6 +134,10 @@ public:
   bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
                        unsigned AsmVariant, const char *ExtraCode,
                        raw_ostream &O) override;
+
+  void emitStartOfRuntimeMetadata(const Module &M);
+
+  void emitRuntimeMetadata(const Function &F);
 
 protected:
   std::vector<std::string> DisasmLines, HexLines;

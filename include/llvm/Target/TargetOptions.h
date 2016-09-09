@@ -17,12 +17,10 @@
 
 #include "llvm/Target/TargetRecip.h"
 #include "llvm/MC/MCTargetOptions.h"
-#include <string>
 
 namespace llvm {
   class MachineFunction;
   class Module;
-  class StringRef;
 
   namespace FloatABI {
     enum ABIType {
@@ -55,6 +53,15 @@ namespace llvm {
     enum Model {
       POSIX,  // POSIX Threads
       Single  // Single Threaded Environment
+    };
+  }
+
+  namespace FPDenormal {
+    enum DenormalType {
+      IEEE,           // IEEE 754 denormal numbers
+      PreserveSign,   // the sign of a flushed-to-zero number is preserved in
+                      // the sign of 0
+      PositiveZero    // denormals are flushed to positive zero
     };
   }
 
@@ -95,17 +102,20 @@ namespace llvm {
     TargetOptions()
         : PrintMachineCode(false), LessPreciseFPMADOption(false),
           UnsafeFPMath(false), NoInfsFPMath(false), NoNaNsFPMath(false),
+          NoTrappingFPMath(false),
           HonorSignDependentRoundingFPMathOption(false), NoZerosInBSS(false),
           GuaranteedTailCallOpt(false), StackAlignmentOverride(0),
-          StackSymbolOrdering(true),
-          EnableFastISel(false), PositionIndependentExecutable(false),
-          UseInitArray(false), DisableIntegratedAS(false),
-          CompressDebugSections(false), FunctionSections(false),
+          StackSymbolOrdering(true), EnableFastISel(false), UseInitArray(false),
+          DisableIntegratedAS(false), CompressDebugSections(false),
+          RelaxELFRelocations(false), FunctionSections(false),
           DataSections(false), UniqueSectionNames(true), TrapUnreachable(false),
-          EmulatedTLS(false), FloatABIType(FloatABI::Default),
+          EmulatedTLS(false), EnableIPRA(false),
+          FloatABIType(FloatABI::Default),
           AllowFPOpFusion(FPOpFusion::Standard), Reciprocals(TargetRecip()),
           JTType(JumpTable::Single), ThreadModel(ThreadModel::POSIX),
-          EABIVersion(EABI::Default), DebuggerTuning(DebuggerKind::Default) {}
+          EABIVersion(EABI::Default), DebuggerTuning(DebuggerKind::Default),
+          FPDenormalType(FPDenormal::IEEE),
+          ExceptionModel(ExceptionHandling::None) {}
 
     /// PrintMachineCode - This flag is enabled when the -print-machineinstrs
     /// option is specified on the command line, and should enable debugging
@@ -144,6 +154,11 @@ namespace llvm {
     /// assume the FP arithmetic arguments and results are never NaNs.
     unsigned NoNaNsFPMath : 1;
 
+    /// NoTrappingFPMath - This flag is enabled when the 
+    /// -enable-no-trapping-fp-math is specified on the command line. This 
+    /// specifies that there are no trap handlers to handle exceptions.
+    unsigned NoTrappingFPMath : 1;
+
     /// HonorSignDependentRoundingFPMath - This returns true when the
     /// -enable-sign-dependent-rounding-fp-math is specified.  If this returns
     /// false (the default), the code generator is allowed to assume that the
@@ -181,12 +196,6 @@ namespace llvm {
     /// compile time.
     unsigned EnableFastISel : 1;
 
-    /// PositionIndependentExecutable - This flag indicates whether the code
-    /// will eventually be linked into a single executable, despite the PIC
-    /// relocation model being in use. It's value is undefined (and irrelevant)
-    /// if the relocation model is anything other than PIC.
-    unsigned PositionIndependentExecutable : 1;
-
     /// UseInitArray - Use .init_array instead of .ctors for static
     /// constructors.
     unsigned UseInitArray : 1;
@@ -196,6 +205,8 @@ namespace llvm {
 
     /// Compress DWARF debug sections.
     unsigned CompressDebugSections : 1;
+
+    unsigned RelaxELFRelocations : 1;
 
     /// Emit functions into separate sections.
     unsigned FunctionSections : 1;
@@ -211,6 +222,9 @@ namespace llvm {
     /// EmulatedTLS - This flag enables emulated TLS model, using emutls
     /// function in the runtime library..
     unsigned EmulatedTLS : 1;
+
+    /// This flag enables InterProcedural Register Allocation (IPRA).
+    unsigned EnableIPRA : 1;
 
     /// FloatABIType - This setting is set by -float-abi=xxx option is specfied
     /// on the command line. This setting may either be Default, Soft, or Hard.
@@ -255,6 +269,13 @@ namespace llvm {
     /// Which debugger to tune for.
     DebuggerKind DebuggerTuning;
 
+    /// FPDenormalType - This flags specificies which denormal numbers the code
+    /// is permitted to require.
+    FPDenormal::DenormalType FPDenormalType;
+
+    /// What exception model to use
+    ExceptionHandling ExceptionModel;
+
     /// Machine level options.
     MCTargetOptions MCOptions;
   };
@@ -269,12 +290,12 @@ inline bool operator==(const TargetOptions &LHS,
     ARE_EQUAL(UnsafeFPMath) &&
     ARE_EQUAL(NoInfsFPMath) &&
     ARE_EQUAL(NoNaNsFPMath) &&
+    ARE_EQUAL(NoTrappingFPMath) &&
     ARE_EQUAL(HonorSignDependentRoundingFPMathOption) &&
     ARE_EQUAL(NoZerosInBSS) &&
     ARE_EQUAL(GuaranteedTailCallOpt) &&
     ARE_EQUAL(StackAlignmentOverride) &&
     ARE_EQUAL(EnableFastISel) &&
-    ARE_EQUAL(PositionIndependentExecutable) &&
     ARE_EQUAL(UseInitArray) &&
     ARE_EQUAL(TrapUnreachable) &&
     ARE_EQUAL(EmulatedTLS) &&
@@ -285,7 +306,10 @@ inline bool operator==(const TargetOptions &LHS,
     ARE_EQUAL(ThreadModel) &&
     ARE_EQUAL(EABIVersion) &&
     ARE_EQUAL(DebuggerTuning) &&
-    ARE_EQUAL(MCOptions);
+    ARE_EQUAL(FPDenormalType) &&
+    ARE_EQUAL(ExceptionModel) &&
+    ARE_EQUAL(MCOptions) &&
+    ARE_EQUAL(EnableIPRA);
 #undef ARE_EQUAL
 }
 

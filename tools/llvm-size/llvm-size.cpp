@@ -84,6 +84,8 @@ RadixShort(cl::desc("Print size in radix:"),
 static cl::list<std::string>
 InputFilenames(cl::Positional, cl::desc("<input files>"), cl::ZeroOrMore);
 
+bool HadError = false;
+
 static std::string ToolName;
 
 /// If ec is not success, print the error and return true.
@@ -91,9 +93,63 @@ static bool error(std::error_code ec) {
   if (!ec)
     return false;
 
+  HadError = true;
   errs() << ToolName << ": error reading file: " << ec.message() << ".\n";
   errs().flush();
   return true;
+}
+
+static bool error(Twine Message) {
+  HadError = true;
+  errs() << ToolName << ": " << Message << ".\n";
+  errs().flush();
+  return true;
+}
+
+// This version of error() prints the archive name and member name, for example:
+// "libx.a(foo.o)" after the ToolName before the error message.  It sets
+// HadError but returns allowing the code to move on to other archive members. 
+static void error(llvm::Error E, StringRef FileName, const Archive::Child &C,
+                  StringRef ArchitectureName = StringRef()) {
+  HadError = true;
+  errs() << ToolName << ": " << FileName;
+
+  Expected<StringRef> NameOrErr = C.getName();
+  // TODO: if we have a error getting the name then it would be nice to print
+  // the index of which archive member this is and or its offset in the
+  // archive instead of "???" as the name.
+  if (!NameOrErr) {
+    consumeError(NameOrErr.takeError());
+    errs() << "(" << "???" << ")";
+  } else
+    errs() << "(" << NameOrErr.get() << ")";
+
+  if (!ArchitectureName.empty())
+    errs() << " (for architecture " << ArchitectureName << ") ";
+
+  std::string Buf;
+  raw_string_ostream OS(Buf);
+  logAllUnhandledErrors(std::move(E), OS, "");
+  OS.flush();
+  errs() << " " << Buf << "\n";
+}
+
+// This version of error() prints the file name and which architecture slice it // is from, for example: "foo.o (for architecture i386)" after the ToolName
+// before the error message.  It sets HadError but returns allowing the code to
+// move on to other architecture slices.        
+static void error(llvm::Error E, StringRef FileName,
+                  StringRef ArchitectureName = StringRef()) {
+  HadError = true;
+  errs() << ToolName << ": " << FileName;
+
+  if (!ArchitectureName.empty())
+    errs() << " (for architecture " << ArchitectureName << ") ";
+
+  std::string Buf;
+  raw_string_ostream OS(Buf);
+  logAllUnhandledErrors(std::move(E), OS, "");
+  OS.flush();
+  errs() << " " << Buf << "\n";
 }
 
 /// Get the length of the string that represents @p num in Radix including the
@@ -438,10 +494,10 @@ static bool checkMachOAndArchFlags(ObjectFile *o, StringRef file) {
     Triple T;
     if (MachO->is64Bit()) {
       H_64 = MachO->MachOObjectFile::getHeader64();
-      T = MachOObjectFile::getArch(H_64.cputype, H_64.cpusubtype);
+      T = MachOObjectFile::getArchTriple(H_64.cputype, H_64.cpusubtype);
     } else {
       H = MachO->MachOObjectFile::getHeader();
-      T = MachOObjectFile::getArch(H.cputype, H.cpusubtype);
+      T = MachOObjectFile::getArchTriple(H.cputype, H.cpusubtype);
     }
     unsigned i;
     for (i = 0; i < ArchFlags.size(); ++i) {
@@ -465,21 +521,21 @@ static void printFileSectionSizes(StringRef file) {
   // Attempt to open the binary.
   Expected<OwningBinary<Binary>> BinaryOrErr = createBinary(file);
   if (!BinaryOrErr) {
-    error(errorToErrorCode(BinaryOrErr.takeError()));
+    error(BinaryOrErr.takeError(), file);
     return;
   }
   Binary &Bin = *BinaryOrErr.get().getBinary();
 
   if (Archive *a = dyn_cast<Archive>(&Bin)) {
     // This is an archive. Iterate over each member and display its sizes.
-    for (object::Archive::child_iterator i = a->child_begin(),
-                                         e = a->child_end();
-         i != e; ++i) {
-      if (error(i->getError()))
-        exit(1);
-      ErrorOr<std::unique_ptr<Binary>> ChildOrErr = i->get().getAsBinary();
-      if (error(ChildOrErr.getError()))
+    Error Err;
+    for (auto &C : a->children(Err)) {
+      Expected<std::unique_ptr<Binary>> ChildOrErr = C.getAsBinary();
+      if (!ChildOrErr) {
+        if (auto E = isNotObjectErrorInvalidFileType(ChildOrErr.takeError()))
+          error(std::move(E), a->getFileName(), C);
         continue;
+      }
       if (ObjectFile *o = dyn_cast<ObjectFile>(&*ChildOrErr.get())) {
         MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
         if (!checkMachOAndArchFlags(o, file))
@@ -497,6 +553,8 @@ static void printFileSectionSizes(StringRef file) {
         }
       }
     }
+    if (Err)
+      error(std::move(Err), a->getFileName());
   } else if (MachOUniversalBinary *UB =
                  dyn_cast<MachOUniversalBinary>(&Bin)) {
     // If we have a list of architecture flags specified dump only those.
@@ -510,7 +568,7 @@ static void printFileSectionSizes(StringRef file) {
              I != E; ++I) {
           if (ArchFlags[i] == I->getArchTypeName()) {
             ArchFound = true;
-            ErrorOr<std::unique_ptr<ObjectFile>> UO = I->getAsObjectFile();
+            Expected<std::unique_ptr<ObjectFile>> UO = I->getAsObjectFile();
             if (UO) {
               if (ObjectFile *o = dyn_cast<ObjectFile>(&*UO.get())) {
                 MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
@@ -529,19 +587,27 @@ static void printFileSectionSizes(StringRef file) {
                   outs() << "\n";
                 }
               }
-            } else if (ErrorOr<std::unique_ptr<Archive>> AOrErr =
+            } else if (auto E = isNotObjectErrorInvalidFileType(
+                       UO.takeError())) {
+              error(std::move(E), file, ArchFlags.size() > 1 ?
+                    StringRef(I->getArchTypeName()) : StringRef());
+              return;
+            } else if (Expected<std::unique_ptr<Archive>> AOrErr =
                            I->getAsArchive()) {
               std::unique_ptr<Archive> &UA = *AOrErr;
               // This is an archive. Iterate over each member and display its
               // sizes.
-              for (object::Archive::child_iterator i = UA->child_begin(),
-                                                   e = UA->child_end();
-                   i != e; ++i) {
-                if (error(i->getError()))
-                  exit(1);
-                ErrorOr<std::unique_ptr<Binary>> ChildOrErr = i->get().getAsBinary();
-                if (error(ChildOrErr.getError()))
+              Error Err;
+              for (auto &C : UA->children(Err)) {
+                Expected<std::unique_ptr<Binary>> ChildOrErr = C.getAsBinary();
+                if (!ChildOrErr) {
+                  if (auto E = isNotObjectErrorInvalidFileType(
+                                    ChildOrErr.takeError()))
+                    error(std::move(E), UA->getFileName(), C,
+                          ArchFlags.size() > 1 ?
+                          StringRef(I->getArchTypeName()) : StringRef());
                   continue;
+                }
                 if (ObjectFile *o = dyn_cast<ObjectFile>(&*ChildOrErr.get())) {
                   MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
                   if (OutputFormat == sysv)
@@ -567,6 +633,13 @@ static void printFileSectionSizes(StringRef file) {
                   }
                 }
               }
+              if (Err)
+                error(std::move(Err), UA->getFileName());
+            } else {
+              consumeError(AOrErr.takeError());
+              error("Mach-O universal file: " + file + " for architecture " +
+                    StringRef(I->getArchTypeName()) +
+                    " is not a Mach-O file or an archive file");
             }
           }
         }
@@ -586,7 +659,7 @@ static void printFileSectionSizes(StringRef file) {
                                                  E = UB->end_objects();
            I != E; ++I) {
         if (HostArchName == I->getArchTypeName()) {
-          ErrorOr<std::unique_ptr<ObjectFile>> UO = I->getAsObjectFile();
+          Expected<std::unique_ptr<ObjectFile>> UO = I->getAsObjectFile();
           if (UO) {
             if (ObjectFile *o = dyn_cast<ObjectFile>(&*UO.get())) {
               MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
@@ -605,19 +678,23 @@ static void printFileSectionSizes(StringRef file) {
                 outs() << "\n";
               }
             }
-          } else if (ErrorOr<std::unique_ptr<Archive>> AOrErr =
+          } else if (auto E = isNotObjectErrorInvalidFileType(UO.takeError())) {
+            error(std::move(E), file);
+            return;
+          } else if (Expected<std::unique_ptr<Archive>> AOrErr =
                          I->getAsArchive()) {
             std::unique_ptr<Archive> &UA = *AOrErr;
             // This is an archive. Iterate over each member and display its
             // sizes.
-            for (object::Archive::child_iterator i = UA->child_begin(),
-                                                 e = UA->child_end();
-                 i != e; ++i) {
-              if (error(i->getError()))
-                exit(1);
-              ErrorOr<std::unique_ptr<Binary>> ChildOrErr = i->get().getAsBinary();
-              if (error(ChildOrErr.getError()))
+            Error Err;
+            for (auto &C : UA->children(Err)) {
+              Expected<std::unique_ptr<Binary>> ChildOrErr = C.getAsBinary();
+              if (!ChildOrErr) {
+                if (auto E = isNotObjectErrorInvalidFileType(
+                                ChildOrErr.takeError()))
+                  error(std::move(E), UA->getFileName(), C);
                 continue;
+              }
               if (ObjectFile *o = dyn_cast<ObjectFile>(&*ChildOrErr.get())) {
                 MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
                 if (OutputFormat == sysv)
@@ -638,6 +715,13 @@ static void printFileSectionSizes(StringRef file) {
                 }
               }
             }
+            if (Err)
+              error(std::move(Err), UA->getFileName());
+          } else {
+            consumeError(AOrErr.takeError());
+            error("Mach-O universal file: " + file + " for architecture " +
+                   StringRef(I->getArchTypeName()) +
+                   " is not a Mach-O file or an archive file");
           }
           return;
         }
@@ -649,7 +733,7 @@ static void printFileSectionSizes(StringRef file) {
     for (MachOUniversalBinary::object_iterator I = UB->begin_objects(),
                                                E = UB->end_objects();
          I != E; ++I) {
-      ErrorOr<std::unique_ptr<ObjectFile>> UO = I->getAsObjectFile();
+      Expected<std::unique_ptr<ObjectFile>> UO = I->getAsObjectFile();
       if (UO) {
         if (ObjectFile *o = dyn_cast<ObjectFile>(&*UO.get())) {
           MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
@@ -669,18 +753,24 @@ static void printFileSectionSizes(StringRef file) {
             outs() << "\n";
           }
         }
-      } else if (ErrorOr<std::unique_ptr<Archive>> AOrErr =
+      } else if (auto E = isNotObjectErrorInvalidFileType(UO.takeError())) {
+        error(std::move(E), file, MoreThanOneArch ?
+              StringRef(I->getArchTypeName()) : StringRef());
+        return;
+      } else if (Expected<std::unique_ptr<Archive>> AOrErr =
                          I->getAsArchive()) {
         std::unique_ptr<Archive> &UA = *AOrErr;
         // This is an archive. Iterate over each member and display its sizes.
-        for (object::Archive::child_iterator i = UA->child_begin(),
-                                             e = UA->child_end();
-             i != e; ++i) {
-          if (error(i->getError()))
-            exit(1);
-          ErrorOr<std::unique_ptr<Binary>> ChildOrErr = i->get().getAsBinary();
-          if (error(ChildOrErr.getError()))
+        Error Err;
+        for (auto &C : UA->children(Err)) {
+          Expected<std::unique_ptr<Binary>> ChildOrErr = C.getAsBinary();
+          if (!ChildOrErr) {
+            if (auto E = isNotObjectErrorInvalidFileType(
+                              ChildOrErr.takeError()))
+              error(std::move(E), UA->getFileName(), C, MoreThanOneArch ?
+                    StringRef(I->getArchTypeName()) : StringRef());
             continue;
+          }
           if (ObjectFile *o = dyn_cast<ObjectFile>(&*ChildOrErr.get())) {
             MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
             if (OutputFormat == sysv)
@@ -701,6 +791,13 @@ static void printFileSectionSizes(StringRef file) {
             }
           }
         }
+        if (Err)
+          error(std::move(Err), UA->getFileName());
+      } else {
+        consumeError(AOrErr.takeError());
+        error("Mach-O universal file: " + file + " for architecture " +
+               StringRef(I->getArchTypeName()) +
+               " is not a Mach-O file or an archive file");
       }
     }
   } else if (ObjectFile *o = dyn_cast<ObjectFile>(&Bin)) {
@@ -726,7 +823,7 @@ static void printFileSectionSizes(StringRef file) {
 
 int main(int argc, char **argv) {
   // Print a stack trace if we signal out.
-  sys::PrintStackTraceOnErrorSignal();
+  sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
 
   llvm_shutdown_obj Y; // Call llvm_shutdown() on exit.
@@ -757,5 +854,6 @@ int main(int argc, char **argv) {
   std::for_each(InputFilenames.begin(), InputFilenames.end(),
                 printFileSectionSizes);
 
-  return 0;
+  if (HadError)
+    return 1;
 }

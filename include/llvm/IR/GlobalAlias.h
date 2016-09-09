@@ -15,12 +15,12 @@
 #ifndef LLVM_IR_GLOBALALIAS_H
 #define LLVM_IR_GLOBALALIAS_H
 
-#include "llvm/ADT/Twine.h"
 #include "llvm/ADT/ilist_node.h"
 #include "llvm/IR/GlobalIndirectSymbol.h"
 
 namespace llvm {
 
+class Twine;
 class Module;
 template <typename ValueSubClass> class SymbolTableListTraits;
 
@@ -76,21 +76,6 @@ public:
   }
   Constant *getAliasee() {
     return getIndirectSymbol();
-  }
-
-  const GlobalObject *getBaseObject() const {
-    return const_cast<GlobalAlias *>(this)->getBaseObject();
-  }
-  GlobalObject *getBaseObject() {
-    return dyn_cast<GlobalObject>(getAliasee()->stripInBoundsOffsets());
-  }
-
-  const GlobalObject *getBaseObject(const DataLayout &DL, APInt &Offset) const {
-    return const_cast<GlobalAlias *>(this)->getBaseObject(DL, Offset);
-  }
-  GlobalObject *getBaseObject(const DataLayout &DL, APInt &Offset) {
-    return dyn_cast<GlobalObject>(
-        getAliasee()->stripAndAccumulateInBoundsConstantOffsets(DL, Offset));
   }
 
   static bool isValidLinkage(LinkageTypes L) {

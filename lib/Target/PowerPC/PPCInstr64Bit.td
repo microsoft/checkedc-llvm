@@ -224,6 +224,18 @@ let usesCustomInserter = 1 in {
     def ATOMIC_LOAD_NAND_I64 : Pseudo<
       (outs g8rc:$dst), (ins memrr:$ptr, g8rc:$incr), "#ATOMIC_LOAD_NAND_I64",
       [(set i64:$dst, (atomic_load_nand_64 xoaddr:$ptr, i64:$incr))]>;
+    def ATOMIC_LOAD_MIN_I64 : Pseudo<
+      (outs g8rc:$dst), (ins memrr:$ptr, g8rc:$incr), "#ATOMIC_LOAD_MIN_I64",
+      [(set i64:$dst, (atomic_load_min_64 xoaddr:$ptr, i64:$incr))]>;
+    def ATOMIC_LOAD_MAX_I64 : Pseudo<
+      (outs g8rc:$dst), (ins memrr:$ptr, g8rc:$incr), "#ATOMIC_LOAD_MAX_I64",
+      [(set i64:$dst, (atomic_load_max_64 xoaddr:$ptr, i64:$incr))]>;
+    def ATOMIC_LOAD_UMIN_I64 : Pseudo<
+      (outs g8rc:$dst), (ins memrr:$ptr, g8rc:$incr), "#ATOMIC_LOAD_UMIN_I64",
+      [(set i64:$dst, (atomic_load_umin_64 xoaddr:$ptr, i64:$incr))]>;
+    def ATOMIC_LOAD_UMAX_I64 : Pseudo<
+      (outs g8rc:$dst), (ins memrr:$ptr, g8rc:$incr), "#ATOMIC_LOAD_UMAX_I64",
+      [(set i64:$dst, (atomic_load_umax_64 xoaddr:$ptr, i64:$incr))]>;
 
     def ATOMIC_CMP_SWAP_I64 : Pseudo<
       (outs g8rc:$dst), (ins memrr:$ptr, g8rc:$old, g8rc:$new), "#ATOMIC_CMP_SWAP_I64",
@@ -486,8 +498,10 @@ defm ADD8  : XOForm_1r<31, 266, 0, (outs g8rc:$rT), (ins g8rc:$rA, g8rc:$rB),
                        "add", "$rT, $rA, $rB", IIC_IntSimple,
                        [(set i64:$rT, (add i64:$rA, i64:$rB))]>;
 // ADD8 has a special form: reg = ADD8(reg, sym@tls) for use by the
-// initial-exec thread-local storage model.
-def ADD8TLS  : XOForm_1<31, 266, 0, (outs g8rc:$rT), (ins g8rc:$rA, tlsreg:$rB),
+// initial-exec thread-local storage model.  We need to forbid r0 here -
+// while it works for add just fine, the linker can relax this to local-exec
+// addi, which won't work for r0.
+def ADD8TLS  : XOForm_1<31, 266, 0, (outs g8rc:$rT), (ins g8rc_nox0:$rA, tlsreg:$rB),
                         "add $rT, $rA, $rB", IIC_IntSimple,
                         [(set i64:$rT, (add i64:$rA, tglobaltlsaddr:$rB))]>;
                      
@@ -512,11 +526,11 @@ let Defs = [CARRY] in {
 def SUBFIC8: DForm_2< 8, (outs g8rc:$rD), (ins g8rc:$rA, s16imm64:$imm),
                      "subfic $rD, $rA, $imm", IIC_IntGeneral,
                      [(set i64:$rD, (subc imm64SExt16:$imm, i64:$rA))]>;
-defm SUBFC8 : XOForm_1r<31, 8, 0, (outs g8rc:$rT), (ins g8rc:$rA, g8rc:$rB),
+}
+defm SUBFC8 : XOForm_1rc<31, 8, 0, (outs g8rc:$rT), (ins g8rc:$rA, g8rc:$rB),
                         "subfc", "$rT, $rA, $rB", IIC_IntGeneral,
                         [(set i64:$rT, (subc i64:$rB, i64:$rA))]>,
                         PPC970_DGroup_Cracked;
-}
 defm SUBF8 : XOForm_1r<31, 40, 0, (outs g8rc:$rT), (ins g8rc:$rA, g8rc:$rB),
                        "subf", "$rT, $rA, $rB", IIC_IntGeneral,
                        [(set i64:$rT, (sub i64:$rB, i64:$rA))]>;
@@ -574,6 +588,14 @@ let isCompare = 1, hasSideEffects = 0 in {
   def CMPLDI : DForm_6_ext<10, (outs crrc:$dst), (ins g8rc:$src1, u16imm64:$src2),
                            "cmpldi $dst, $src1, $src2",
                            IIC_IntCompare>, isPPC64;
+  let Interpretation64Bit = 1, isCodeGenOnly = 1 in
+  def CMPRB8 : X_BF3_L1_RS5_RS5<31, 192, (outs crbitrc:$BF),
+                                (ins u1imm:$L, g8rc:$rA, g8rc:$rB),
+                                "cmprb $BF, $L, $rA, $rB", IIC_IntCompare, []>,
+               Requires<[IsISA3_0]>;
+  def CMPEQB : X_BF3_RS5_RS5<31, 224, (outs crbitrc:$BF),
+                             (ins g8rc:$rA, g8rc:$rB), "cmpeqb $BF, $rA, $rB",
+                             IIC_IntCompare, []>, Requires<[IsISA3_0]>;
 }
 
 let hasSideEffects = 0 in {
@@ -590,6 +612,9 @@ defm SRAD : XForm_6rc<31, 794, (outs g8rc:$rA), (ins g8rc:$rS, gprc:$rB),
 let Interpretation64Bit = 1, isCodeGenOnly = 1 in {
 defm CNTLZW8 : XForm_11r<31,  26, (outs g8rc:$rA), (ins g8rc:$rS),
                         "cntlzw", "$rA, $rS", IIC_IntGeneral, []>;
+defm CNTTZW8 : XForm_11r<31, 538, (outs g8rc:$rA), (ins g8rc:$rS),
+                        "cnttzw", "$rA, $rS", IIC_IntGeneral, []>,
+               Requires<[IsISA3_0]>;
 
 defm EXTSB8 : XForm_11r<31, 954, (outs g8rc:$rA), (ins g8rc:$rS),
                         "extsb", "$rA, $rS", IIC_IntSimple,
@@ -623,9 +648,12 @@ defm EXTSW_32_64 : XForm_11r<31, 986, (outs g8rc:$rA), (ins gprc:$rS),
 defm SRADI  : XSForm_1rc<31, 413, (outs g8rc:$rA), (ins g8rc:$rS, u6imm:$SH),
                          "sradi", "$rA, $rS, $SH", IIC_IntRotateDI,
                          [(set i64:$rA, (sra i64:$rS, (i32 imm:$SH)))]>, isPPC64;
-defm CNTLZD : XForm_11r<31, 58, (outs g8rc:$rA), (ins g8rc:$rS),
+defm CNTLZD : XForm_11r<31,  58, (outs g8rc:$rA), (ins g8rc:$rS),
                         "cntlzd", "$rA, $rS", IIC_IntGeneral,
                         [(set i64:$rA, (ctlz i64:$rS))]>;
+defm CNTTZD : XForm_11r<31, 570, (outs g8rc:$rA), (ins g8rc:$rS),
+                        "cnttzd", "$rA, $rS", IIC_IntGeneral,
+                        [(set i64:$rA, (cttz i64:$rS))]>, Requires<[IsISA3_0]>;
 def POPCNTD : XForm_11<31, 506, (outs g8rc:$rA), (ins g8rc:$rS),
                        "popcntd $rA, $rS", IIC_IntGeneral,
                        [(set i64:$rA, (ctpop i64:$rS))]>;
@@ -1262,63 +1290,6 @@ def : Pat<(atomic_store_64 ixaddr:$ptr, i64:$val), (STD  g8rc:$val, memrix:$ptr)
 def : Pat<(atomic_store_64 xaddr:$ptr,  i64:$val), (STDX g8rc:$val, memrr:$ptr)>;
 
 let Predicates = [IsISA3_0] in {
-
-// [PO RT RA RB RC XO]
-class VA_RT5_RA5_RB5_RC5<bits<6> xo, string opc, InstrItinClass itin,
-                         list<dag> pattern>
-  : VAForm_1a<xo, (outs g8rc:$rD), (ins g8rc:$rA, g8rc:$rB, g8rc:$rC),
-              !strconcat(opc, " $rD, $rA, $rB, $rC"), itin, pattern>;
-
-// 64-bit Fixed-Point Multiply-Add High-DWord/High-DWord-Unsigned/Low-DWord
-def MADDHD  : VA_RT5_RA5_RB5_RC5<48, "maddhd" , IIC_IntGeneral, []>;
-def MADDHDU : VA_RT5_RA5_RB5_RC5<49, "maddhdu", IIC_IntGeneral, []>;
-def MADDLD  : VA_RT5_RA5_RB5_RC5<51, "maddld ", IIC_IntGeneral, []>;
-
-let Interpretation64Bit = 1, isCodeGenOnly = 1 in {
-// Add PC Immediate Shifted
-def ADDPCIS8 : DX_RD5_IM16<19, 2, (outs g8rc:$rD), (ins s16imm:$IMM),
-                           "addpcis $rD, $IMM", IIC_IntSimple, []>;
-
-// Modulo {Signed/Unsigned}-Word
-def MODSW8 : X_RT5_RA5_RB5<779, "modsw", g8rc, IIC_IntDivW, []>;
-def MODUW8 : X_RT5_RA5_RB5<267, "moduw", g8rc, IIC_IntDivW, []>;
-}
-
-// Modulo {Signed/Unsigned}-DWord
-def MODSD  : X_RT5_RA5_RB5<777, "modsd", g8rc, IIC_IntDivW, []>;
-def MODUD  : X_RT5_RA5_RB5<265, "modud", g8rc, IIC_IntDivW, []>;
-
-// [PO RS RA sh XO sh Rc]
-multiclass XS_RS5_RA5_SH5r<bits<6> opcode, bits<9> xo, string opc,
-                           InstrItinClass itin, list<dag> pattern> {
-  let BaseName = opc in {
-    def NAME : XSForm_1<opcode, xo, (outs g8rc:$rA), (ins g8rc:$rS, u6imm:$SH),
-                        !strconcat(opc, " $rA, $rS, $SH"), itin, pattern>;
-    let Defs = [CR0] in
-    def o    : XSForm_1<opcode, xo, (outs g8rc:$rA), (ins g8rc:$rS, u6imm:$SH),
-                        !strconcat(opc, ". $rA, $rS, $SH"), itin, pattern>,
-               isDOT;
-  }
-}
-
-// Deliver A Random Number
-def DARN : X_RD5_L2<31, 755, (outs g8rc:$rD), (ins u2imm:$L), "darn $rD, $L",
-                    IIC_IntGeneral, []>;
-
-// Extend-Sign Word and Shift Left Immediate
-defm EXTSWSLI  : XS_RS5_RA5_SH5r<31, 445, "extswsli" , IIC_IntShift, []>;
-
-// Set Boolean
-def SETB : X_RD5_BFA3<31, 128, (outs g8rc:$rD), (ins u3imm:$BFA),
-                      "setb $rD, $BFA", IIC_IntGeneral, []>;
-
-// DFP Test Significance Immediate [Quad]
-def DTSTSFI  : X_BF3_IM6_RS5<59, 675,
-                             (outs crbitrc:$BF), (ins u6imm:$UIM, f8rc:$FRB),
-                             "dtstsfi $BF, $UIM, $FRB", IIC_FPGeneral, []>;
-def DTSTSFIQ : X_BF3_IM6_RS5<63,  675,
-                             (outs crbitrc:$BF), (ins u6imm:$UIM, d8rc:$FRBp),
-                             "dtstsfiq $BF, $UIM, $FRBp", IIC_FPGeneral, []>;
 
 class X_L1_RA5_RB5<bits<6> opcode, bits<10> xo, string opc, RegisterOperand ty,
                    InstrItinClass itin, list<dag> pattern>

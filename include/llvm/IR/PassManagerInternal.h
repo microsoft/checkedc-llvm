@@ -18,12 +18,12 @@
 #ifndef LLVM_IR_PASSMANAGERINTERNAL_H
 #define LLVM_IR_PASSMANAGERINTERNAL_H
 
-#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace llvm {
 
-template <typename IRUnitT> class AnalysisManager;
+template <typename IRUnitT, typename... ExtraArgTs> class AnalysisManager;
 class PreservedAnalyses;
 
 /// \brief Implementation details of the pass manager interfaces.
@@ -31,7 +31,8 @@ namespace detail {
 
 /// \brief Template for the abstract base class used to dispatch
 /// polymorphically over pass objects.
-template <typename IRUnitT> struct PassConcept {
+template <typename IRUnitT, typename AnalysisManagerT, typename... ExtraArgTs>
+struct PassConcept {
   // Boiler plate necessary for the container of derived classes.
   virtual ~PassConcept() {}
 
@@ -40,48 +41,21 @@ template <typename IRUnitT> struct PassConcept {
   /// Note that actual pass object can omit the analysis manager argument if
   /// desired. Also that the analysis manager may be null if there is no
   /// analysis manager in the pass pipeline.
-  virtual PreservedAnalyses run(IRUnitT &IR, AnalysisManager<IRUnitT> &AM) = 0;
+  virtual PreservedAnalyses run(IRUnitT &IR, AnalysisManagerT &AM,
+                                ExtraArgTs... ExtraArgs) = 0;
 
   /// \brief Polymorphic method to access the name of a pass.
   virtual StringRef name() = 0;
 };
 
-/// \brief SFINAE metafunction for computing whether \c PassT has a run method
-/// accepting an \c AnalysisManager<IRUnitT>.
-template <typename IRUnitT, typename PassT, typename ResultT>
-class PassRunAcceptsAnalysisManager {
-  typedef char SmallType;
-  struct BigType {
-    char a, b;
-  };
-
-  template <typename T, ResultT (T::*)(IRUnitT &, AnalysisManager<IRUnitT> &)>
-  struct Checker;
-
-  template <typename T> static SmallType f(Checker<T, &T::run> *);
-  template <typename T> static BigType f(...);
-
-public:
-  enum { Value = sizeof(f<PassT>(nullptr)) == sizeof(SmallType) };
-};
-
 /// \brief A template wrapper used to implement the polymorphic API.
 ///
 /// Can be instantiated for any object which provides a \c run method accepting
-/// an \c IRUnitT. It requires the pass to be a copyable object. When the
-/// \c run method also accepts an \c AnalysisManager<IRUnitT>*, we pass it
-/// along.
-template <typename IRUnitT, typename PassT,
-          typename PreservedAnalysesT = PreservedAnalyses,
-          bool AcceptsAnalysisManager = PassRunAcceptsAnalysisManager<
-              IRUnitT, PassT, PreservedAnalysesT>::Value>
-struct PassModel;
-
-/// \brief Specialization of \c PassModel for passes that accept an analyis
-/// manager.
-template <typename IRUnitT, typename PassT, typename PreservedAnalysesT>
-struct PassModel<IRUnitT, PassT, PreservedAnalysesT, true>
-    : PassConcept<IRUnitT> {
+/// an \c IRUnitT& and an \c AnalysisManager<IRUnit>&. It requires the pass to
+/// be a copyable object.
+template <typename IRUnitT, typename PassT, typename PreservedAnalysesT,
+          typename AnalysisManagerT, typename... ExtraArgTs>
+struct PassModel : PassConcept<IRUnitT, AnalysisManagerT, ExtraArgTs...> {
   explicit PassModel(PassT Pass) : Pass(std::move(Pass)) {}
   // We have to explicitly define all the special member functions because MSVC
   // refuses to generate them.
@@ -96,34 +70,9 @@ struct PassModel<IRUnitT, PassT, PreservedAnalysesT, true>
     return *this;
   }
 
-  PreservedAnalysesT run(IRUnitT &IR, AnalysisManager<IRUnitT> &AM) override {
-    return Pass.run(IR, AM);
-  }
-  StringRef name() override { return PassT::name(); }
-  PassT Pass;
-};
-
-/// \brief Specialization of \c PassModel for passes that accept an analyis
-/// manager.
-template <typename IRUnitT, typename PassT, typename PreservedAnalysesT>
-struct PassModel<IRUnitT, PassT, PreservedAnalysesT, false>
-    : PassConcept<IRUnitT> {
-  explicit PassModel(PassT Pass) : Pass(std::move(Pass)) {}
-  // We have to explicitly define all the special member functions because MSVC
-  // refuses to generate them.
-  PassModel(const PassModel &Arg) : Pass(Arg.Pass) {}
-  PassModel(PassModel &&Arg) : Pass(std::move(Arg.Pass)) {}
-  friend void swap(PassModel &LHS, PassModel &RHS) {
-    using std::swap;
-    swap(LHS.Pass, RHS.Pass);
-  }
-  PassModel &operator=(PassModel RHS) {
-    swap(*this, RHS);
-    return *this;
-  }
-
-  PreservedAnalysesT run(IRUnitT &IR, AnalysisManager<IRUnitT> &) override {
-    return Pass.run(IR);
+  PreservedAnalysesT run(IRUnitT &IR, AnalysisManagerT &AM,
+                         ExtraArgTs... ExtraArgs) override {
+    return Pass.run(IR, AM, ExtraArgs...);
   }
   StringRef name() override { return PassT::name(); }
   PassT Pass;
@@ -152,19 +101,37 @@ template <typename IRUnitT> struct AnalysisResultConcept {
 /// \brief SFINAE metafunction for computing whether \c ResultT provides an
 /// \c invalidate member function.
 template <typename IRUnitT, typename ResultT> class ResultHasInvalidateMethod {
-  typedef char SmallType;
-  struct BigType {
+  typedef char EnabledType;
+  struct DisabledType {
     char a, b;
   };
 
-  template <typename T, bool (T::*)(IRUnitT &, const PreservedAnalyses &)>
-  struct Checker;
+  // Purely to help out MSVC which fails to disable the below specialization,
+  // explicitly enable using the result type's invalidate routine if we can
+  // successfully call that routine.
+  template <typename T> struct Nonce { typedef EnabledType Type; };
+  template <typename T>
+  static typename Nonce<decltype(std::declval<T>().invalidate(
+      std::declval<IRUnitT &>(), std::declval<PreservedAnalyses>()))>::Type
+      check(rank<2>);
 
-  template <typename T> static SmallType f(Checker<T, &T::invalidate> *);
-  template <typename T> static BigType f(...);
+  // First we define an overload that can only be taken if there is no
+  // invalidate member. We do this by taking the address of an invalidate
+  // member in an adjacent base class of a derived class. This would be
+  // ambiguous if there were an invalidate member in the result type.
+  template <typename T, typename U> static DisabledType NonceFunction(T U::*);
+  struct CheckerBase { int invalidate; };
+  template <typename T> struct Checker : CheckerBase, T {};
+  template <typename T>
+  static decltype(NonceFunction(&Checker<T>::invalidate)) check(rank<1>);
+
+  // Now we have the fallback that will only be reached when there is an
+  // invalidate member, and enables the trait.
+  template <typename T>
+  static EnabledType check(rank<0>);
 
 public:
-  enum { Value = sizeof(f<ResultT>(nullptr)) == sizeof(SmallType) };
+  enum { Value = sizeof(check<ResultT>(rank<2>())) == sizeof(EnabledType) };
 };
 
 /// \brief Wrapper to model the analysis result concept.
@@ -245,14 +212,15 @@ struct AnalysisResultModel<IRUnitT, PassT, ResultT, PreservedAnalysesT, true>
 ///
 /// This concept is parameterized over the IR unit that it can run over and
 /// produce an analysis result.
-template <typename IRUnitT> struct AnalysisPassConcept {
+template <typename IRUnitT, typename... ExtraArgTs> struct AnalysisPassConcept {
   virtual ~AnalysisPassConcept() {}
 
   /// \brief Method to run this analysis over a unit of IR.
   /// \returns A unique_ptr to the analysis result object to be queried by
   /// users.
   virtual std::unique_ptr<AnalysisResultConcept<IRUnitT>>
-  run(IRUnitT &IR, AnalysisManager<IRUnitT> &AM) = 0;
+  run(IRUnitT &IR, AnalysisManager<IRUnitT, ExtraArgTs...> &AM,
+      ExtraArgTs... ExtraArgs) = 0;
 
   /// \brief Polymorphic method to access the name of a pass.
   virtual StringRef name() = 0;
@@ -261,17 +229,10 @@ template <typename IRUnitT> struct AnalysisPassConcept {
 /// \brief Wrapper to model the analysis pass concept.
 ///
 /// Can wrap any type which implements a suitable \c run method. The method
-/// must accept the IRUnitT as an argument and produce an object which can be
-/// wrapped in a \c AnalysisResultModel.
-template <typename IRUnitT, typename PassT,
-          bool AcceptsAnalysisManager = PassRunAcceptsAnalysisManager<
-              IRUnitT, PassT, typename PassT::Result>::Value>
-struct AnalysisPassModel;
-
-/// \brief Specialization of \c AnalysisPassModel which passes an
-/// \c AnalysisManager to PassT's run method.
-template <typename IRUnitT, typename PassT>
-struct AnalysisPassModel<IRUnitT, PassT, true> : AnalysisPassConcept<IRUnitT> {
+/// must accept an \c IRUnitT& and an \c AnalysisManager<IRUnitT>& as arguments
+/// and produce an object which can be wrapped in a \c AnalysisResultModel.
+template <typename IRUnitT, typename PassT, typename... ExtraArgTs>
+struct AnalysisPassModel : AnalysisPassConcept<IRUnitT, ExtraArgTs...> {
   explicit AnalysisPassModel(PassT Pass) : Pass(std::move(Pass)) {}
   // We have to explicitly define all the special member functions because MSVC
   // refuses to generate them.
@@ -294,46 +255,9 @@ struct AnalysisPassModel<IRUnitT, PassT, true> : AnalysisPassConcept<IRUnitT> {
   ///
   /// The return is wrapped in an \c AnalysisResultModel.
   std::unique_ptr<AnalysisResultConcept<IRUnitT>>
-  run(IRUnitT &IR, AnalysisManager<IRUnitT> &AM) override {
-    return make_unique<ResultModelT>(Pass.run(IR, AM));
-  }
-
-  /// \brief The model delegates to a static \c PassT::name method.
-  ///
-  /// The returned string ref must point to constant immutable data!
-  StringRef name() override { return PassT::name(); }
-
-  PassT Pass;
-};
-
-/// \brief Specialization of \c AnalysisPassModel which does not pass an
-/// \c AnalysisManager to PassT's run method.
-template <typename IRUnitT, typename PassT>
-struct AnalysisPassModel<IRUnitT, PassT, false> : AnalysisPassConcept<IRUnitT> {
-  explicit AnalysisPassModel(PassT Pass) : Pass(std::move(Pass)) {}
-  // We have to explicitly define all the special member functions because MSVC
-  // refuses to generate them.
-  AnalysisPassModel(const AnalysisPassModel &Arg) : Pass(Arg.Pass) {}
-  AnalysisPassModel(AnalysisPassModel &&Arg) : Pass(std::move(Arg.Pass)) {}
-  friend void swap(AnalysisPassModel &LHS, AnalysisPassModel &RHS) {
-    using std::swap;
-    swap(LHS.Pass, RHS.Pass);
-  }
-  AnalysisPassModel &operator=(AnalysisPassModel RHS) {
-    swap(*this, RHS);
-    return *this;
-  }
-
-  // FIXME: Replace PassT::Result with type traits when we use C++11.
-  typedef AnalysisResultModel<IRUnitT, PassT, typename PassT::Result>
-      ResultModelT;
-
-  /// \brief The model delegates to the \c PassT::run method.
-  ///
-  /// The return is wrapped in an \c AnalysisResultModel.
-  std::unique_ptr<AnalysisResultConcept<IRUnitT>>
-  run(IRUnitT &IR, AnalysisManager<IRUnitT> &) override {
-    return make_unique<ResultModelT>(Pass.run(IR));
+  run(IRUnitT &IR, AnalysisManager<IRUnitT, ExtraArgTs...> &AM,
+      ExtraArgTs... ExtraArgs) override {
+    return make_unique<ResultModelT>(Pass.run(IR, AM, ExtraArgs...));
   }
 
   /// \brief The model delegates to a static \c PassT::name method.

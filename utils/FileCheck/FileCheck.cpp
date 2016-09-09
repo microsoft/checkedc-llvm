@@ -45,6 +45,11 @@ InputFilename("input-file", cl::desc("File to check (defaults to stdin)"),
 static cl::list<std::string>
 CheckPrefixes("check-prefix",
               cl::desc("Prefix to use from check file (defaults to 'CHECK')"));
+static cl::alias CheckPrefixesAlias(
+    "check-prefixes", cl::aliasopt(CheckPrefixes), cl::CommaSeparated,
+    cl::NotHidden,
+    cl::desc(
+        "Alias for -check-prefix permitting multiple comma separated values"));
 
 static cl::opt<bool>
 NoCanonicalizeWhiteSpace("strict-whitespace",
@@ -95,17 +100,12 @@ namespace Check {
 class Pattern {
   SMLoc PatternLoc;
 
-  Check::CheckType CheckTy;
-
   /// FixedStr - If non-empty, this pattern is a fixed string match with the
   /// specified fixed string.
   StringRef FixedStr;
 
   /// RegEx - If non-empty, this is a regex pattern.
   std::string RegExStr;
-
-  /// \brief Contains the number of line this pattern is in.
-  unsigned LineNumber;
 
   /// VariableUses - Entries in this vector map to uses of a variable in the
   /// pattern, e.g. "foo[[bar]]baz".  In this case, the RegExStr will contain
@@ -118,10 +118,13 @@ class Pattern {
   /// E.g. for the pattern "foo[[bar:.*]]baz", VariableDefs will map "bar" to 1.
   std::map<StringRef, unsigned> VariableDefs;
 
-public:
+  Check::CheckType CheckTy;
 
-  Pattern(Check::CheckType Ty)
-    : CheckTy(Ty) { }
+  /// \brief Contains the number of line this pattern is in.
+  unsigned LineNumber;
+
+public:
+  explicit Pattern(Check::CheckType Ty) : CheckTy(Ty) {}
 
   /// getLoc - Return the location in source code.
   SMLoc getLoc() const { return PatternLoc; }
@@ -1298,8 +1301,15 @@ static void AddCheckPrefixIfNeeded() {
     CheckPrefixes.push_back("CHECK");
 }
 
+static void DumpCommandLine(int argc, char **argv) {
+  errs() << "FileCheck command line: ";
+  for (int I = 0; I < argc; I++)
+    errs() << " " << argv[I];
+  errs() << "\n";
+}
+
 int main(int argc, char **argv) {
-  sys::PrintStackTraceOnErrorSignal();
+  sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
   cl::ParseCommandLineOptions(argc, argv);
 
@@ -1331,6 +1341,7 @@ int main(int argc, char **argv) {
 
   if (File->getBufferSize() == 0 && !AllowEmptyInput) {
     errs() << "FileCheck error: '" << InputFilename << "' is empty.\n";
+    DumpCommandLine(argc, argv);
     return 2;
   }
 

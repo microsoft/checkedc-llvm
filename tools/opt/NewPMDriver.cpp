@@ -47,12 +47,13 @@ static cl::opt<std::string>
                         "pipeline for handling managed aliasing queries"),
                cl::Hidden);
 
-bool llvm::runPassPipeline(StringRef Arg0, LLVMContext &Context, Module &M,
+bool llvm::runPassPipeline(StringRef Arg0, Module &M,
                            TargetMachine *TM, tool_output_file *Out,
                            StringRef PassPipeline, OutputKind OK,
                            VerifierKind VK,
                            bool ShouldPreserveAssemblyUseListOrder,
-                           bool ShouldPreserveBitcodeUseListOrder) {
+                           bool ShouldPreserveBitcodeUseListOrder,
+                           bool EmitSummaryIndex, bool EmitModuleHash) {
   PassBuilder PB(TM);
 
   // Specially handle the alias analysis manager so that we can register
@@ -76,16 +77,7 @@ bool llvm::runPassPipeline(StringRef Arg0, LLVMContext &Context, Module &M,
   PB.registerCGSCCAnalyses(CGAM);
   PB.registerFunctionAnalyses(FAM);
   PB.registerLoopAnalyses(LAM);
-
-  // Cross register the analysis managers through their proxies.
-  MAM.registerPass([&] { return FunctionAnalysisManagerModuleProxy(FAM); });
-  MAM.registerPass([&] { return CGSCCAnalysisManagerModuleProxy(CGAM); });
-  CGAM.registerPass([&] { return FunctionAnalysisManagerCGSCCProxy(FAM); });
-  CGAM.registerPass([&] { return ModuleAnalysisManagerCGSCCProxy(MAM); });
-  FAM.registerPass([&] { return CGSCCAnalysisManagerFunctionProxy(CGAM); });
-  FAM.registerPass([&] { return ModuleAnalysisManagerFunctionProxy(MAM); });
-  FAM.registerPass([&] { return LoopAnalysisManagerFunctionProxy(LAM); });
-  LAM.registerPass([&] { return FunctionAnalysisManagerLoopProxy(FAM); });
+  PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
   ModulePassManager MPM(DebugPM);
   if (VK > VK_NoVerifier)
@@ -109,8 +101,8 @@ bool llvm::runPassPipeline(StringRef Arg0, LLVMContext &Context, Module &M,
         PrintModulePass(Out->os(), "", ShouldPreserveAssemblyUseListOrder));
     break;
   case OK_OutputBitcode:
-    MPM.addPass(
-        BitcodeWriterPass(Out->os(), ShouldPreserveBitcodeUseListOrder));
+    MPM.addPass(BitcodeWriterPass(Out->os(), ShouldPreserveBitcodeUseListOrder,
+                                  EmitSummaryIndex, EmitModuleHash));
     break;
   }
 
