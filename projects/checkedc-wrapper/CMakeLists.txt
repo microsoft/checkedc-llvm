@@ -28,11 +28,29 @@ if(EXISTS ${LLVM_MAIN_SRC_DIR}/projects/checkedc-wrapper/checkedc)
 
   list(APPEND CHECKEDC_TEST_DEPS
     clang clang-headers
+    clang-format
+    c-index-test diagtool
+    clang-tblgen
+    clang-offload-bundler
     )
+
+  if(CLANG_ENABLE_STATIC_ANALYZER)
+    list(APPEND CLANG_TEST_DEPS
+      clang-check
+      )
+  endif()
 
   set(CHECKEDC_TEST_PARAMS
     checkedc_site_config=${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg
     )
+
+if( NOT CLANG_BUILT_STANDALONE )
+  list(APPEND CHECKEDC_TEST_DEPS
+    llvm-config
+    FileCheck count not
+    opt
+    )
+endif()
 
   add_custom_target(checkedc-test-depends DEPENDS ${CHECKEDC_TEST_DEPS})
 
