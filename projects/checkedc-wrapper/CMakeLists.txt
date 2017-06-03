@@ -8,7 +8,8 @@
 # To do that, it sets up  the information needed by the LIT tool.
 
 if(EXISTS ${LLVM_MAIN_SRC_DIR}/projects/checkedc-wrapper/checkedc)
- 
+  add_subdirectory(checkedc/include)
+
   set(CHECKEDC_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
   set(CHECKEDC_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
 
@@ -27,7 +28,7 @@ if(EXISTS ${LLVM_MAIN_SRC_DIR}/projects/checkedc-wrapper/checkedc)
     )
 
   list(APPEND CHECKEDC_TEST_DEPS
-    clang clang-headers
+    clang clang-headers checkedc-headers
     )
 
   if(CLANG_ENABLE_STATIC_ANALYZER)
