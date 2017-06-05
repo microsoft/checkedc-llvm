@@ -407,6 +407,12 @@ else()
   set(LINK_POLLY_INTO_TOOLS OFF)
 endif()
 
+if (EXISTS ${LLVM_MAIN_SRC_DIR}/projects/checkedc-wrapper/checkedc)
+  set(CHECKEDC_IN_TREE TRUE)
+else()
+  set(CHECKEDC_IN_TREE FALSE)
+endif()
+
 # Define an option controlling whether we should build for 32-bit on 64-bit
 # platforms, where supported.
 if( CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT WIN32 )
