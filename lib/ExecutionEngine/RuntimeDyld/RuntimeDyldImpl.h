@@ -149,26 +149,41 @@ public:
   /// The size of this relocation (MachO specific).
   unsigned Size;
 
+  // COFF specific.
+  bool IsTargetThumbFunc;
+
   RelocationEntry(unsigned id, uint64_t offset, uint32_t type, int64_t addend)
       : SectionID(id), Offset(offset), RelType(type), Addend(addend),
-        SymOffset(0), IsPCRel(false), Size(0) {}
+        SymOffset(0), IsPCRel(false), Size(0), IsTargetThumbFunc(false) {}
 
   RelocationEntry(unsigned id, uint64_t offset, uint32_t type, int64_t addend,
                   uint64_t symoffset)
       : SectionID(id), Offset(offset), RelType(type), Addend(addend),
-        SymOffset(symoffset), IsPCRel(false), Size(0) {}
+        SymOffset(symoffset), IsPCRel(false), Size(0),
+        IsTargetThumbFunc(false) {}
 
   RelocationEntry(unsigned id, uint64_t offset, uint32_t type, int64_t addend,
                   bool IsPCRel, unsigned Size)
       : SectionID(id), Offset(offset), RelType(type), Addend(addend),
-        SymOffset(0), IsPCRel(IsPCRel), Size(Size) {}
+        SymOffset(0), IsPCRel(IsPCRel), Size(Size), IsTargetThumbFunc(false) {}
 
   RelocationEntry(unsigned id, uint64_t offset, uint32_t type, int64_t addend,
                   unsigned SectionA, uint64_t SectionAOffset, unsigned SectionB,
                   uint64_t SectionBOffset, bool IsPCRel, unsigned Size)
       : SectionID(id), Offset(offset), RelType(type),
         Addend(SectionAOffset - SectionBOffset + addend), IsPCRel(IsPCRel),
-        Size(Size) {
+        Size(Size), IsTargetThumbFunc(false) {
+    Sections.SectionA = SectionA;
+    Sections.SectionB = SectionB;
+  }
+
+  RelocationEntry(unsigned id, uint64_t offset, uint32_t type, int64_t addend,
+                  unsigned SectionA, uint64_t SectionAOffset, unsigned SectionB,
+                  uint64_t SectionBOffset, bool IsPCRel, unsigned Size,
+                  bool IsTargetThumbFunc)
+      : SectionID(id), Offset(offset), RelType(type),
+        Addend(SectionAOffset - SectionBOffset + addend), IsPCRel(IsPCRel),
+        Size(Size), IsTargetThumbFunc(IsTargetThumbFunc) {
     Sections.SectionA = SectionA;
     Sections.SectionB = SectionB;
   }
@@ -198,7 +213,7 @@ public:
   }
 };
 
-/// @brief Symbol info for RuntimeDyld. 
+/// @brief Symbol info for RuntimeDyld.
 class SymbolTableEntry {
 public:
   SymbolTableEntry()
@@ -275,6 +290,7 @@ protected:
   Triple::ArchType Arch;
   bool IsTargetLittleEndian;
   bool IsMipsO32ABI;
+  bool IsMipsN32ABI;
   bool IsMipsN64ABI;
 
   // True if all sections should be passed to the memory manager, false if only
@@ -338,6 +354,7 @@ protected:
 
   virtual void setMipsABI(const ObjectFile &Obj) {
     IsMipsO32ABI = false;
+    IsMipsN32ABI = false;
     IsMipsN64ABI = false;
   }
 
@@ -409,12 +426,23 @@ protected:
                               uint64_t &RODataSize, uint32_t &RODataAlign,
                               uint64_t &RWDataSize, uint32_t &RWDataAlign);
 
+  // \brief Compute GOT size
+  unsigned computeGOTSize(const ObjectFile &Obj);
+
   // \brief Compute the stub buffer size required for a section
   unsigned computeSectionStubBufSize(const ObjectFile &Obj,
                                      const SectionRef &Section);
 
   // \brief Implementation of the generic part of the loadObject algorithm.
   Expected<ObjSectionToIDMap> loadObjectImpl(const object::ObjectFile &Obj);
+
+  // \brief Return size of Global Offset Table (GOT) entry
+  virtual size_t getGOTEntrySize() { return 0; }
+
+  // \brief Return true if the relocation R may require allocating a GOT entry.
+  virtual bool relocationNeedsGot(const RelocationRef &R) const {
+    return false;
+  }
 
   // \brief Return true if the relocation R may require allocating a stub.
   virtual bool relocationNeedsStub(const RelocationRef &R) const {

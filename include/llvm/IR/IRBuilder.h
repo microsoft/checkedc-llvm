@@ -17,7 +17,6 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/None.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/IR/BasicBlock.h"
@@ -34,6 +33,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Value.h"
@@ -45,6 +45,8 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
+#include <functional>
 
 namespace llvm {
 
@@ -74,7 +76,7 @@ class IRBuilderCallbackInserter : IRBuilderDefaultInserter {
 
 public:
   IRBuilderCallbackInserter(std::function<void(Instruction *)> Callback)
-      : Callback(Callback) {}
+      : Callback(std::move(Callback)) {}
 
 protected:
   void InsertHelper(Instruction *I, const Twine &Name,
@@ -101,7 +103,7 @@ protected:
 public:
   IRBuilderBase(LLVMContext &context, MDNode *FPMathTag = nullptr,
                 ArrayRef<OperandBundleDef> OpBundles = None)
-      : Context(context), DefaultFPMathTag(FPMathTag), FMF(),
+      : Context(context), DefaultFPMathTag(FPMathTag),
         DefaultOperandBundles(OpBundles) {
     ClearInsertionPoint();
   }
@@ -114,7 +116,7 @@ public:
   /// inserted into a block.
   void ClearInsertionPoint() {
     BB = nullptr;
-    InsertPt.reset(nullptr);
+    InsertPt = BasicBlock::iterator();
   }
 
   BasicBlock *GetInsertBlock() const { return BB; }
@@ -165,12 +167,12 @@ public:
 
   /// InsertPoint - A saved insertion point.
   class InsertPoint {
-    BasicBlock *Block;
+    BasicBlock *Block = nullptr;
     BasicBlock::iterator Point;
 
   public:
     /// \brief Creates a new insertion point which doesn't point to anything.
-    InsertPoint() : Block(nullptr) {}
+    InsertPoint() = default;
 
     /// \brief Creates a new insertion point at the given location.
     InsertPoint(BasicBlock *InsertBlock, BasicBlock::iterator InsertPoint)
@@ -179,8 +181,8 @@ public:
     /// \brief Returns true if this insert point is set.
     bool isSet() const { return (Block != nullptr); }
 
-    llvm::BasicBlock *getBlock() const { return Block; }
-    llvm::BasicBlock::iterator getPoint() const { return Point; }
+    BasicBlock *getBlock() const { return Block; }
+    BasicBlock::iterator getPoint() const { return Point; }
   };
 
   /// \brief Returns the current insert point.
@@ -230,13 +232,13 @@ public:
     BasicBlock::iterator Point;
     DebugLoc DbgLoc;
 
-    InsertPointGuard(const InsertPointGuard &) = delete;
-    InsertPointGuard &operator=(const InsertPointGuard &) = delete;
-
   public:
     InsertPointGuard(IRBuilderBase &B)
         : Builder(B), Block(B.GetInsertBlock()), Point(B.GetInsertPoint()),
           DbgLoc(B.getCurrentDebugLocation()) {}
+
+    InsertPointGuard(const InsertPointGuard &) = delete;
+    InsertPointGuard &operator=(const InsertPointGuard &) = delete;
 
     ~InsertPointGuard() {
       Builder.restoreIP(InsertPoint(Block, Point));
@@ -251,13 +253,12 @@ public:
     FastMathFlags FMF;
     MDNode *FPMathTag;
 
-    FastMathFlagGuard(const FastMathFlagGuard &) = delete;
-    FastMathFlagGuard &operator=(
-        const FastMathFlagGuard &) = delete;
-
   public:
     FastMathFlagGuard(IRBuilderBase &B)
         : Builder(B), FMF(B.FMF), FPMathTag(B.DefaultFPMathTag) {}
+
+    FastMathFlagGuard(const FastMathFlagGuard &) = delete;
+    FastMathFlagGuard &operator=(const FastMathFlagGuard &) = delete;
 
     ~FastMathFlagGuard() {
       Builder.FMF = FMF;
@@ -559,6 +560,22 @@ public:
                              int DerivedOffset,
                              Type *ResultType,
                              const Twine &Name = "");
+
+  /// Create a call to intrinsic \p ID with 2 operands which is mangled on the
+  /// first type.
+  CallInst *CreateBinaryIntrinsic(Intrinsic::ID ID,
+                                  Value *LHS, Value *RHS,
+                                  const Twine &Name = "");
+
+  /// Create call to the minnum intrinsic.
+  CallInst *CreateMinNum(Value *LHS, Value *RHS, const Twine &Name = "") {
+    return CreateBinaryIntrinsic(Intrinsic::minnum, LHS, RHS, Name);
+  }
+
+  /// Create call to the maxnum intrinsic.
+  CallInst *CreateMaxNum(Value *LHS, Value *RHS, const Twine &Name = "") {
+    return CreateBinaryIntrinsic(Intrinsic::minnum, LHS, RHS, Name);
+  }
 
 private:
   /// \brief Create a call to a masked intrinsic with given Id.
@@ -1035,7 +1052,7 @@ public:
     if (Constant *LC = dyn_cast<Constant>(LHS))
       if (Constant *RC = dyn_cast<Constant>(RHS))
         return Insert(Folder.CreateBinOp(Opc, LC, RC), Name);
-    llvm::Instruction *BinOp = BinaryOperator::Create(Opc, LHS, RHS);
+    Instruction *BinOp = BinaryOperator::Create(Opc, LHS, RHS);
     if (isa<FPMathOperator>(BinOp))
       BinOp = AddFPMathAttributes(BinOp, FPMathTag, FMF);
     return Insert(BinOp, Name);
@@ -1073,9 +1090,15 @@ public:
   // Instruction creation methods: Memory Instructions
   //===--------------------------------------------------------------------===//
 
+  AllocaInst *CreateAlloca(Type *Ty, unsigned AddrSpace,
+                           Value *ArraySize = nullptr, const Twine &Name = "") {
+    return Insert(new AllocaInst(Ty, AddrSpace, ArraySize), Name);
+  }
+
   AllocaInst *CreateAlloca(Type *Ty, Value *ArraySize = nullptr,
                            const Twine &Name = "") {
-    return Insert(new AllocaInst(Ty, ArraySize), Name);
+    const DataLayout &DL = BB->getParent()->getParent()->getDataLayout();
+    return Insert(new AllocaInst(Ty, DL.getAllocaAddrSpace(), ArraySize), Name);
   }
   // \brief Provided to resolve 'CreateLoad(Ptr, "...")' correctly, instead of
   // converting the string to 'bool' for the isVolatile parameter.
@@ -1445,12 +1468,6 @@ public:
     return CreateBitCast(V, DestTy, Name);
   }
 
-private:
-  // \brief Provided to resolve 'CreateIntCast(Ptr, Ptr, "...")', giving a
-  // compile time error, instead of converting the string to bool for the
-  // isSigned parameter.
-  Value *CreateIntCast(Value *, Type *, const char *) = delete;
-
 public:
   Value *CreateFPCast(Value *V, Type *DestTy, const Twine &Name = "") {
     if (V->getType() == DestTy)
@@ -1459,6 +1476,11 @@ public:
       return Insert(Folder.CreateFPCast(VC, DestTy), Name);
     return Insert(CastInst::CreateFPCast(V, DestTy), Name);
   }
+
+  // \brief Provided to resolve 'CreateIntCast(Ptr, Ptr, "...")', giving a
+  // compile time error, instead of converting the string to bool for the
+  // isSigned parameter.
+  Value *CreateIntCast(Value *, Type *, const char *) = delete;
 
   //===--------------------------------------------------------------------===//
   // Instruction creation methods: Compare Instructions
@@ -1584,7 +1606,7 @@ public:
     return CreateCall(FTy, Callee, Args, Name, FPMathTag);
   }
 
-  CallInst *CreateCall(llvm::FunctionType *FTy, Value *Callee,
+  CallInst *CreateCall(FunctionType *FTy, Value *Callee,
                        ArrayRef<Value *> Args, const Twine &Name = "",
                        MDNode *FPMathTag = nullptr) {
     CallInst *CI = CallInst::Create(FTy, Callee, Args, DefaultOperandBundles);
@@ -1791,24 +1813,16 @@ public:
     return V;
   }
 
-  /// \brief Create an assume intrinsic call that represents an alignment
-  /// assumption on the provided pointer.
-  ///
-  /// An optional offset can be provided, and if it is provided, the offset
-  /// must be subtracted from the provided pointer to get the pointer with the
-  /// specified alignment.
-  CallInst *CreateAlignmentAssumption(const DataLayout &DL, Value *PtrValue,
-                                      unsigned Alignment,
-                                      Value *OffsetValue = nullptr) {
-    assert(isa<PointerType>(PtrValue->getType()) &&
-           "trying to create an alignment assumption on a non-pointer?");
-
-    PointerType *PtrTy = cast<PointerType>(PtrValue->getType());
-    Type *IntPtrTy = getIntPtrTy(DL, PtrTy->getAddressSpace());
+private:
+  /// \brief Helper function that creates an assume intrinsic call that
+  /// represents an alignment assumption on the provided Ptr, Mask, Type
+  /// and Offset.
+  CallInst *CreateAlignmentAssumptionHelper(const DataLayout &DL,
+                                            Value *PtrValue, Value *Mask,
+                                            Type *IntPtrTy,
+                                            Value *OffsetValue) {
     Value *PtrIntValue = CreatePtrToInt(PtrValue, IntPtrTy, "ptrint");
 
-    Value *Mask = ConstantInt::get(IntPtrTy,
-      Alignment > 0 ? Alignment - 1 : 0);
     if (OffsetValue) {
       bool IsOffsetZero = false;
       if (ConstantInt *CI = dyn_cast<ConstantInt>(OffsetValue))
@@ -1825,8 +1839,59 @@ public:
     Value *Zero = ConstantInt::get(IntPtrTy, 0);
     Value *MaskedPtr = CreateAnd(PtrIntValue, Mask, "maskedptr");
     Value *InvCond = CreateICmpEQ(MaskedPtr, Zero, "maskcond");
-
     return CreateAssumption(InvCond);
+  }
+
+public:
+  /// \brief Create an assume intrinsic call that represents an alignment
+  /// assumption on the provided pointer.
+  ///
+  /// An optional offset can be provided, and if it is provided, the offset
+  /// must be subtracted from the provided pointer to get the pointer with the
+  /// specified alignment.
+  CallInst *CreateAlignmentAssumption(const DataLayout &DL, Value *PtrValue,
+                                      unsigned Alignment,
+                                      Value *OffsetValue = nullptr) {
+    assert(isa<PointerType>(PtrValue->getType()) &&
+           "trying to create an alignment assumption on a non-pointer?");
+    PointerType *PtrTy = cast<PointerType>(PtrValue->getType());
+    Type *IntPtrTy = getIntPtrTy(DL, PtrTy->getAddressSpace());
+
+    Value *Mask = ConstantInt::get(IntPtrTy, Alignment > 0 ? Alignment - 1 : 0);
+    return CreateAlignmentAssumptionHelper(DL, PtrValue, Mask, IntPtrTy,
+                                           OffsetValue);
+  }
+  //
+  /// \brief Create an assume intrinsic call that represents an alignment
+  /// assumption on the provided pointer.
+  ///
+  /// An optional offset can be provided, and if it is provided, the offset
+  /// must be subtracted from the provided pointer to get the pointer with the
+  /// specified alignment.
+  ///
+  /// This overload handles the condition where the Alignment is dependent
+  /// on an existing value rather than a static value.
+  CallInst *CreateAlignmentAssumption(const DataLayout &DL, Value *PtrValue,
+                                      Value *Alignment,
+                                      Value *OffsetValue = nullptr) {
+    assert(isa<PointerType>(PtrValue->getType()) &&
+           "trying to create an alignment assumption on a non-pointer?");
+    PointerType *PtrTy = cast<PointerType>(PtrValue->getType());
+    Type *IntPtrTy = getIntPtrTy(DL, PtrTy->getAddressSpace());
+
+    if (Alignment->getType() != IntPtrTy)
+      Alignment = CreateIntCast(Alignment, IntPtrTy, /*isSigned*/ true,
+                                "alignmentcast");
+    Value *IsPositive =
+        CreateICmp(CmpInst::ICMP_SGT, Alignment,
+                   ConstantInt::get(Alignment->getType(), 0), "ispositive");
+    Value *PositiveMask =
+        CreateSub(Alignment, ConstantInt::get(IntPtrTy, 1), "positivemask");
+    Value *Mask = CreateSelect(IsPositive, PositiveMask,
+                               ConstantInt::get(IntPtrTy, 0), "mask");
+
+    return CreateAlignmentAssumptionHelper(DL, PtrValue, Mask, IntPtrTy,
+                                           OffsetValue);
   }
 };
 

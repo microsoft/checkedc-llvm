@@ -1,4 +1,4 @@
-//===-- llvm/CodeGen/MachineRegisterInfo.h ----------------------*- C++ -*-===//
+//===- llvm/CodeGen/MachineRegisterInfo.h -----------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -15,19 +15,29 @@
 #define LLVM_CODEGEN_MACHINEREGISTERINFO_H
 
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IndexedMap.h"
-#include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/iterator_range.h"
-// PointerUnion needs to have access to the full RegisterBank type.
+#include "llvm/ADT/PointerUnion.h"
 #include "llvm/CodeGen/GlobalISel/RegisterBank.h"
 #include "llvm/CodeGen/LowLevelType.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBundle.h"
+#include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/MC/LaneBitmask.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
 #include <vector>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <memory>
+#include <utility>
 
 namespace llvm {
+
 class PSetIterator;
 
 /// Convenient type to represent either a register class or a register bank.
@@ -41,15 +51,16 @@ class MachineRegisterInfo {
 public:
   class Delegate {
     virtual void anchor();
-  public:
-    virtual void MRI_NoteNewVirtualRegister(unsigned Reg) = 0;
 
-    virtual ~Delegate() {}
+  public:
+    virtual ~Delegate() = default;
+
+    virtual void MRI_NoteNewVirtualRegister(unsigned Reg) = 0;
   };
 
 private:
   MachineFunction *MF;
-  Delegate *TheDelegate;
+  Delegate *TheDelegate = nullptr;
 
   /// True if subregister liveness is tracked.
   const bool TracksSubRegLiveness;
@@ -61,6 +72,15 @@ private:
   IndexedMap<std::pair<RegClassOrRegBank, MachineOperand *>,
              VirtReg2IndexFunctor>
       VRegInfo;
+
+  /// The flag is true upon \p UpdatedCSRs initialization
+  /// and false otherwise.
+  bool IsUpdatedCSRsInitialized;
+
+  /// Contains the updated callee saved register list.
+  /// As opposed to the static list defined in register info,
+  /// all registers that were disabled are removed from the list.
+  SmallVector<MCPhysReg, 16> UpdatedCSRs;
 
   /// RegAllocHints - This vector records register allocation hints for virtual
   /// registers. For each virtual register, it keeps a register and hint type
@@ -109,24 +129,16 @@ private:
   /// Map generic virtual registers to their actual size.
   mutable std::unique_ptr<VRegToTypeMap> VRegToType;
 
-  /// Accessor for VRegToType. This accessor should only be used
-  /// by global-isel related work.
-  VRegToTypeMap &getVRegToType() const {
-    if (!VRegToType)
-      VRegToType.reset(new VRegToTypeMap);
-    return *VRegToType.get();
-  }
-
   /// Keep track of the physical registers that are live in to the function.
   /// Live in values are typically arguments in registers.  LiveIn values are
   /// allowed to have virtual registers associated with them, stored in the
   /// second element.
-  std::vector<std::pair<unsigned, unsigned> > LiveIns;
+  std::vector<std::pair<unsigned, unsigned>> LiveIns;
 
-  MachineRegisterInfo(const MachineRegisterInfo&) = delete;
-  void operator=(const MachineRegisterInfo&) = delete;
 public:
   explicit MachineRegisterInfo(MachineFunction *MF);
+  MachineRegisterInfo(const MachineRegisterInfo &) = delete;
+  MachineRegisterInfo &operator=(const MachineRegisterInfo &) = delete;
 
   const TargetRegisterInfo *getTargetRegisterInfo() const {
     return MF->getSubtarget().getRegisterInfo();
@@ -204,6 +216,23 @@ public:
   // Register Info
   //===--------------------------------------------------------------------===//
 
+  /// Returns true if the updated CSR list was initialized and false otherwise.
+  bool isUpdatedCSRsInitialized() const { return IsUpdatedCSRsInitialized; }
+
+  /// Disables the register from the list of CSRs.
+  /// I.e. the register will not appear as part of the CSR mask.
+  /// \see UpdatedCalleeSavedRegs.
+  void disableCalleeSavedRegister(unsigned Reg);
+
+  /// Returns list of callee saved registers.
+  /// The function returns the updated CSR list (after taking into account
+  /// registers that are disabled from the CSR list).
+  const MCPhysReg *getCalleeSavedRegs() const;
+
+  /// Sets the updated Callee Saved Registers list.
+  /// Notice that it will override ant previously disabled/saved CSRs.
+  void setCalleeSavedRegs(ArrayRef<MCPhysReg> CSRs);
+
   // Strictly for use by MachineInstr.cpp.
   void addRegOperandToUseList(MachineOperand *MO);
 
@@ -234,8 +263,6 @@ public:
     friend class defusechain_iterator;
   template<bool, bool, bool, bool, bool, bool>
     friend class defusechain_instr_iterator;
-
-
 
   /// reg_iterator/reg_begin/reg_end - Walk all defs and uses of the specified
   /// register.
@@ -550,10 +577,9 @@ public:
   void dumpUses(unsigned RegNo) const;
 #endif
 
-  /// isConstantPhysReg - Returns true if PhysReg is unallocatable and constant
-  /// throughout the function.  It is safe to move instructions that read such
-  /// a physreg.
-  bool isConstantPhysReg(unsigned PhysReg, const MachineFunction &MF) const;
+  /// Returns true if PhysReg is unallocatable and constant throughout the
+  /// function. Writing to a constant register has no effect.
+  bool isConstantPhysReg(unsigned PhysReg) const;
 
   /// Get an iterator over the pressure sets affected by the given physical or
   /// virtual register. If RegUnit is physical, it must be a register unit (from
@@ -642,6 +668,14 @@ public:
   ///
   unsigned createVirtualRegister(const TargetRegisterClass *RegClass);
 
+  /// Accessor for VRegToType. This accessor should only be used
+  /// by global-isel related work.
+  VRegToTypeMap &getVRegToType() const {
+    if (!VRegToType)
+      VRegToType.reset(new VRegToTypeMap);
+    return *VRegToType.get();
+  }
+
   /// Get the low-level type of \p VReg or LLT{} if VReg is not a generic
   /// (target independent) virtual register.
   LLT getType(unsigned VReg) const;
@@ -656,6 +690,13 @@ public:
   /// Remove all types associated to virtual registers (after instruction
   /// selection and constraining of all generic virtual registers).
   void clearVirtRegTypes();
+
+  /// Creates a new virtual register that has no register class, register bank
+  /// or size assigned yet. This is only allowed to be used
+  /// temporarily while constructing machine instructions. Most operations are
+  /// undefined on an incomplete register until one of setRegClass(),
+  /// setRegBank() or setSize() has been called on it.
+  unsigned createIncompleteVirtualRegister();
 
   /// getNumVirtRegs - Return the number of virtual registers created.
   ///
@@ -720,8 +761,6 @@ public:
   }
 
   const BitVector &getUsedPhysRegsMask() const { return UsedPhysRegMask; }
-
-  void setUsedPhysRegMask(BitVector &Mask) { UsedPhysRegMask = Mask; }
 
   //===--------------------------------------------------------------------===//
   // Reserved Register Info
@@ -794,7 +833,7 @@ public:
 
   // Iteration support for the live-ins set.  It's kept in sorted order
   // by register number.
-  typedef std::vector<std::pair<unsigned,unsigned> >::const_iterator
+  typedef std::vector<std::pair<unsigned,unsigned>>::const_iterator
   livein_iterator;
   livein_iterator livein_begin() const { return LiveIns.begin(); }
   livein_iterator livein_end()   const { return LiveIns.end(); }
@@ -830,7 +869,10 @@ public:
            bool ByOperand, bool ByInstr, bool ByBundle>
   class defusechain_iterator
     : public std::iterator<std::forward_iterator_tag, MachineInstr, ptrdiff_t> {
-    MachineOperand *Op;
+    friend class MachineRegisterInfo;
+
+    MachineOperand *Op = nullptr;
+
     explicit defusechain_iterator(MachineOperand *op) : Op(op) {
       // If the first node isn't one we're interested in, advance to one that
       // we are interested in.
@@ -841,7 +883,6 @@ public:
           advance();
       }
     }
-    friend class MachineRegisterInfo;
 
     void advance() {
       assert(Op && "Cannot increment end iterator!");
@@ -862,13 +903,14 @@ public:
           Op = getNextOperandForReg(Op);
       }
     }
+
   public:
     typedef std::iterator<std::forward_iterator_tag,
                           MachineInstr, ptrdiff_t>::reference reference;
     typedef std::iterator<std::forward_iterator_tag,
                           MachineInstr, ptrdiff_t>::pointer pointer;
 
-    defusechain_iterator() : Op(nullptr) {}
+    defusechain_iterator() = default;
 
     bool operator==(const defusechain_iterator &x) const {
       return Op == x.Op;
@@ -891,10 +933,11 @@ public:
           advance();
         } while (Op && Op->getParent() == P);
       } else if (ByBundle) {
-        MachineInstr &P = getBundleStart(*Op->getParent());
+        MachineBasicBlock::instr_iterator P =
+            getBundleStart(Op->getParent()->getIterator());
         do {
           advance();
-        } while (Op && &getBundleStart(*Op->getParent()) == &P);
+        } while (Op && getBundleStart(Op->getParent()->getIterator()) == P);
       }
 
       return *this;
@@ -932,7 +975,10 @@ public:
            bool ByOperand, bool ByInstr, bool ByBundle>
   class defusechain_instr_iterator
     : public std::iterator<std::forward_iterator_tag, MachineInstr, ptrdiff_t> {
-    MachineOperand *Op;
+    friend class MachineRegisterInfo;
+
+    MachineOperand *Op = nullptr;
+
     explicit defusechain_instr_iterator(MachineOperand *op) : Op(op) {
       // If the first node isn't one we're interested in, advance to one that
       // we are interested in.
@@ -943,7 +989,6 @@ public:
           advance();
       }
     }
-    friend class MachineRegisterInfo;
 
     void advance() {
       assert(Op && "Cannot increment end iterator!");
@@ -964,13 +1009,14 @@ public:
           Op = getNextOperandForReg(Op);
       }
     }
+
   public:
     typedef std::iterator<std::forward_iterator_tag,
                           MachineInstr, ptrdiff_t>::reference reference;
     typedef std::iterator<std::forward_iterator_tag,
                           MachineInstr, ptrdiff_t>::pointer pointer;
 
-    defusechain_instr_iterator() : Op(nullptr) {}
+    defusechain_instr_iterator() = default;
 
     bool operator==(const defusechain_instr_iterator &x) const {
       return Op == x.Op;
@@ -993,10 +1039,11 @@ public:
           advance();
         } while (Op && Op->getParent() == P);
       } else if (ByBundle) {
-        MachineInstr &P = getBundleStart(*Op->getParent());
+        MachineBasicBlock::instr_iterator P =
+            getBundleStart(Op->getParent()->getIterator());
         do {
           advance();
-        } while (Op && &getBundleStart(*Op->getParent()) == &P);
+        } while (Op && getBundleStart(Op->getParent()->getIterator()) == P);
       }
 
       return *this;
@@ -1009,7 +1056,7 @@ public:
     MachineInstr &operator*() const {
       assert(Op && "Cannot dereference end iterator!");
       if (ByBundle)
-        return getBundleStart(*Op->getParent());
+        return *getBundleStart(Op->getParent()->getIterator());
       return *Op->getParent();
     }
 
@@ -1021,10 +1068,12 @@ public:
 /// register. If Reg is physical, it must be a register unit (from
 /// MCRegUnitIterator).
 class PSetIterator {
-  const int *PSet;
-  unsigned Weight;
+  const int *PSet = nullptr;
+  unsigned Weight = 0;
+
 public:
-  PSetIterator(): PSet(nullptr), Weight(0) {}
+  PSetIterator() = default;
+
   PSetIterator(unsigned RegUnit, const MachineRegisterInfo *MRI) {
     const TargetRegisterInfo *TRI = MRI->getTargetRegisterInfo();
     if (TargetRegisterInfo::isVirtualRegister(RegUnit)) {
@@ -1039,6 +1088,7 @@ public:
     if (*PSet == -1)
       PSet = nullptr;
   }
+
   bool isValid() const { return PSet; }
 
   unsigned getWeight() const { return Weight; }
@@ -1058,6 +1108,6 @@ getPressureSets(unsigned RegUnit) const {
   return PSetIterator(RegUnit, this);
 }
 
-} // End llvm namespace
+} // end namespace llvm
 
-#endif
+#endif // LLVM_CODEGEN_MACHINEREGISTERINFO_H

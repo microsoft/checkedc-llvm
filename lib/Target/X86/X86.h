@@ -21,7 +21,10 @@ namespace llvm {
 
 class FunctionPass;
 class ImmutablePass;
+class InstructionSelector;
 class PassRegistry;
+class X86RegisterBankInfo;
+class X86Subtarget;
 class X86TargetMachine;
 
 /// This pass converts a legalized DAG into a X86-specific DAG, ready for
@@ -87,6 +90,17 @@ FunctionPass *createX86ExpandPseudoPass();
 FunctionPass *createX86FixupBWInsts();
 
 void initializeFixupBWInstPassPass(PassRegistry &);
+
+/// This pass replaces EVEX ecnoded of AVX-512 instructiosn by VEX 
+/// encoding when possible in order to reduce code size.
+FunctionPass *createX86EvexToVexInsts();
+
+InstructionSelector *createX86InstructionSelector(const X86TargetMachine &TM,
+                                                  X86Subtarget &,
+                                                  X86RegisterBankInfo &);
+
+void initializeEvexToVexInstPassPass(PassRegistry &);
+
 } // End llvm namespace
 
 #endif

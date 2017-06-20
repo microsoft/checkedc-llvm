@@ -3,7 +3,7 @@
 ; Please update this file when making any IR changes. Information on the
 ; release process for this file is available here:
 ;
-;     http://llvm.org/docs/DeveloperPolicy.html#ir-backwards-compatibility 
+;     http://llvm.org/docs/DeveloperPolicy.html#ir-backwards-compatibility
 
 ; RUN: llvm-as < %s | llvm-dis | llvm-as | llvm-dis | FileCheck %s
 ; RUN-PR24755: verify-uselistorder < %s
@@ -760,6 +760,8 @@ define void @fastmathflags(float %op1, float %op2) {
   ; CHECK: %f.nsz = fadd nsz float %op1, %op2
   %f.arcp = fadd arcp float %op1, %op2
   ; CHECK: %f.arcp = fadd arcp float %op1, %op2
+  %f.contract = fadd contract float %op1, %op2
+  ; CHECK: %f.contract = fadd contract float %op1, %op2
   %f.fast = fadd fast float %op1, %op2
   ; CHECK: %f.fast = fadd fast float %op1, %op2
   ret void
@@ -1244,7 +1246,7 @@ exit:
   ; CHECK: select <2 x i1> <i1 true, i1 false>, <2 x i8> <i8 2, i8 3>, <2 x i8> <i8 3, i8 2>
 
   call void @f.nobuiltin() builtin
-  ; CHECK: call void @f.nobuiltin() #40
+  ; CHECK: call void @f.nobuiltin() #42
 
   call fastcc noalias i32* @f.noalias() noinline
   ; CHECK: call fastcc noalias i32* @f.noalias() #12
@@ -1590,8 +1592,36 @@ normal:
   ret void
 }
 
+declare void @vaargs_func(...)
+define void @invoke_with_operand_bundle_vaarg(i32* %ptr) personality i8 3 {
+; CHECK-LABEL: @invoke_with_operand_bundle_vaarg(
+ entry:
+  %l = load i32, i32* %ptr
+  %x = add i32 42, 1
+  invoke void (...) @vaargs_func(i32 10, i32 %x) [ "foo"(i32 42, i64 100, i32 %x), "foo"(i32 42, float  0.000000e+00, i32 %l) ]
+        to label %normal unwind label %exception
+; CHECK: invoke void (...) @vaargs_func(i32 10, i32 %x) [ "foo"(i32 42, i64 100, i32 %x), "foo"(i32 42, float  0.000000e+00, i32 %l) ]
+
+exception:
+  %cleanup = landingpad i8 cleanup
+  br label %normal
+normal:
+  ret void
+}
+
+
 declare void @f.writeonly() writeonly
-; CHECK: declare void @f.writeonly() #39
+; CHECK: declare void @f.writeonly() #40
+
+declare void @f.speculatable() speculatable
+; CHECK: declare void @f.speculatable() #41
+
+;; Constant Expressions
+
+define i8** @constexpr() {
+  ; CHECK: ret i8** getelementptr inbounds ({ [4 x i8*], [4 x i8*] }, { [4 x i8*], [4 x i8*] }* null, i32 0, inrange i32 1, i32 2)
+  ret i8** getelementptr inbounds ({ [4 x i8*], [4 x i8*] }, { [4 x i8*], [4 x i8*] }* null, i32 0, inrange i32 1, i32 2)
+}
 
 ; CHECK: attributes #0 = { alignstack=4 }
 ; CHECK: attributes #1 = { alignstack=8 }
@@ -1632,8 +1662,10 @@ declare void @f.writeonly() writeonly
 ; CHECK: attributes #36 = { argmemonly nounwind readonly }
 ; CHECK: attributes #37 = { argmemonly nounwind }
 ; CHECK: attributes #38 = { nounwind readonly }
-; CHECK: attributes #39 = { writeonly }
-; CHECK: attributes #40 = { builtin }
+; CHECK: attributes #39 = { inaccessiblemem_or_argmemonly nounwind }
+; CHECK: attributes #40 = { writeonly }
+; CHECK: attributes #41 = { speculatable }
+; CHECK: attributes #42 = { builtin }
 
 ;; Metadata
 

@@ -1,4 +1,5 @@
 ; RUN: llc -verify-machineinstrs -mcpu=pwr7 < %s | FileCheck %s
+; RUN: llc -verify-machineinstrs -mcpu=pwr7 -ppc-gen-isel=false < %s | FileCheck --check-prefix=CHECK-NO-ISEL %s
 target datalayout = "E-m:e-i64:64-n32:64"
 target triple = "powerpc64-unknown-linux-gnu"
 
@@ -13,12 +14,18 @@ entry:
 ; CHECK-LABEL: @test1
 ; CHECK-DAG: fcmpu {{[0-9]+}}, 1, 2
 ; CHECK-DAG: li [[REG1:[0-9]+]], 1
-; CHECK-DAG: lfs [[REG2:[0-9]+]],
+; CHECK-DAG: xxlxor [[REG2:[0-9]+]], [[REG2]], [[REG2]]
 ; CHECK-DAG: fcmpu {{[0-9]+}}, 2, [[REG2]]
 ; CHECK: crnor
 ; CHECK: crnor
 ; CHECK: crnand [[REG4:[0-9]+]],
 ; CHECK: isel 3, 0, [[REG1]], [[REG4]]
+; CHECK-NO-ISEL-LABEL: @test1
+; CHECK-NO-ISEL: bc 12, 20, [[TRUE:.LBB[0-9]+]]
+; CHECK-NO-ISEL-NEXT: blr
+; CHECK-NO-ISEL-NEXT: [[TRUE]]
+; CHECK-NO-ISEL-NEXT: addi 3, 0, 0
+; CHECK-NO-ISEL-NEXT: blr
 ; CHECK: blr
 }
 
@@ -33,7 +40,7 @@ entry:
 ; CHECK-LABEL: @test2
 ; CHECK-DAG: fcmpu {{[0-9]+}}, 1, 2
 ; CHECK-DAG: li [[REG1:[0-9]+]], 1
-; CHECK-DAG: lfs [[REG2:[0-9]+]],
+; CHECK-DAG: xxlxor [[REG2:[0-9]+]], [[REG2]], [[REG2]]
 ; CHECK-DAG: fcmpu {{[0-9]+}}, 2, [[REG2]]
 ; CHECK: crnor
 ; CHECK: crnor
@@ -55,7 +62,7 @@ entry:
 ; CHECK-LABEL: @test3
 ; CHECK-DAG: fcmpu {{[0-9]+}}, 1, 2
 ; CHECK-DAG: li [[REG1:[0-9]+]], 1
-; CHECK-DAG: lfs [[REG2:[0-9]+]],
+; CHECK-DAG: xxlxor [[REG2:[0-9]+]], [[REG2]], [[REG2]]
 ; CHECK-DAG: fcmpu {{[0-9]+}}, 2, [[REG2]]
 ; CHECK: crnor
 ; CHECK: crnor
@@ -135,7 +142,7 @@ entry:
   ret i32 %cond
 
 ; CHECK-LABEL: @exttest7
-; CHECK-DAG: cmplwi {{[0-9]+}}, 3, 5
+; CHECK-DAG: cmpwi {{[0-9]+}}, 3, 5
 ; CHECK-DAG: li [[REG1:[0-9]+]], 8
 ; CHECK-DAG: li [[REG2:[0-9]+]], 7
 ; CHECK: isel 3, [[REG2]], [[REG1]],

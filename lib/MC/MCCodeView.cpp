@@ -145,7 +145,7 @@ void CodeViewContext::emitStringTable(MCObjectStreamer &OS) {
   MCSymbol *StringBegin = Ctx.createTempSymbol("strtab_begin", false),
            *StringEnd = Ctx.createTempSymbol("strtab_end", false);
 
-  OS.EmitIntValue(unsigned(ModuleSubstreamKind::StringTable), 4);
+  OS.EmitIntValue(unsigned(ModuleDebugFragmentKind::StringTable), 4);
   OS.emitAbsoluteSymbolDiff(StringEnd, StringBegin, 4);
   OS.EmitLabel(StringBegin);
 
@@ -172,7 +172,7 @@ void CodeViewContext::emitFileChecksums(MCObjectStreamer &OS) {
   MCSymbol *FileBegin = Ctx.createTempSymbol("filechecksums_begin", false),
            *FileEnd = Ctx.createTempSymbol("filechecksums_end", false);
 
-  OS.EmitIntValue(unsigned(ModuleSubstreamKind::FileChecksums), 4);
+  OS.EmitIntValue(unsigned(ModuleDebugFragmentKind::FileChecksums), 4);
   OS.emitAbsoluteSymbolDiff(FileEnd, FileBegin, 4);
   OS.EmitLabel(FileBegin);
 
@@ -197,10 +197,10 @@ void CodeViewContext::emitLineTableForFunction(MCObjectStreamer &OS,
   MCSymbol *LineBegin = Ctx.createTempSymbol("linetable_begin", false),
            *LineEnd = Ctx.createTempSymbol("linetable_end", false);
 
-  OS.EmitIntValue(unsigned(ModuleSubstreamKind::Lines), 4);
+  OS.EmitIntValue(unsigned(ModuleDebugFragmentKind::Lines), 4);
   OS.emitAbsoluteSymbolDiff(LineEnd, LineBegin, 4);
   OS.EmitLabel(LineBegin);
-  OS.EmitCOFFSecRel32(FuncBegin);
+  OS.EmitCOFFSecRel32(FuncBegin, /*Offset=*/0);
   OS.EmitCOFFSectionIndex(FuncBegin);
 
   // Actual line info.
@@ -208,7 +208,7 @@ void CodeViewContext::emitLineTableForFunction(MCObjectStreamer &OS,
   bool HaveColumns = any_of(Locs, [](const MCCVLineEntry &LineEntry) {
     return LineEntry.getColumn() != 0;
   });
-  OS.EmitIntValue(HaveColumns ? int(LineFlags::HaveColumns) : 0, 2);
+  OS.EmitIntValue(HaveColumns ? int(LF_HaveColumns) : 0, 2);
   OS.emitAbsoluteSymbolDiff(FuncEnd, FuncBegin, 4);
 
   for (auto I = Locs.begin(), E = Locs.end(); I != E;) {
@@ -358,6 +358,15 @@ void CodeViewContext::encodeInlineLineTable(MCAsmLayout &Layout,
   SmallVectorImpl<char> &Buffer = Frag.getContents();
   Buffer.clear(); // Clear old contents if we went through relaxation.
   for (const MCCVLineEntry &Loc : Locs) {
+    // Exit early if our line table would produce an oversized InlineSiteSym
+    // record. Account for the ChangeCodeLength annotation emitted after the
+    // loop ends.
+    constexpr uint32_t InlineSiteSize = 12;
+    constexpr uint32_t AnnotationSize = 8;
+    size_t MaxBufferSize = MaxRecordLength - InlineSiteSize - AnnotationSize;
+    if (Buffer.size() >= MaxBufferSize)
+      break;
+
     if (Loc.getFunctionId() == Frag.SiteFuncId) {
       CurSourceLoc.File = Loc.getFileNum();
       CurSourceLoc.Line = Loc.getLine();
@@ -453,16 +462,41 @@ void CodeViewContext::encodeDefRange(MCAsmLayout &Layout,
   Fixups.clear();
   raw_svector_ostream OS(Contents);
 
-  // Write down each range where the variable is defined.
+  // Compute all the sizes up front.
+  SmallVector<std::pair<unsigned, unsigned>, 4> GapAndRangeSizes;
+  const MCSymbol *LastLabel = nullptr;
   for (std::pair<const MCSymbol *, const MCSymbol *> Range : Frag.getRanges()) {
+    unsigned GapSize =
+        LastLabel ? computeLabelDiff(Layout, LastLabel, Range.first) : 0;
     unsigned RangeSize = computeLabelDiff(Layout, Range.first, Range.second);
+    GapAndRangeSizes.push_back({GapSize, RangeSize});
+    LastLabel = Range.second;
+  }
+
+  // Write down each range where the variable is defined.
+  for (size_t I = 0, E = Frag.getRanges().size(); I != E;) {
+    // If the range size of multiple consecutive ranges is under the max,
+    // combine the ranges and emit some gaps.
+    const MCSymbol *RangeBegin = Frag.getRanges()[I].first;
+    unsigned RangeSize = GapAndRangeSizes[I].second;
+    size_t J = I + 1;
+    for (; J != E; ++J) {
+      unsigned GapAndRangeSize = GapAndRangeSizes[J].first + GapAndRangeSizes[J].second;
+      if (RangeSize + GapAndRangeSize > MaxDefRange)
+        break;
+      RangeSize += GapAndRangeSize;
+    }
+    unsigned NumGaps = J - I - 1;
+
+    support::endian::Writer<support::little> LEWriter(OS);
+
     unsigned Bias = 0;
     // We must split the range into chunks of MaxDefRange, this is a fundamental
     // limitation of the file format.
     do {
       uint16_t Chunk = std::min((uint32_t)MaxDefRange, RangeSize);
 
-      const MCSymbolRefExpr *SRE = MCSymbolRefExpr::create(Range.first, Ctx);
+      const MCSymbolRefExpr *SRE = MCSymbolRefExpr::create(RangeBegin, Ctx);
       const MCBinaryExpr *BE =
           MCBinaryExpr::createAdd(SRE, MCConstantExpr::create(Bias, Ctx), Ctx);
       MCValue Res;
@@ -473,26 +507,39 @@ void CodeViewContext::encodeDefRange(MCAsmLayout &Layout,
       StringRef FixedSizePortion = Frag.getFixedSizePortion();
       // Our record is a fixed sized prefix and a LocalVariableAddrRange that we
       // are artificially constructing.
-      size_t RecordSize =
-          FixedSizePortion.size() + sizeof(LocalVariableAddrRange);
-      // Write out the recrod size.
-      support::endian::Writer<support::little>(OS).write<uint16_t>(RecordSize);
+      size_t RecordSize = FixedSizePortion.size() +
+                          sizeof(LocalVariableAddrRange) + 4 * NumGaps;
+      // Write out the record size.
+      LEWriter.write<uint16_t>(RecordSize);
       // Write out the fixed size prefix.
       OS << FixedSizePortion;
       // Make space for a fixup that will eventually have a section relative
       // relocation pointing at the offset where the variable becomes live.
       Fixups.push_back(MCFixup::create(Contents.size(), BE, FK_SecRel_4));
-      Contents.resize(Contents.size() + 4); // Fixup for code start.
+      LEWriter.write<uint32_t>(0); // Fixup for code start.
       // Make space for a fixup that will record the section index for the code.
       Fixups.push_back(MCFixup::create(Contents.size(), BE, FK_SecRel_2));
-      Contents.resize(Contents.size() + 2); // Fixup for section index.
+      LEWriter.write<uint16_t>(0); // Fixup for section index.
       // Write down the range's extent.
-      support::endian::Writer<support::little>(OS).write<uint16_t>(Chunk);
+      LEWriter.write<uint16_t>(Chunk);
 
       // Move on to the next range.
       Bias += Chunk;
       RangeSize -= Chunk;
     } while (RangeSize > 0);
+
+    // Emit the gaps afterwards.
+    assert((NumGaps == 0 || Bias <= MaxDefRange) &&
+           "large ranges should not have gaps");
+    unsigned GapStartOffset = GapAndRangeSizes[I].second;
+    for (++I; I != J; ++I) {
+      unsigned GapSize, RangeSize;
+      assert(I < GapAndRangeSizes.size());
+      std::tie(GapSize, RangeSize) = GapAndRangeSizes[I];
+      LEWriter.write<uint16_t>(GapStartOffset);
+      LEWriter.write<uint16_t>(GapSize);
+      GapStartOffset += GapSize + RangeSize;
+    }
   }
 }
 

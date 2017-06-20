@@ -38,6 +38,7 @@ class HexagonCFGOptimizer : public MachineFunctionPass {
 
 private:
   void InvertAndChangeJumpTarget(MachineInstr &, MachineBasicBlock *);
+  bool isOnFallThroughPath(MachineBasicBlock *MBB);
 
 public:
   static char ID;
@@ -45,9 +46,7 @@ public:
     initializeHexagonCFGOptimizerPass(*PassRegistry::getPassRegistry());
   }
 
-  const char *getPassName() const override {
-    return "Hexagon CFG Optimizer";
-  }
+  StringRef getPassName() const override { return "Hexagon CFG Optimizer"; }
   bool runOnMachineFunction(MachineFunction &Fn) override;
   MachineFunctionProperties getRequiredProperties() const override {
     return MachineFunctionProperties().set(
@@ -108,6 +107,14 @@ void HexagonCFGOptimizer::InvertAndChangeJumpTarget(
   MI.getOperand(1).setMBB(NewTarget);
 }
 
+bool HexagonCFGOptimizer::isOnFallThroughPath(MachineBasicBlock *MBB) {
+  if (MBB->canFallThrough())
+    return true;
+  for (MachineBasicBlock *PB : MBB->predecessors())
+    if (PB->isLayoutSuccessor(MBB) && PB->canFallThrough())
+      return true;
+  return false;
+}
 
 bool HexagonCFGOptimizer::runOnMachineFunction(MachineFunction &Fn) {
   if (skipFunction(*Fn.getFunction()))
@@ -184,7 +191,6 @@ bool HexagonCFGOptimizer::runOnMachineFunction(MachineFunction &Fn) {
         }
 
         if ((NumSuccs == 2) && LayoutSucc && (LayoutSucc->pred_size() == 1)) {
-
           // Ensure that BB2 has one instruction -- an unconditional jump.
           if ((LayoutSucc->size() == 1) &&
               IsUnconditionalJump(LayoutSucc->front().getOpcode())) {
@@ -213,9 +219,8 @@ bool HexagonCFGOptimizer::runOnMachineFunction(MachineFunction &Fn) {
                 JumpAroundTarget->moveAfter(LayoutSucc);
                 // only move a block if it doesn't have a fall-thru. otherwise
                 // the CFG will be incorrect.
-                if (!UncondTarget->canFallThrough()) {
+                if (!isOnFallThroughPath(UncondTarget))
                   UncondTarget->moveAfter(JumpAroundTarget);
-                }
               }
 
               //

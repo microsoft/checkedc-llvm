@@ -61,8 +61,8 @@ static bool CompareSSIOffset(const StackSlotInfo& a, const StackSlotInfo& b) {
 static void EmitDefCfaRegister(MachineBasicBlock &MBB,
                                MachineBasicBlock::iterator MBBI,
                                const DebugLoc &dl, const TargetInstrInfo &TII,
-                               MachineModuleInfo *MMI, unsigned DRegNum) {
-  unsigned CFIIndex = MMI->addFrameInst(
+                               MachineFunction &MF, unsigned DRegNum) {
+  unsigned CFIIndex = MF.addFrameInst(
       MCCFIInstruction::createDefCfaRegister(nullptr, DRegNum));
   BuildMI(MBB, MBBI, dl, TII.get(TargetOpcode::CFI_INSTRUCTION))
       .addCFIIndex(CFIIndex);
@@ -71,18 +71,20 @@ static void EmitDefCfaRegister(MachineBasicBlock &MBB,
 static void EmitDefCfaOffset(MachineBasicBlock &MBB,
                              MachineBasicBlock::iterator MBBI,
                              const DebugLoc &dl, const TargetInstrInfo &TII,
-                             MachineModuleInfo *MMI, int Offset) {
+                             int Offset) {
+  MachineFunction &MF = *MBB.getParent();
   unsigned CFIIndex =
-      MMI->addFrameInst(MCCFIInstruction::createDefCfaOffset(nullptr, -Offset));
+      MF.addFrameInst(MCCFIInstruction::createDefCfaOffset(nullptr, -Offset));
   BuildMI(MBB, MBBI, dl, TII.get(TargetOpcode::CFI_INSTRUCTION))
       .addCFIIndex(CFIIndex);
 }
 
 static void EmitCfiOffset(MachineBasicBlock &MBB,
                           MachineBasicBlock::iterator MBBI, const DebugLoc &dl,
-                          const TargetInstrInfo &TII, MachineModuleInfo *MMI,
-                          unsigned DRegNum, int Offset) {
-  unsigned CFIIndex = MMI->addFrameInst(
+                          const TargetInstrInfo &TII, unsigned DRegNum,
+                          int Offset) {
+  MachineFunction &MF = *MBB.getParent();
+  unsigned CFIIndex = MF.addFrameInst(
       MCCFIInstruction::createOffset(nullptr, DRegNum, Offset));
   BuildMI(MBB, MBBI, dl, TII.get(TargetOpcode::CFI_INSTRUCTION))
       .addCFIIndex(CFIIndex);
@@ -96,9 +98,8 @@ static void EmitCfiOffset(MachineBasicBlock &MBB,
 /// \param [in,out] Adjusted the current SP offset from the top of the frame.
 static void IfNeededExtSP(MachineBasicBlock &MBB,
                           MachineBasicBlock::iterator MBBI, const DebugLoc &dl,
-                          const TargetInstrInfo &TII, MachineModuleInfo *MMI,
-                          int OffsetFromTop, int &Adjusted, int FrameSize,
-                          bool emitFrameMoves) {
+                          const TargetInstrInfo &TII, int OffsetFromTop,
+                          int &Adjusted, int FrameSize, bool emitFrameMoves) {
   while (OffsetFromTop > Adjusted) {
     assert(Adjusted < FrameSize && "OffsetFromTop is beyond FrameSize");
     int remaining = FrameSize - Adjusted;
@@ -107,7 +108,7 @@ static void IfNeededExtSP(MachineBasicBlock &MBB,
     BuildMI(MBB, MBBI, dl, TII.get(Opcode)).addImm(OpImm);
     Adjusted += OpImm;
     if (emitFrameMoves)
-      EmitDefCfaOffset(MBB, MBBI, dl, TII, MMI, Adjusted*4);
+      EmitDefCfaOffset(MBB, MBBI, dl, TII, Adjusted*4);
   }
 }
 
@@ -237,7 +238,7 @@ void XCoreFrameLowering::emitPrologue(MachineFunction &MF,
     report_fatal_error("emitPrologue unsupported alignment: "
                        + Twine(MFI.getMaxAlignment()));
 
-  const AttributeSet &PAL = MF.getFunction()->getAttributes();
+  const AttributeList &PAL = MF.getFunction()->getAttributes();
   if (PAL.hasAttrSomewhere(Attribute::Nest))
     BuildMI(MBB, MBBI, dl, TII.get(XCore::LDWSP_ru6), XCore::R11).addImm(0);
     // FIX: Needs addMemOperand() but can't use getFixedStack() or getStack().
@@ -266,9 +267,9 @@ void XCoreFrameLowering::emitPrologue(MachineFunction &MF,
     MIB->addRegisterKilled(XCore::LR, MF.getSubtarget().getRegisterInfo(),
                            true);
     if (emitFrameMoves) {
-      EmitDefCfaOffset(MBB, MBBI, dl, TII, MMI, Adjusted*4);
+      EmitDefCfaOffset(MBB, MBBI, dl, TII, Adjusted*4);
       unsigned DRegNum = MRI->getDwarfRegNum(XCore::LR, true);
-      EmitCfiOffset(MBB, MBBI, dl, TII, MMI, DRegNum, 0);
+      EmitCfiOffset(MBB, MBBI, dl, TII, DRegNum, 0);
     }
   }
 
@@ -281,7 +282,7 @@ void XCoreFrameLowering::emitPrologue(MachineFunction &MF,
     assert(SpillList[i].Offset % 4 == 0 && "Misaligned stack offset");
     assert(SpillList[i].Offset <= 0 && "Unexpected positive stack offset");
     int OffsetFromTop = - SpillList[i].Offset/4;
-    IfNeededExtSP(MBB, MBBI, dl, TII, MMI, OffsetFromTop, Adjusted, FrameSize,
+    IfNeededExtSP(MBB, MBBI, dl, TII, OffsetFromTop, Adjusted, FrameSize,
                   emitFrameMoves);
     int Offset = Adjusted - OffsetFromTop;
     int Opcode = isImmU6(Offset) ? XCore::STWSP_ru6 : XCore::STWSP_lru6;
@@ -293,12 +294,12 @@ void XCoreFrameLowering::emitPrologue(MachineFunction &MF,
                                       MachineMemOperand::MOStore));
     if (emitFrameMoves) {
       unsigned DRegNum = MRI->getDwarfRegNum(SpillList[i].Reg, true);
-      EmitCfiOffset(MBB, MBBI, dl, TII, MMI, DRegNum, SpillList[i].Offset);
+      EmitCfiOffset(MBB, MBBI, dl, TII, DRegNum, SpillList[i].Offset);
     }
   }
 
   // Complete any remaining Stack adjustment.
-  IfNeededExtSP(MBB, MBBI, dl, TII, MMI, FrameSize, Adjusted, FrameSize,
+  IfNeededExtSP(MBB, MBBI, dl, TII, FrameSize, Adjusted, FrameSize,
                 emitFrameMoves);
   assert(Adjusted==FrameSize && "IfNeededExtSP has not completed adjustment");
 
@@ -306,7 +307,7 @@ void XCoreFrameLowering::emitPrologue(MachineFunction &MF,
     // Set the FP from the SP.
     BuildMI(MBB, MBBI, dl, TII.get(XCore::LDAWSP_ru6), FramePtr).addImm(0);
     if (emitFrameMoves)
-      EmitDefCfaRegister(MBB, MBBI, dl, TII, MMI,
+      EmitDefCfaRegister(MBB, MBBI, dl, TII, MF,
                          MRI->getDwarfRegNum(FramePtr, true));
   }
 
@@ -318,7 +319,7 @@ void XCoreFrameLowering::emitPrologue(MachineFunction &MF,
       const CalleeSavedInfo &CSI = SpillLabel.second;
       int Offset = MFI.getObjectOffset(CSI.getFrameIdx());
       unsigned DRegNum = MRI->getDwarfRegNum(CSI.getReg(), true);
-      EmitCfiOffset(MBB, Pos, dl, TII, MMI, DRegNum, Offset);
+      EmitCfiOffset(MBB, Pos, dl, TII, DRegNum, Offset);
     }
     if (XFI->hasEHSpillSlot()) {
       // The unwinder requires stack slot & CFI offsets for the exception info.
@@ -330,10 +331,10 @@ void XCoreFrameLowering::emitPrologue(MachineFunction &MF,
       GetEHSpillList(SpillList, MFI, XFI, PersonalityFn,
                      MF.getSubtarget().getTargetLowering());
       assert(SpillList.size()==2 && "Unexpected SpillList size");
-      EmitCfiOffset(MBB, MBBI, dl, TII, MMI,
+      EmitCfiOffset(MBB, MBBI, dl, TII,
                     MRI->getDwarfRegNum(SpillList[0].Reg, true),
                     SpillList[0].Offset);
-      EmitCfiOffset(MBB, MBBI, dl, TII, MMI,
+      EmitCfiOffset(MBB, MBBI, dl, TII,
                     MRI->getDwarfRegNum(SpillList[1].Reg, true),
                     SpillList[1].Offset);
     }
@@ -547,7 +548,7 @@ void XCoreFrameLowering::determineCalleeSaves(MachineFunction &MF,
     // We force the LR to be saved so these instructions are used.
     LRUsed = true;
 
-  if (MF.getMMI().callsUnwindInit() || MF.getMMI().callsEHReturn()) {
+  if (MF.callsUnwindInit() || MF.callsEHReturn()) {
     // The unwinder expects to find spill slots for the exception info regs R0
     // & R1. These are used during llvm.eh.return() to 'restore' the exception
     // info. N.B. we do not spill or restore R0, R1 during normal operation.
@@ -574,18 +575,17 @@ processFunctionBeforeFrameFinalized(MachineFunction &MF,
                                     RegScavenger *RS) const {
   assert(RS && "requiresRegisterScavenging failed");
   MachineFrameInfo &MFI = MF.getFrameInfo();
-  const TargetRegisterClass *RC = &XCore::GRRegsRegClass;
+  const TargetRegisterClass &RC = XCore::GRRegsRegClass;
+  const TargetRegisterInfo &TRI = *MF.getSubtarget().getRegisterInfo();
   XCoreFunctionInfo *XFI = MF.getInfo<XCoreFunctionInfo>();
   // Reserve slots close to SP or frame pointer for Scavenging spills.
   // When using SP for small frames, we don't need any scratch registers.
   // When using SP for large frames, we may need 2 scratch registers.
   // When using FP, for large or small frames, we may need 1 scratch register.
+  unsigned Size = TRI.getSpillSize(RC);
+  unsigned Align = TRI.getSpillAlignment(RC);
   if (XFI->isLargeFrame(MF) || hasFP(MF))
-    RS->addScavengingFrameIndex(MFI.CreateStackObject(RC->getSize(),
-                                                      RC->getAlignment(),
-                                                      false));
+    RS->addScavengingFrameIndex(MFI.CreateStackObject(Size, Align, false));
   if (XFI->isLargeFrame(MF) && !hasFP(MF))
-    RS->addScavengingFrameIndex(MFI.CreateStackObject(RC->getSize(),
-                                                      RC->getAlignment(),
-                                                      false));
+    RS->addScavengingFrameIndex(MFI.CreateStackObject(Size, Align, false));
 }

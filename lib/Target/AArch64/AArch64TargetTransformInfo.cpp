@@ -176,7 +176,8 @@ AArch64TTIImpl::getPopcntSupport(unsigned TyWidth) {
   return TTI::PSK_Software;
 }
 
-int AArch64TTIImpl::getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src) {
+int AArch64TTIImpl::getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src,
+                                     const Instruction *I) {
   int ISD = TLI->InstructionOpcodeToISD(Opcode);
   assert(ISD && "Invalid opcode");
 
@@ -374,7 +375,7 @@ int AArch64TTIImpl::getVectorInstrCost(unsigned Opcode, Type *Val,
 int AArch64TTIImpl::getArithmeticInstrCost(
     unsigned Opcode, Type *Ty, TTI::OperandValueKind Opd1Info,
     TTI::OperandValueKind Opd2Info, TTI::OperandValueProperties Opd1PropInfo,
-    TTI::OperandValueProperties Opd2PropInfo) {
+    TTI::OperandValueProperties Opd2PropInfo, ArrayRef<const Value *> Args) {
   // Legalize the type.
   std::pair<int, MVT> LT = TLI->getTypeLegalizationCost(DL, Ty);
 
@@ -417,14 +418,17 @@ int AArch64TTIImpl::getArithmeticInstrCost(
   }
 }
 
-int AArch64TTIImpl::getAddressComputationCost(Type *Ty, bool IsComplex) {
+int AArch64TTIImpl::getAddressComputationCost(Type *Ty, ScalarEvolution *SE,
+                                              const SCEV *Ptr) {
   // Address computations in vectorized code with non-consecutive addresses will
   // likely result in more instructions compared to scalar code where the
   // computation can more often be merged into the index mode. The resulting
   // extra micro-ops can significantly decrease throughput.
   unsigned NumVectorInstToHideOverhead = 10;
+  int MaxMergeDistance = 64;
 
-  if (Ty->isVectorTy() && IsComplex)
+  if (Ty->isVectorTy() && SE && 
+      !BaseT::isConstantStridedAccessLessThan(SE, Ptr, MaxMergeDistance + 1))
     return NumVectorInstToHideOverhead;
 
   // In many cases the address computation is not merged into the instruction
@@ -433,7 +437,7 @@ int AArch64TTIImpl::getAddressComputationCost(Type *Ty, bool IsComplex) {
 }
 
 int AArch64TTIImpl::getCmpSelInstrCost(unsigned Opcode, Type *ValTy,
-                                       Type *CondTy) {
+                                       Type *CondTy, const Instruction *I) {
 
   int ISD = TLI->InstructionOpcodeToISD(Opcode);
   // We don't lower some vector selects well that are wider than the register
@@ -460,30 +464,31 @@ int AArch64TTIImpl::getCmpSelInstrCost(unsigned Opcode, Type *ValTy,
         return Entry->Cost;
     }
   }
-  return BaseT::getCmpSelInstrCost(Opcode, ValTy, CondTy);
+  return BaseT::getCmpSelInstrCost(Opcode, ValTy, CondTy, I);
 }
 
-int AArch64TTIImpl::getMemoryOpCost(unsigned Opcode, Type *Src,
-                                    unsigned Alignment, unsigned AddressSpace) {
-  std::pair<int, MVT> LT = TLI->getTypeLegalizationCost(DL, Src);
+int AArch64TTIImpl::getMemoryOpCost(unsigned Opcode, Type *Ty,
+                                    unsigned Alignment, unsigned AddressSpace,
+                                    const Instruction *I) {
+  auto LT = TLI->getTypeLegalizationCost(DL, Ty);
 
-  if (Opcode == Instruction::Store && Src->isVectorTy() && Alignment != 16 &&
-      Src->getVectorElementType()->isIntegerTy(64)) {
-    // Unaligned stores are extremely inefficient. We don't split
-    // unaligned v2i64 stores because the negative impact that has shown in
-    // practice on inlined memcpy code.
-    // We make v2i64 stores expensive so that we will only vectorize if there
+  if (ST->isMisaligned128StoreSlow() && Opcode == Instruction::Store &&
+      LT.second.is128BitVector() && Alignment < 16) {
+    // Unaligned stores are extremely inefficient. We don't split all
+    // unaligned 128-bit stores because the negative impact that has shown in
+    // practice on inlined block copy code.
+    // We make such stores expensive so that we will only vectorize if there
     // are 6 other instructions getting vectorized.
-    int AmortizationCost = 6;
+    const int AmortizationCost = 6;
 
     return LT.first * 2 * AmortizationCost;
   }
 
-  if (Src->isVectorTy() && Src->getVectorElementType()->isIntegerTy(8) &&
-      Src->getVectorNumElements() < 8) {
+  if (Ty->isVectorTy() && Ty->getVectorElementType()->isIntegerTy(8) &&
+      Ty->getVectorNumElements() < 8) {
     // We scalarize the loads/stores because there is not v.4b register and we
     // have to promote the elements to v.4h.
-    unsigned NumVecElts = Src->getVectorNumElements();
+    unsigned NumVecElts = Ty->getVectorNumElements();
     unsigned NumVectorizableInstsToAmortize = NumVecElts * 2;
     // We generate 2 instructions per vector element.
     return NumVectorizableInstsToAmortize * NumVecElts * 2;
@@ -502,12 +507,14 @@ int AArch64TTIImpl::getInterleavedMemoryOpCost(unsigned Opcode, Type *VecTy,
 
   if (Factor <= TLI->getMaxSupportedInterleaveFactor()) {
     unsigned NumElts = VecTy->getVectorNumElements();
-    Type *SubVecTy = VectorType::get(VecTy->getScalarType(), NumElts / Factor);
-    unsigned SubVecSize = DL.getTypeSizeInBits(SubVecTy);
+    auto *SubVecTy = VectorType::get(VecTy->getScalarType(), NumElts / Factor);
 
     // ldN/stN only support legal vector types of size 64 or 128 in bits.
-    if (NumElts % Factor == 0 && (SubVecSize == 64 || SubVecSize == 128))
-      return Factor;
+    // Accesses having vector types that are a multiple of 128 bits can be
+    // matched to more than one ldN/stN instruction.
+    if (NumElts % Factor == 0 &&
+        TLI->isLegalInterleavedAccessType(SubVecTy, DL))
+      return Factor * TLI->getNumInterleavedAccesses(SubVecTy, DL);
   }
 
   return BaseT::getInterleavedMemoryOpCost(Opcode, VecTy, Factor, Indices,
@@ -591,8 +598,6 @@ bool AArch64TTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
   case Intrinsic::aarch64_neon_ld4:
     Info.ReadMem = true;
     Info.WriteMem = false;
-    Info.IsSimple = true;
-    Info.NumMemRefs = 1;
     Info.PtrVal = Inst->getArgOperand(0);
     break;
   case Intrinsic::aarch64_neon_st2:
@@ -600,8 +605,6 @@ bool AArch64TTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
   case Intrinsic::aarch64_neon_st4:
     Info.ReadMem = false;
     Info.WriteMem = true;
-    Info.IsSimple = true;
-    Info.NumMemRefs = 1;
     Info.PtrVal = Inst->getArgOperand(Inst->getNumArgOperands() - 1);
     break;
   }
@@ -623,6 +626,38 @@ bool AArch64TTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
     break;
   }
   return true;
+}
+
+/// See if \p I should be considered for address type promotion. We check if \p
+/// I is a sext with right type and used in memory accesses. If it used in a
+/// "complex" getelementptr, we allow it to be promoted without finding other
+/// sext instructions that sign extended the same initial value. A getelementptr
+/// is considered as "complex" if it has more than 2 operands.
+bool AArch64TTIImpl::shouldConsiderAddressTypePromotion(
+    const Instruction &I, bool &AllowPromotionWithoutCommonHeader) {
+  bool Considerable = false;
+  AllowPromotionWithoutCommonHeader = false;
+  if (!isa<SExtInst>(&I))
+    return false;
+  Type *ConsideredSExtType =
+      Type::getInt64Ty(I.getParent()->getParent()->getContext());
+  if (I.getType() != ConsideredSExtType)
+    return false;
+  // See if the sext is the one with the right type and used in at least one
+  // GetElementPtrInst.
+  for (const User *U : I.users()) {
+    if (const GetElementPtrInst *GEPInst = dyn_cast<GetElementPtrInst>(U)) {
+      Considerable = true;
+      // A getelementptr is considered as "complex" if it has more than 2
+      // operands. We will promote a SExt used in such complex GEP as we
+      // expect some computation to be merged if they are done on 64 bits.
+      if (GEPInst->getNumOperands() > 2) {
+        AllowPromotionWithoutCommonHeader = true;
+        break;
+      }
+    }
+  }
+  return Considerable;
 }
 
 unsigned AArch64TTIImpl::getCacheLineSize() {

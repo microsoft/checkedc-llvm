@@ -19,13 +19,11 @@ using namespace llvm;
 void MipsMCAsmInfo::anchor() { }
 
 MipsMCAsmInfo::MipsMCAsmInfo(const Triple &TheTriple) {
-  if ((TheTriple.getArch() == Triple::mips) ||
-      (TheTriple.getArch() == Triple::mips64))
-    IsLittleEndian = false;
+  IsLittleEndian = TheTriple.isLittleEndian();
 
   if ((TheTriple.getArch() == Triple::mips64el) ||
       (TheTriple.getArch() == Triple::mips64)) {
-    PointerSize = CalleeSaveStackSlotSize = 8;
+    CodePointerSize = CalleeSaveStackSlotSize = 8;
   }
 
   // FIXME: This condition isn't quite right but it's the best we can do until
@@ -58,5 +56,9 @@ MipsMCAsmInfo::MipsMCAsmInfo(const Triple &TheTriple) {
   // Enable IAS by default for O32.
   if (TheTriple.getArch() == Triple::mips ||
       TheTriple.getArch() == Triple::mipsel)
+    UseIntegratedAssembler = true;
+
+  // Enable IAS by default for Debian mips64/mips64el.
+  if (TheTriple.getEnvironment() == Triple::GNUABI64)
     UseIntegratedAssembler = true;
 }

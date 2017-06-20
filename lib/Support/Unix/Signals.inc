@@ -25,8 +25,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <string>
-#if HAVE_EXECINFO_H
-# include <execinfo.h>         // For backtrace().
+#ifdef HAVE_BACKTRACE
+# include BACKTRACE_HEADER         // For backtrace().
 #endif
 #if HAVE_SIGNAL_H
 #include <signal.h>
@@ -43,7 +43,7 @@
 #if HAVE_LINK_H
 #include <link.h>
 #endif
-#if HAVE_UNWIND_BACKTRACE
+#ifdef HAVE__UNWIND_BACKTRACE
 // FIXME: We should be able to use <unwind.h> for any target that has an
 // _Unwind_Backtrace function, but on FreeBSD the configure test passes
 // despite the function not existing, and on Android, <unwind.h> conflicts
@@ -51,7 +51,7 @@
 #ifdef __GLIBC__
 #include <unwind.h>
 #else
-#undef HAVE_UNWIND_BACKTRACE
+#undef HAVE__UNWIND_BACKTRACE
 #endif
 #endif
 
@@ -59,7 +59,7 @@ using namespace llvm;
 
 static RETSIGTYPE SignalHandler(int Sig);  // defined below.
 
-static ManagedStatic<SmartMutex<true> > SignalsMutex;
+static ManagedStatic<sys::SmartMutex<true> > SignalsMutex;
 
 /// InterruptFunction - The function to call if ctrl-c is pressed.
 static void (*InterruptFunction)() = nullptr;
@@ -149,11 +149,7 @@ static void CreateSigAltStack() {}
 #endif
 
 static void RegisterHandlers() {
-  // We need to dereference the signals mutex during handler registration so
-  // that we force its construction. This is to prevent the first use being
-  // during handling an actual signal because you can't safely call new in a
-  // signal handler.
-  *SignalsMutex;
+  sys::SmartScopedLock<true> Guard(*SignalsMutex);
 
   // If the handlers are already registered, we're done.
   if (NumRegisteredSignals != 0) return;
@@ -223,7 +219,7 @@ static RETSIGTYPE SignalHandler(int Sig) {
   sigprocmask(SIG_UNBLOCK, &SigMask, nullptr);
 
   {
-    unique_lock<SmartMutex<true>> Guard(*SignalsMutex);
+    unique_lock<sys::SmartMutex<true>> Guard(*SignalsMutex);
     RemoveFilesToRemove();
 
     if (std::find(std::begin(IntSigs), std::end(IntSigs), Sig)
@@ -298,7 +294,7 @@ void llvm::sys::AddSignalHandler(void (*FnPtr)(void *), void *Cookie) {
   RegisterHandlers();
 }
 
-#if defined(HAVE_BACKTRACE) && defined(ENABLE_BACKTRACES) && HAVE_LINK_H &&    \
+#if defined(HAVE_BACKTRACE) && ENABLE_BACKTRACES && HAVE_LINK_H &&    \
     (defined(__linux__) || defined(__FreeBSD__) ||                             \
      defined(__FreeBSD_kernel__) || defined(__NetBSD__))
 struct DlIteratePhdrData {
@@ -353,9 +349,9 @@ static bool findModulesAndOffsets(void **StackTrace, int Depth,
                                   StringSaver &StrPool) {
   return false;
 }
-#endif // defined(HAVE_BACKTRACE) && defined(ENABLE_BACKTRACES) && ...
+#endif // defined(HAVE_BACKTRACE) && ENABLE_BACKTRACES && ...
 
-#if defined(ENABLE_BACKTRACES) && defined(HAVE_UNWIND_BACKTRACE)
+#if ENABLE_BACKTRACES && defined(HAVE__UNWIND_BACKTRACE)
 static int unwindBacktrace(void **StackTrace, int MaxEntries) {
   if (MaxEntries < 0)
     return 0;
@@ -393,7 +389,7 @@ static int unwindBacktrace(void **StackTrace, int MaxEntries) {
 // On glibc systems we have the 'backtrace' function, which works nicely, but
 // doesn't demangle symbols.
 void llvm::sys::PrintStackTrace(raw_ostream &OS) {
-#if defined(ENABLE_BACKTRACES)
+#if ENABLE_BACKTRACES
   static void *StackTrace[256];
   int depth = 0;
 #if defined(HAVE_BACKTRACE)
@@ -401,7 +397,7 @@ void llvm::sys::PrintStackTrace(raw_ostream &OS) {
   if (!depth)
     depth = backtrace(StackTrace, static_cast<int>(array_lengthof(StackTrace)));
 #endif
-#if defined(HAVE_UNWIND_BACKTRACE)
+#if defined(HAVE__UNWIND_BACKTRACE)
   // Try _Unwind_Backtrace() if backtrace() failed.
   if (!depth)
     depth = unwindBacktrace(StackTrace,
@@ -412,7 +408,7 @@ void llvm::sys::PrintStackTrace(raw_ostream &OS) {
 
   if (printSymbolizedStackTrace(Argv0, StackTrace, depth, OS))
     return;
-#if HAVE_DLFCN_H && __GNUG__
+#if HAVE_DLFCN_H && HAVE_DLADDR
   int width = 0;
   for (int i = 0; i < depth; ++i) {
     Dl_info dlinfo;
@@ -462,7 +458,7 @@ void llvm::sys::PrintStackTrace(raw_ostream &OS) {
 }
 
 static void PrintStackTraceSignalHandler(void *) {
-  PrintStackTrace(llvm::errs());
+  sys::PrintStackTrace(llvm::errs());
 }
 
 void llvm::sys::DisableSystemDialogsOnCrash() {}
@@ -475,7 +471,7 @@ void llvm::sys::PrintStackTraceOnErrorSignal(StringRef Argv0,
 
   AddSignalHandler(PrintStackTraceSignalHandler, nullptr);
 
-#if defined(__APPLE__) && defined(ENABLE_CRASH_OVERRIDES)
+#if defined(__APPLE__) && ENABLE_CRASH_OVERRIDES
   // Environment variable to disable any kind of crash dialog.
   if (DisableCrashReporting || getenv("LLVM_DISABLE_CRASH_REPORT")) {
     mach_port_t self = mach_task_self();

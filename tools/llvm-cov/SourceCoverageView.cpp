@@ -149,11 +149,6 @@ std::string SourceCoverageView::getSourceName() const {
   return SourceText.str();
 }
 
-std::string SourceCoverageView::getVerboseSourceName() const {
-  return "Source: " + getSourceName() + " (Binary: " +
-         sys::path::filename(getOptions().ObjectFilename).str() + ")";
-}
-
 void SourceCoverageView::addExpansion(
     const coverage::CounterMappingRegion &Region,
     std::unique_ptr<SourceCoverageView> View) {
@@ -168,19 +163,17 @@ void SourceCoverageView::addInstantiation(
 
 void SourceCoverageView::print(raw_ostream &OS, bool WholeFile,
                                bool ShowSourceName, unsigned ViewDepth) {
-  if (WholeFile)
-    renderCellInTitle(OS, "Code Coverage Report");
+  if (WholeFile && getOptions().hasOutputDirectory())
+    renderTitle(OS, "Coverage Report");
 
   renderViewHeader(OS);
 
-  unsigned FirstUncoveredLineNo = 0;
-  if (WholeFile)
-    FirstUncoveredLineNo = getFirstUncoveredLineNo();
-
   if (ShowSourceName)
-    renderSourceName(OS, WholeFile, FirstUncoveredLineNo);
+    renderSourceName(OS, WholeFile);
 
-  renderTableHeader(OS, ViewDepth);
+  renderTableHeader(OS, (ViewDepth > 0) ? 0 : getFirstUncoveredLineNo(),
+                    ViewDepth);
+
   // We need the expansions and instantiations sorted so we can go through them
   // while we iterate lines.
   std::sort(ExpansionSubViews.begin(), ExpansionSubViews.end());

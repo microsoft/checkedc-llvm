@@ -167,4 +167,41 @@ lpad:
 ; CHECK:  ret i32* %[[PTR]]
 }
 
+
+@pr30402 = constant i64 3
+define i1 @test7() {
+entry:
+  br label %bb7
+
+bb7:                                              ; preds = %bb10, %entry-block
+  %phi = phi i64* [ @pr30402, %entry ], [ getelementptr inbounds (i64, i64* @pr30402, i32 1), %bb7 ]
+  %cmp = icmp eq i64* %phi, getelementptr inbounds (i64, i64* @pr30402, i32 1)
+  br i1 %cmp, label %bb10, label %bb7
+
+bb10:
+  ret i1 %cmp
+}
+; CHECK-LABEL: @test7(
+; CHECK:  %[[phi:.*]] = phi i64* [ @pr30402, %entry ], [ getelementptr inbounds (i64, i64* @pr30402, i32 1), %bb7 ]
+; CHECK:  %[[cmp:.*]] = icmp eq i64* %[[phi]], getelementptr inbounds (i64, i64* @pr30402, i32 1)
+; CHECK: ret i1 %[[cmp]]
+
+
 declare i32 @__gxx_personality_v0(...)
+
+define i1 @test8(i64* %in, i64 %offset) {
+entry:
+
+ %ld = load i64, i64* %in, align 8
+ %casti8 = inttoptr i64 %ld to i8*
+ %gepi8 = getelementptr inbounds i8, i8* %casti8, i64 %offset
+ %cast = bitcast i8* %gepi8 to i32**
+ %ptrcast = inttoptr i64 %ld to i32**
+ %gepi32 = getelementptr inbounds i32*, i32** %ptrcast, i64 1
+ %cmp = icmp eq i32** %gepi32, %cast
+ ret i1 %cmp
+
+
+; CHECK-LABEL: @test8(
+; CHECK-NOT: icmp eq i32 %{{[0-9A-Za-z.]+}}, 1
+}

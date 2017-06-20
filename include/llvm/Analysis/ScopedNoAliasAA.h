@@ -27,14 +27,13 @@ class ScopedNoAliasAAResult : public AAResultBase<ScopedNoAliasAAResult> {
   friend AAResultBase<ScopedNoAliasAAResult>;
 
 public:
-  explicit ScopedNoAliasAAResult() : AAResultBase() {}
-  ScopedNoAliasAAResult(ScopedNoAliasAAResult &&Arg)
-      : AAResultBase(std::move(Arg)) {}
-
   /// Handle invalidation events from the new pass manager.
   ///
   /// By definition, this result is stateless and so remains valid.
-  bool invalidate(Function &, const PreservedAnalyses &) { return false; }
+  bool invalidate(Function &, const PreservedAnalyses &,
+                  FunctionAnalysisManager::Invalidator &) {
+    return false;
+  }
 
   AliasResult alias(const MemoryLocation &LocA, const MemoryLocation &LocB);
   ModRefInfo getModRefInfo(ImmutableCallSite CS, const MemoryLocation &Loc);
@@ -47,7 +46,7 @@ private:
 /// Analysis pass providing a never-invalidated alias analysis result.
 class ScopedNoAliasAA : public AnalysisInfoMixin<ScopedNoAliasAA> {
   friend AnalysisInfoMixin<ScopedNoAliasAA>;
-  static char PassID;
+  static AnalysisKey Key;
 
 public:
   typedef ScopedNoAliasAAResult Result;

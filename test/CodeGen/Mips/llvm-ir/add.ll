@@ -24,28 +24,34 @@
 ; RUN:    -check-prefixes=ALL,R2-R6,GP64
 ; RUN: llc < %s -march=mips64 -mcpu=mips64r6 | FileCheck %s \
 ; RUN:    -check-prefixes=ALL,R2-R6,GP64
-; RUN: llc < %s -march=mips -mcpu=mips32r3 -mattr=+micromips -O2 | FileCheck %s \
+; RUN: llc < %s -march=mips -mcpu=mips32r3 -mattr=+micromips -O2 -verify-machineinstrs | FileCheck %s \
 ; RUN:    -check-prefixes=ALL,MMR6,MM32
 ; RUN: llc < %s -march=mips -mcpu=mips32r6 -mattr=+micromips -O2 | FileCheck %s \
 ; RUN:    -check-prefixes=ALL,MMR6,MM32
 ; RUN: llc < %s -march=mips -mcpu=mips64r6 -target-abi n64 -mattr=+micromips -O2 | FileCheck %s \
 ; RUN:    -check-prefixes=ALL,MMR6,MM64
 
+
+; FIXME: This code sequence is inefficient as it should be 'subu $[[T0]], $zero, $[[T0]'. 
+; This sequence is even better as it's a single instruction. See D25485 for the rest of 
+; the cases where this sequence occurs.
+
 define signext i1 @add_i1(i1 signext %a, i1 signext %b) {
 entry:
 ; ALL-LABEL: add_i1:
 
-  ; NOT-R2-R6:  addu    $[[T0:[0-9]+]], $4, $5
-  ; NOT-R2-R6:  sll     $[[T0]], $[[T0]], 31
-  ; NOT-R2-R6:  sra     $2, $[[T0]], 31
+  ; NOT-R2-R6:  addu   $[[T0:[0-9]+]], $4, $5
+  ; NOT-R2-R6:  andi   $[[T0]], $[[T0]], 1
+  ; NOT-R2-R6:  negu   $2, $[[T0]]
 
-  ; R2-R6:      addu    $[[T0:[0-9]+]], $4, $5
-  ; R2-R6:      sll     $[[T0]], $[[T0]], 31
-  ; R2-R6:      sra     $2, $[[T0]], 31
+  ; R2-R6:      addu   $[[T0:[0-9]+]], $4, $5
+  ; R2-R6:      andi   $[[T0]], $[[T0]], 1
+  ; R2-R6:      negu   $2, $[[T0]]
 
   ; MMR6:       addu16  $[[T0:[0-9]+]], $4, $5
-  ; MMR6:       sll     $[[T1:[0-9]+]], $[[T0]], 31
-  ; MMR6:       sra     $2, $[[T1]], 31
+  ; MMR6:       andi16  $[[T0]], $[[T0]], 1
+  ; MMR6:       li16    $[[T1:[0-9]+]], 0
+  ; MMR6:       subu16  $[[T0]], $[[T1]], $[[T0]]
 
   %r = add i1 %a, %b
   ret i1 %r
@@ -111,7 +117,7 @@ entry:
 
   ; GP64:       daddu   $2, $4, $5
 
-  ; MM32:       addu    $3, $5, $7
+  ; MM32:       addu16  $3, $5, $7
   ; MM32:       sltu    $[[T0:[0-9]+]], $3, $7
   ; MM32:       addu    $[[T1:[0-9]+]], $[[T0]], $6
   ; MM32:       addu    $2, $4, $[[T1]]
@@ -152,16 +158,16 @@ entry:
   ; MM32:       addu      $[[T1:[0-9]+]], $7, $[[T0]]
   ; MM32:       sltu      $[[T2:[0-9]+]], $[[T1]], $[[T0]]
   ; MM32:       lw        $[[T3:[0-9]+]], 24($sp)
-  ; MM32:       addu      $[[T4:[0-9]+]], $[[T2]], $[[T3]]
-  ; MM32:       addu      $[[T5:[0-9]+]], $6, $[[T4]]
+  ; MM32:       addu16    $[[T4:[0-9]+]], $[[T2]], $[[T3]]
+  ; MM32:       addu16    $[[T5:[0-9]+]], $6, $[[T4]]
   ; MM32:       sltu      $[[T6:[0-9]+]], $[[T5]], $[[T3]]
   ; MM32:       lw        $[[T7:[0-9]+]], 20($sp)
-  ; MM32:       addu      $[[T8:[0-9]+]], $[[T6]], $[[T7]]
+  ; MM32:       addu16    $[[T8:[0-9]+]], $[[T6]], $[[T7]]
   ; MM32:       lw        $[[T9:[0-9]+]], 16($sp)
-  ; MM32:       addu      $[[T10:[0-9]+]], $5, $[[T8]]
+  ; MM32:       addu16    $[[T10:[0-9]+]], $5, $[[T8]]
   ; MM32:       sltu      $[[T11:[0-9]+]], $[[T10]], $[[T7]]
   ; MM32:       addu      $[[T12:[0-9]+]], $[[T11]], $[[T9]]
-  ; MM32:       addu      $[[T13:[0-9]+]], $4, $[[T12]]
+  ; MM32:       addu16    $[[T13:[0-9]+]], $4, $[[T12]]
   ; MM32:       move      $4, $[[T5]]
   ; MM32:       move      $5, $[[T1]]
 
@@ -283,12 +289,12 @@ define signext i128 @add_i128_4(i128 signext %a) {
   ; MM32:       addiu   $[[T0:[0-9]+]], $7, 4
   ; MM32:       li16    $[[T1:[0-9]+]], 4
   ; MM32:       sltu    $[[T1]], $[[T0]], $[[T1]]
-  ; MM32:       addu    $[[T2:[0-9]+]], $6, $[[T1]]
+  ; MM32:       addu16  $[[T2:[0-9]+]], $6, $[[T1]]
   ; MM32:       li16    $[[T1]], 0
   ; MM32:       sltu    $[[T3:[0-9]+]], $[[T2]], $[[T1]]
-  ; MM32:       addu    $[[T3]], $5, $[[T3]]
+  ; MM32:       addu16  $[[T3]], $5, $[[T3]]
   ; MM32:       sltu    $[[T1]], $[[T3]], $[[T1]]
-  ; MM32:       addu    $[[T1]], $4, $[[T1]]
+  ; MM32:       addu16  $[[T1]], $4, $[[T1]]
   ; MM32:       move    $4, $[[T2]]
   ; MM32:       move    $5, $[[T0]]
 
@@ -303,18 +309,18 @@ define signext i128 @add_i128_4(i128 signext %a) {
 
 define signext i1 @add_i1_3(i1 signext %a) {
 ; ALL-LABEL: add_i1_3:
+  ; GP32:        addiu  $[[T0:[0-9]+]], $4, 1
+  ; GP32:        andi   $[[T0]], $[[T0]], 1
+  ; GP32:        negu   $2, $[[T0]]
 
-  ; ALL:        sll     $[[T0:[0-9]+]], $4, 31
-  ; ALL:        lui     $[[T1:[0-9]+]], 32768
+  ; GP64:        addiu  $[[T0:[0-9]+]], $4, 1
+  ; GP64:        andi   $[[T0]], $[[T0]], 1
+  ; GP64:        negu   $2, $[[T0]]
 
-  ; GP32:       addu    $[[T0]], $[[T0]], $[[T1]]
-  ; GP32:       sra     $[[T1]], $[[T0]], 31
-
-  ; GP64:       addu    $[[T0]], $[[T0]], $[[T1]]
-  ; GP64:       sra     $[[T1]], $[[T0]], 31
-
-  ; MMR6:       addu16  $[[T0]], $[[T0]], $[[T1]]
-  ; MMR6:       sra     $[[T0]], $[[T0]], 31
+  ; MMR6:        addiur2 $[[T0:[0-9]+]], $4, 1
+  ; MMR6:        andi16  $[[T0]], $[[T0]], 1
+  ; MMR6:        li16    $[[T1:[0-9]+]], 0
+  ; MMR6:        subu16  $2, $[[T1]], $[[T0]]
 
   %r = add i1 3, %a
   ret i1 %r
@@ -413,12 +419,12 @@ define signext i128 @add_i128_3(i128 signext %a) {
   ; MM32:       addiu   $[[T0:[0-9]+]], $7, 3
   ; MM32:       li16    $[[T1:[0-9]+]], 3
   ; MM32:       sltu    $[[T1]], $[[T0]], $[[T1]]
-  ; MM32:       addu    $[[T2:[0-9]+]], $6, $[[T1]]
+  ; MM32:       addu16  $[[T2:[0-9]+]], $6, $[[T1]]
   ; MM32:       li16    $[[T3:[0-9]+]], 0
   ; MM32:       sltu    $[[T4:[0-9]+]], $[[T2]], $[[T3]]
-  ; MM32:       addu    $[[T4]], $5, $[[T4]]
+  ; MM32:       addu16  $[[T4]], $5, $[[T4]]
   ; MM32:       sltu    $[[T5:[0-9]+]], $[[T4]], $[[T3]]
-  ; MM32:       addu    $[[T5]], $4, $[[T5]]
+  ; MM32:       addu16  $[[T5]], $4, $[[T5]]
   ; MM32:       move    $4, $[[T2]]
   ; MM32:       move    $5, $[[T0]]
 

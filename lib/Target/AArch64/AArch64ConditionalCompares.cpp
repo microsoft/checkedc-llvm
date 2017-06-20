@@ -568,7 +568,7 @@ void SSACCmpConv::convert(SmallVectorImpl<MachineBasicBlock *> &RemovedBlocks) {
   CmpBB->removeSuccessor(Tail, true);
   Head->transferSuccessorsAndUpdatePHIs(CmpBB);
   DebugLoc TermDL = Head->getFirstTerminator()->getDebugLoc();
-  TII->RemoveBranch(*Head);
+  TII->removeBranch(*Head);
 
   // If the Head terminator was one of the cbz / tbz branches with built-in
   // compare, we need to insert an explicit compare instruction in its place.
@@ -594,7 +594,7 @@ void SSACCmpConv::convert(SmallVectorImpl<MachineBasicBlock *> &RemovedBlocks) {
     // Insert a SUBS Rn, #0 instruction instead of the cbz / cbnz.
     BuildMI(*Head, Head->end(), TermDL, MCID)
         .addReg(DestReg, RegState::Define | RegState::Dead)
-        .addOperand(HeadCond[2])
+        .add(HeadCond[2])
         .addImm(0)
         .addImm(0);
     // SUBS uses the GPR*sp register classes.
@@ -650,13 +650,12 @@ void SSACCmpConv::convert(SmallVectorImpl<MachineBasicBlock *> &RemovedBlocks) {
   if (CmpMI->getOperand(FirstOp + 1).isReg())
     MRI->constrainRegClass(CmpMI->getOperand(FirstOp + 1).getReg(),
                            TII->getRegClass(MCID, 1, TRI, *MF));
-  MachineInstrBuilder MIB =
-      BuildMI(*Head, CmpMI, CmpMI->getDebugLoc(), MCID)
-          .addOperand(CmpMI->getOperand(FirstOp)); // Register Rn
+  MachineInstrBuilder MIB = BuildMI(*Head, CmpMI, CmpMI->getDebugLoc(), MCID)
+                                .add(CmpMI->getOperand(FirstOp)); // Register Rn
   if (isZBranch)
     MIB.addImm(0); // cbz/cbnz Rn -> ccmp Rn, #0
   else
-    MIB.addOperand(CmpMI->getOperand(FirstOp + 1)); // Register Rm / Immediate
+    MIB.add(CmpMI->getOperand(FirstOp + 1)); // Register Rm / Immediate
   MIB.addImm(NZCV).addImm(HeadCmpBBCC);
 
   // If CmpMI was a terminator, we need a new conditional branch to replace it.
@@ -666,7 +665,7 @@ void SSACCmpConv::convert(SmallVectorImpl<MachineBasicBlock *> &RemovedBlocks) {
                 CmpMI->getOpcode() == AArch64::CBNZX;
     BuildMI(*Head, CmpMI, CmpMI->getDebugLoc(), TII->get(AArch64::Bcc))
         .addImm(isNZ ? AArch64CC::NE : AArch64CC::EQ)
-        .addOperand(CmpMI->getOperand(1)); // Branch target.
+        .add(CmpMI->getOperand(1)); // Branch target.
   }
   CmpMI->eraseFromParent();
   Head->updateTerminator();
@@ -737,7 +736,7 @@ public:
   }
   void getAnalysisUsage(AnalysisUsage &AU) const override;
   bool runOnMachineFunction(MachineFunction &MF) override;
-  const char *getPassName() const override {
+  StringRef getPassName() const override {
     return "AArch64 Conditional Compares";
   }
 

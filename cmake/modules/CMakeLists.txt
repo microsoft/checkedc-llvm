@@ -20,6 +20,15 @@ foreach(lib ${LLVM_AVAILABLE_LIBS})
     "${all_llvm_lib_deps}\nset_property(GLOBAL PROPERTY LLVMBUILD_LIB_DEPS_${lib} ${llvm_lib_deps})")
 endforeach(lib)
 
+# CMake requires that all targets expressed as dependencies exist, so we can't
+# have intrinsics_gen in LLVM_COMMON_DEPENDS when it is written out, otherwise
+# projects building out of tree will have CMake errors. This only gets hit when
+# LLVM_ENABLE_MODULES=On. Eventually we should come up with a better solution to
+# this, but there is no easy solution.
+if(intrinsics_gen IN_LIST LLVM_COMMON_DEPENDS)
+  list(REMOVE_ITEM LLVM_COMMON_DEPENDS intrinsics_gen)
+endif()
+
 # Generate LLVMConfig.cmake for the build tree.
 set(LLVM_CONFIG_CODE "
 # LLVM_BUILD_* values available only from LLVM build tree.
@@ -94,20 +103,35 @@ configure_file(
   @ONLY)
 
 if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
-  install(EXPORT LLVMExports DESTINATION ${LLVM_INSTALL_PACKAGE_DIR})
+  get_property(llvm_has_exports GLOBAL PROPERTY LLVM_HAS_EXPORTS)
+  if(llvm_has_exports)
+    install(EXPORT LLVMExports DESTINATION ${LLVM_INSTALL_PACKAGE_DIR}
+            COMPONENT cmake-exports)
+  endif()
 
   install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/LLVMConfig.cmake
     ${llvm_cmake_builddir}/LLVMConfigVersion.cmake
     LLVM-Config.cmake
-    DESTINATION ${LLVM_INSTALL_PACKAGE_DIR})
+    DESTINATION ${LLVM_INSTALL_PACKAGE_DIR}
+    COMPONENT cmake-exports)
 
   install(DIRECTORY .
     DESTINATION ${LLVM_INSTALL_PACKAGE_DIR}
+    COMPONENT cmake-exports
     FILES_MATCHING PATTERN *.cmake
     PATTERN .svn EXCLUDE
     PATTERN LLVMConfig.cmake EXCLUDE
     PATTERN LLVMConfigVersion.cmake EXCLUDE
     PATTERN LLVM-Config.cmake EXCLUDE
     PATTERN GetHostTriple.cmake EXCLUDE)
+
+  if (NOT CMAKE_CONFIGURATION_TYPES)
+    # Add a dummy target so this can be used with LLVM_DISTRIBUTION_COMPONENTS
+    add_custom_target(cmake-exports)
+    add_custom_target(install-cmake-exports
+                      COMMAND "${CMAKE_COMMAND}"
+                                  -DCMAKE_INSTALL_COMPONENT=cmake-exports
+                                  -P "${CMAKE_BINARY_DIR}/cmake_install.cmake")
+  endif()
 endif()

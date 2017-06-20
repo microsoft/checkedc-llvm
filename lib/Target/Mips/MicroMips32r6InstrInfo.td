@@ -186,8 +186,6 @@ class TRUNC_W_S_MMR6_ENC : POOL32F_MATH_FM_MMR6<"trunc.w.s", 0, 0b10101100>;
 class TRUNC_W_D_MMR6_ENC : POOL32F_MATH_FM_MMR6<"trunc.w.d", 1, 0b10101100>;
 class SQRT_S_MMR6_ENC : POOL32F_MATH_FM_MMR6<"sqrt.s", 0, 0b00101000>;
 class SQRT_D_MMR6_ENC : POOL32F_MATH_FM_MMR6<"sqrt.d", 1, 0b00101000>;
-class RSQRT_S_MMR6_ENC : POOL32F_MATH_FM_MMR6<"rsqrt.s", 0, 0b00001000>;
-class RSQRT_D_MMR6_ENC : POOL32F_MATH_FM_MMR6<"rsqrt.d", 1, 0b00001000>;
 class SB_MMR6_ENC : SB32_SH32_STORE_FM_MMR6<0b000110>;
 class SBE_MMR6_ENC : POOL32C_STORE_EVA_FM_MMR6<0b100>;
 class SCE_MMR6_ENC : POOL32C_STORE_EVA_FM_MMR6<0b110>;
@@ -198,8 +196,6 @@ class LWE_MMR6_ENC : LOAD_WORD_EVA_FM_MMR6<0b111>;
 class LW_MMR6_ENC : LOAD_WORD_FM_MMR6;
 class LUI_MMR6_ENC : LOAD_UPPER_IMM_FM_MMR6;
 class JALRC_HB_MMR6_ENC : POOL32A_JALRC_FM_MMR6<"jalrc.hb", 0b0001111100>;
-class RECIP_S_MMR6_ENC : POOL32F_RECIP_ROUND_FM_MMR6<"recip.s", 0, 0b01001000>;
-class RECIP_D_MMR6_ENC : POOL32F_RECIP_ROUND_FM_MMR6<"recip.d", 1, 0b01001000>;
 class RINT_S_MMR6_ENC : POOL32F_RINT_FM_MMR6<"rint.s", 0>;
 class RINT_D_MMR6_ENC : POOL32F_RINT_FM_MMR6<"rint.d", 1>;
 class ROUND_L_S_MMR6_ENC : POOL32F_RECIP_ROUND_FM_MMR6<"round.l.s", 0,
@@ -567,7 +563,7 @@ class ALIGN_MMR6_DESC : ALIGN_MMR6_DESC_BASE<"align", GPR32Opnd, uimm2,
 class AUI_MMR6_DESC_BASE<string instr_asm, RegisterOperand GPROpnd,
                          InstrItinClass Itin> : MMR6Arch<instr_asm> {
   dag OutOperandList = (outs GPROpnd:$rt);
-  dag InOperandList = (ins GPROpnd:$rs, simm16:$imm);
+  dag InOperandList = (ins GPROpnd:$rs, uimm16:$imm);
   string AsmString = !strconcat(instr_asm, "\t$rt, $rs, $imm");
   list<dag> Pattern = [];
   InstrItinClass Itinerary = Itin;
@@ -1118,14 +1114,6 @@ class SQRT_S_MMR6_DESC : ABSS_FT_MMR6_DESC_BASE<"sqrt.s", FGR32Opnd, FGR32Opnd,
                                                  II_SQRT_S, fsqrt>;
 class SQRT_D_MMR6_DESC : ABSS_FT_MMR6_DESC_BASE<"sqrt.d", AFGR64Opnd, AFGR64Opnd,
                                                  II_SQRT_D, fsqrt>;
-class RSQRT_S_MMR6_DESC : ABSS_FT_MMR6_DESC_BASE<"rsqrt.s", FGR32Opnd,
-                                                  FGR32Opnd, II_TRUNC>;
-class RSQRT_D_MMR6_DESC : ABSS_FT_MMR6_DESC_BASE<"rsqrt.d", FGR32Opnd,
-                                                  AFGR64Opnd, II_TRUNC>;
-class RECIP_S_MMR6_DESC : ABSS_FT_MMR6_DESC_BASE<"recip.s", FGR32Opnd,
-                                                 FGR32Opnd, II_ROUND>;
-class RECIP_D_MMR6_DESC : ABSS_FT_MMR6_DESC_BASE<"recip.d", FGR32Opnd, FGR32Opnd,
-                                                 II_ROUND>;
 class ROUND_L_S_MMR6_DESC : ABSS_FT_MMR6_DESC_BASE<"round.l.s", FGR64Opnd,
                                                    FGR32Opnd, II_ROUND>;
 class ROUND_L_D_MMR6_DESC : ABSS_FT_MMR6_DESC_BASE<"round.l.d", FGR64Opnd,
@@ -1347,11 +1335,12 @@ class TLBINV_MMR6_DESC : TLBINV_MMR6_DESC_BASE<"tlbinv", II_TLBINV>;
 class TLBINVF_MMR6_DESC : TLBINV_MMR6_DESC_BASE<"tlbinvf", II_TLBINVF>;
 
 class DVPEVP_MMR6_DESC_BASE<string opstr, InstrItinClass Itin> {
-  dag OutOperandList = (outs);
-  dag InOperandList = (ins GPR32Opnd:$rs);
+  dag OutOperandList = (outs GPR32Opnd:$rs);
+  dag InOperandList = (ins);
   string AsmString = !strconcat(opstr, "\t$rs");
   list<dag> Pattern = [];
   InstrItinClass Itinerary = Itin;
+  bit hasUnModeledSideEffects = 1;
 }
 
 class DVP_MMR6_DESC : DVPEVP_MMR6_DESC_BASE<"dvp", II_DVP>;
@@ -1664,10 +1653,6 @@ def SQRT_S_MMR6 : StdMMR6Rel, SQRT_S_MMR6_ENC, SQRT_S_MMR6_DESC,
                   ISA_MICROMIPS32R6;
 def SQRT_D_MMR6 : StdMMR6Rel, SQRT_D_MMR6_ENC, SQRT_D_MMR6_DESC,
                   ISA_MICROMIPS32R6;
-def RSQRT_S_MMR6 : StdMMR6Rel, RSQRT_S_MMR6_ENC, RSQRT_S_MMR6_DESC,
-                   ISA_MICROMIPS32R6;
-def RSQRT_D_MMR6 : StdMMR6Rel, RSQRT_D_MMR6_ENC, RSQRT_D_MMR6_DESC,
-                   ISA_MICROMIPS32R6;
 def SB_MMR6 : StdMMR6Rel, SB_MMR6_DESC, SB_MMR6_ENC, ISA_MICROMIPS32R6;
 def SBE_MMR6 : StdMMR6Rel, SBE_MMR6_DESC, SBE_MMR6_ENC, ISA_MICROMIPS32R6;
 def SCE_MMR6 : StdMMR6Rel, SCE_MMR6_DESC, SCE_MMR6_ENC, ISA_MICROMIPS32R6;
@@ -1708,9 +1693,6 @@ def JALRC_HB_MMR6 : R6MMR6Rel, JALRC_HB_MMR6_ENC, JALRC_HB_MMR6_DESC,
 def EXT_MMR6 : StdMMR6Rel, EXT_MMR6_ENC, EXT_MMR6_DESC, ISA_MICROMIPS32R6;
 def INS_MMR6 : StdMMR6Rel, INS_MMR6_ENC, INS_MMR6_DESC, ISA_MICROMIPS32R6;
 def JALRC_MMR6 : R6MMR6Rel, JALRC_MMR6_ENC, JALRC_MMR6_DESC, ISA_MICROMIPS32R6;
-def RECIP_S_MMR6 : StdMMR6Rel, RECIP_S_MMR6_ENC, RECIP_S_MMR6_DESC,
-                   ISA_MICROMIPS32R6;
-def RECIP_D_MMR6 : StdMMR6Rel, RECIP_D_MMR6_ENC, RECIP_D_MMR6_DESC, ISA_MICROMIPS32R6;
 def RINT_S_MMR6 : StdMMR6Rel, RINT_S_MMR6_ENC, RINT_S_MMR6_DESC,
                   ISA_MICROMIPS32R6;
 def RINT_D_MMR6 : StdMMR6Rel, RINT_D_MMR6_ENC, RINT_D_MMR6_DESC, ISA_MICROMIPS32R6;
@@ -1845,6 +1827,10 @@ def : MipsInstAlias<"xor $rs, $imm",
                     ISA_MICROMIPS32R6;
 def : MipsInstAlias<"not $rt, $rs",
                     (NOR_MMR6 GPR32Opnd:$rt, GPR32Opnd:$rs, ZERO), 0>,
+                    ISA_MICROMIPS32R6;
+def : MipsInstAlias<"seh $rd", (SEH_MMR6 GPR32Opnd:$rd, GPR32Opnd:$rd), 0>,
+                    ISA_MICROMIPS32R6;
+def : MipsInstAlias<"seb $rd", (SEB_MMR6 GPR32Opnd:$rd, GPR32Opnd:$rd), 0>,
                     ISA_MICROMIPS32R6;
 
 //===----------------------------------------------------------------------===//

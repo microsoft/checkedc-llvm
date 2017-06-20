@@ -50,7 +50,7 @@ namespace {
           MachineFunctionProperties::Property::NoVRegs);
     }
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "Hexagon Hardware Loop Fixup";
     }
 
@@ -190,5 +190,5 @@ void HexagonFixupHwLoops::useExtLoopInstr(MachineFunction &MF,
   MIB = BuildMI(*MBB, MII, DL, TII->get(newOp));
 
   for (unsigned i = 0; i < MII->getNumOperands(); ++i)
-    MIB.addOperand(MII->getOperand(i));
+    MIB.add(MII->getOperand(i));
 }

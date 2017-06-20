@@ -14,6 +14,8 @@
 // ELF: 0020: 03000000 414D4400 04000700 07000000
 // ELF: 0030: 00000000 00000000 414D4400 414D4447
 // ELF: 0040: 50550000
+// We can't check binary representation of metadata note: it is different on
+// Windows and Linux because of carriage return on Windows
 
 // ELF: Symbol {
 // ELF: Name: amd_kernel_code_t_minimal
@@ -35,9 +37,22 @@
 .hsa_code_object_isa 7,0,0,"AMD","AMDGPU"
 // ASM: .hsa_code_object_isa 7,0,0,"AMD","AMDGPU"
 
+.amdgpu_code_object_metadata
+  Version: [ 3, 0 ]
+  Kernels:
+    - Name: amd_kernel_code_t_test_all
+    - Name: amd_kernel_code_t_minimal
+.end_amdgpu_code_object_metadata
+
+// ASM: .amdgpu_code_object_metadata
+// ASM:    Version: [ 3, 0 ]
+// ASM:    Kernels:
+// ASM:      - Name: amd_kernel_code_t_test_all
+// ASM:      - Name: amd_kernel_code_t_minimal
+// ASM: .end_amdgpu_code_object_metadata
+
 .amdgpu_hsa_kernel amd_kernel_code_t_test_all
 .amdgpu_hsa_kernel amd_kernel_code_t_minimal
-
 
 amd_kernel_code_t_test_all:
 ; Test all amd_kernel_code_t members with non-default values.
@@ -193,7 +208,7 @@ amd_kernel_code_t_minimal:
 // ASM-LABEL: {{^}}amd_kernel_code_t_minimal:
 // ASM: .amd_kernel_code_t
 // ASM:	amd_code_version_major = 1
-// ASM:	amd_code_version_minor = 0
+// ASM:	amd_code_version_minor = 1
 // ASM:	amd_machine_kind = 1
 // ASM:	amd_machine_version_major = 7
 // ASM:	amd_machine_version_minor = 0
@@ -252,6 +267,6 @@ amd_kernel_code_t_minimal:
 // ASM:	group_segment_alignment = 4
 // ASM:	private_segment_alignment = 4
 // ASM:	wavefront_size = 6
-// ASM:	call_convention = 0
+// ASM:	call_convention = -1
 // ASM:	runtime_loader_kernel_symbol = 0
 // ASM: .end_amd_kernel_code_t

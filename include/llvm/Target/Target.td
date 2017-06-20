@@ -371,6 +371,7 @@ class Instruction {
   bit isSelect     = 0;     // Is this instruction a select instruction?
   bit isBarrier    = 0;     // Can control flow fall through this instruction?
   bit isCall       = 0;     // Is this instruction a call instruction?
+  bit isAdd        = 0;     // Is this instruction an add instruction?
   bit canFoldAsLoad = 0;    // Can this be folded as a simple memory operand?
   bit mayLoad      = ?;     // Is it possible for this inst to read memory?
   bit mayStore     = ?;     // Is it possible for this inst to write memory?
@@ -401,11 +402,8 @@ class Instruction {
                             // If so, make sure to override
                             // TargetInstrInfo::getInsertSubregLikeInputs.
 
-  // Side effect flags - When set, the flags have these meanings:
-  //
-  //  hasSideEffects - The instruction has side effects that are not
-  //    captured by any operands of the instruction or other flags.
-  //
+  // Does the instruction have side effects that are not captured by any
+  // operands of the instruction or other flags?
   bit hasSideEffects = ?;
 
   // Is this instruction a "real" instruction (with a distinct machine
@@ -532,6 +530,12 @@ class Predicate<string cond> {
   /// PredicateName - User-level name to use for the predicate. Mainly for use
   /// in diagnostics such as missing feature errors in the asm matcher.
   string PredicateName = "";
+
+  /// Setting this to '1' indicates that the predicate must be recomputed on
+  /// every function change. Most predicates can leave this at '0'.
+  ///
+  /// Ignored by SelectionDAG, it always recomputes the predicate on every use.
+  bit RecomputePerFunction = 0;
 }
 
 /// NoHonorSignDependentRounding - This predicate is true if support for
@@ -950,11 +954,12 @@ def LOCAL_ESCAPE : Instruction {
   let hasSideEffects = 0;
   let hasCtrlDep = 1;
 }
-def FAULTING_LOAD_OP : Instruction {
+def FAULTING_OP : Instruction {
   let OutOperandList = (outs unknown:$dst);
   let InOperandList = (ins variable_ops);
   let usesCustomInserter = 1;
   let mayLoad = 1;
+  let mayStore = 1;
   let isTerminator = 1;
   let isBranch = 1;
 }
@@ -976,10 +981,18 @@ def PATCHABLE_FUNCTION_ENTER : Instruction {
 def PATCHABLE_RET : Instruction {
   let OutOperandList = (outs unknown:$dst);
   let InOperandList = (ins variable_ops);
-  let AsmString = "# XRay Function Exit.";
+  let AsmString = "# XRay Function Patchable RET.";
   let usesCustomInserter = 1;
   let hasSideEffects = 1;
   let isReturn = 1;
+}
+def PATCHABLE_FUNCTION_EXIT : Instruction {
+  let OutOperandList = (outs);
+  let InOperandList = (ins);
+  let AsmString = "# XRay Function Exit.";
+  let usesCustomInserter = 1;
+  let hasSideEffects = 0; // FIXME: is this correct?
+  let isReturn = 0; // Original return instruction will follow
 }
 def PATCHABLE_TAIL_CALL : Instruction {
   let OutOperandList = (outs unknown:$dst);
@@ -988,6 +1001,15 @@ def PATCHABLE_TAIL_CALL : Instruction {
   let usesCustomInserter = 1;
   let hasSideEffects = 1;
   let isReturn = 1;
+}
+def FENTRY_CALL : Instruction {
+  let OutOperandList = (outs unknown:$dst);
+  let InOperandList = (ins variable_ops);
+  let AsmString = "# FEntry call";
+  let usesCustomInserter = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasSideEffects = 1;
 }
 
 // Generic opcodes used in GlobalISel.
@@ -1331,3 +1353,18 @@ include "llvm/Target/TargetCallingConv.td"
 // Pull in the common support for DAG isel generation.
 //
 include "llvm/Target/TargetSelectionDAG.td"
+
+//===----------------------------------------------------------------------===//
+// Pull in the common support for Global ISel register bank info generation.
+//
+include "llvm/Target/GlobalISel/RegisterBank.td"
+
+//===----------------------------------------------------------------------===//
+// Pull in the common support for DAG isel generation.
+//
+include "llvm/Target/GlobalISel/Target.td"
+
+//===----------------------------------------------------------------------===//
+// Pull in the common support for the Global ISel DAG-based selector generation.
+//
+include "llvm/Target/GlobalISel/SelectionDAGCompat.td"

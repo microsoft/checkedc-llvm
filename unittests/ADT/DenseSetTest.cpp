@@ -7,19 +7,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "gtest/gtest.h"
 #include "llvm/ADT/DenseSet.h"
+#include "gtest/gtest.h"
+#include <type_traits>
 
 using namespace llvm;
 
 namespace {
 
-// Test fixture
-class DenseSetTest : public testing::Test {
-};
-
 // Test hashing with a set of only two entries.
-TEST_F(DenseSetTest, DoubleEntrySetTest) {
+TEST(DenseSetTest, DoubleEntrySetTest) {
   llvm::DenseSet<unsigned> set(2);
   set.insert(0);
   set.insert(1);
@@ -42,12 +39,64 @@ struct TestDenseSetInfo {
   }
 };
 
-TEST(DenseSetCustomTest, FindAsTest) {
-  DenseSet<unsigned, TestDenseSetInfo> set;
-  set.insert(0);
-  set.insert(1);
-  set.insert(2);
+// Test fixture
+template <typename T> class DenseSetTest : public testing::Test {
+protected:
+  T Set = GetTestSet();
 
+private:
+  static T GetTestSet() {
+    typename std::remove_const<T>::type Set;
+    Set.insert(0);
+    Set.insert(1);
+    Set.insert(2);
+    return Set;
+  }
+};
+
+// Register these types for testing.
+typedef ::testing::Types<DenseSet<unsigned, TestDenseSetInfo>,
+                         const DenseSet<unsigned, TestDenseSetInfo>,
+                         SmallDenseSet<unsigned, 1, TestDenseSetInfo>,
+                         SmallDenseSet<unsigned, 4, TestDenseSetInfo>,
+                         const SmallDenseSet<unsigned, 4, TestDenseSetInfo>,
+                         SmallDenseSet<unsigned, 64, TestDenseSetInfo>>
+    DenseSetTestTypes;
+TYPED_TEST_CASE(DenseSetTest, DenseSetTestTypes);
+
+TYPED_TEST(DenseSetTest, InitializerList) {
+  TypeParam set({1, 2, 1, 4});
+  EXPECT_EQ(3u, set.size());
+  EXPECT_EQ(1u, set.count(1));
+  EXPECT_EQ(1u, set.count(2));
+  EXPECT_EQ(1u, set.count(4));
+  EXPECT_EQ(0u, set.count(3));
+}
+
+TYPED_TEST(DenseSetTest, ConstIteratorComparison) {
+  TypeParam set({1});
+  const TypeParam &cset = set;
+  EXPECT_EQ(set.begin(), cset.begin());
+  EXPECT_EQ(set.end(), cset.end());
+  EXPECT_NE(set.end(), cset.begin());
+  EXPECT_NE(set.begin(), cset.end());
+}
+
+TYPED_TEST(DenseSetTest, DefaultConstruction) {
+  typename TypeParam::iterator I, J;
+  typename TypeParam::const_iterator CI, CJ;
+  EXPECT_EQ(I, J);
+  EXPECT_EQ(CI, CJ);
+}
+
+TYPED_TEST(DenseSetTest, EmptyInitializerList) {
+  TypeParam set({});
+  EXPECT_EQ(0u, set.size());
+  EXPECT_EQ(0u, set.count(0));
+}
+
+TYPED_TEST(DenseSetTest, FindAsTest) {
+  auto &set = this->Set;
   // Size tests
   EXPECT_EQ(3u, set.size());
 
@@ -135,5 +184,18 @@ TEST(DenseSetCustomTest, ReserveTest) {
     // Check that no copy occured
     EXPECT_EQ(0, CountCopyAndMove::Copy);
   }
+}
+TEST(DenseSetCustomTest, ConstTest) {
+  // Test that const pointers work okay for count and find, even when the
+  // underlying map is a non-const pointer.
+  DenseSet<int *> Map;
+  int A;
+  int *B = &A;
+  const int *C = &A;
+  Map.insert(B);
+  EXPECT_EQ(Map.count(B), 1u);
+  EXPECT_EQ(Map.count(C), 1u);
+  EXPECT_NE(Map.find(B), Map.end());
+  EXPECT_NE(Map.find(C), Map.end());
 }
 }

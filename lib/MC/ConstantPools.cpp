@@ -1,4 +1,4 @@
-//===- ConstantPools.cpp - ConstantPool class --*- C++ -*---------===//
+//===- ConstantPools.cpp - ConstantPool class -----------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -10,13 +10,16 @@
 // This file implements the ConstantPool and  AssemblerConstantPools classes.
 //
 //===----------------------------------------------------------------------===//
-#include "llvm/ADT/MapVector.h"
+
 #include "llvm/MC/ConstantPools.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCDirectives.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/Support/Casting.h"
 
 using namespace llvm;
+
 //
 // ConstantPool implementation
 //
@@ -36,10 +39,20 @@ void ConstantPool::emitEntries(MCStreamer &Streamer) {
 
 const MCExpr *ConstantPool::addEntry(const MCExpr *Value, MCContext &Context,
                                      unsigned Size, SMLoc Loc) {
+  const MCConstantExpr *C = dyn_cast<MCConstantExpr>(Value);
+
+  // Check if there is existing entry for the same constant. If so, reuse it.
+  auto Itr = C ? CachedEntries.find(C->getValue()) : CachedEntries.end();
+  if (Itr != CachedEntries.end())
+    return Itr->second;
+
   MCSymbol *CPEntryLabel = Context.createTempSymbol();
 
   Entries.push_back(ConstantPoolEntry(CPEntryLabel, Value, Size, Loc));
-  return MCSymbolRefExpr::create(CPEntryLabel, Context);
+  const auto SymRef = MCSymbolRefExpr::create(CPEntryLabel, Context);
+  if (C)
+    CachedEntries[C->getValue()] = SymRef;
+  return SymRef;
 }
 
 bool ConstantPool::empty() { return Entries.empty(); }
@@ -79,7 +92,7 @@ void AssemblerConstantPools::emitAll(MCStreamer &Streamer) {
 }
 
 void AssemblerConstantPools::emitForCurrentSection(MCStreamer &Streamer) {
-  MCSection *Section = Streamer.getCurrentSection().first;
+  MCSection *Section = Streamer.getCurrentSectionOnly();
   if (ConstantPool *CP = getConstantPool(Section)) {
     emitConstantPool(Streamer, Section, *CP);
   }
@@ -88,7 +101,7 @@ void AssemblerConstantPools::emitForCurrentSection(MCStreamer &Streamer) {
 const MCExpr *AssemblerConstantPools::addEntry(MCStreamer &Streamer,
                                                const MCExpr *Expr,
                                                unsigned Size, SMLoc Loc) {
-  MCSection *Section = Streamer.getCurrentSection().first;
+  MCSection *Section = Streamer.getCurrentSectionOnly();
   return getOrCreateConstantPool(Section).addEntry(Expr, Streamer.getContext(),
                                                    Size, Loc);
 }

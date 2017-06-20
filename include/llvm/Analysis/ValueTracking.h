@@ -16,7 +16,6 @@
 #define LLVM_ANALYSIS_VALUETRACKING_H
 
 #include "llvm/IR/CallSite.h"
-#include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Support/DataTypes.h"
@@ -30,8 +29,10 @@ template <typename T> class ArrayRef;
   class DominatorTree;
   class GEPOperator;
   class Instruction;
+  struct KnownBits;
   class Loop;
   class LoopInfo;
+  class OptimizationRemarkEmitter;
   class MDNode;
   class StringRef;
   class TargetLibraryInfo;
@@ -49,16 +50,17 @@ template <typename T> class ArrayRef;
   /// where V is a vector, the known zero and known one values are the
   /// same width as the vector element, and the bit is set only if it is true
   /// for all of the elements in the vector.
-  void computeKnownBits(const Value *V, APInt &KnownZero, APInt &KnownOne,
+  void computeKnownBits(const Value *V, KnownBits &Known,
                         const DataLayout &DL, unsigned Depth = 0,
                         AssumptionCache *AC = nullptr,
                         const Instruction *CxtI = nullptr,
-                        const DominatorTree *DT = nullptr);
+                        const DominatorTree *DT = nullptr,
+                        OptimizationRemarkEmitter *ORE = nullptr);
   /// Compute known bits from the range metadata.
   /// \p KnownZero the set of bits that are known to be zero
   /// \p KnownOne the set of bits that are known to be one
   void computeKnownBitsFromRangeMetadata(const MDNode &Ranges,
-                                         APInt &KnownZero, APInt &KnownOne);
+                                         KnownBits &Known);
   /// Return true if LHS and RHS have no common bits set.
   bool haveNoCommonBitsSet(const Value *LHS, const Value *RHS,
                            const DataLayout &DL,
@@ -87,8 +89,10 @@ template <typename T> class ArrayRef;
 
   /// Return true if the given value is known to be non-zero when defined. For
   /// vectors, return true if every element is known to be non-zero when
-  /// defined. Supports values with integer or pointer type and vectors of
-  /// integers.
+  /// defined. For pointers, if the context instruction and dominator tree are
+  /// specified, perform context-sensitive analysis and return true if the
+  /// pointer couldn't possibly be null at the specified instruction.
+  /// Supports values with integer or pointer type and vectors of integers.
   bool isKnownNonZero(const Value *V, const DataLayout &DL, unsigned Depth = 0,
                       AssumptionCache *AC = nullptr,
                       const Instruction *CxtI = nullptr,
@@ -168,10 +172,26 @@ template <typename T> class ArrayRef;
   bool CannotBeNegativeZero(const Value *V, const TargetLibraryInfo *TLI,
                             unsigned Depth = 0);
 
-  /// Return true if we can prove that the specified FP value is either a NaN or
-  /// never less than 0.0.
-  bool CannotBeOrderedLessThanZero(const Value *V, const TargetLibraryInfo *TLI,
-                                   unsigned Depth = 0);
+  /// Return true if we can prove that the specified FP value is either NaN or
+  /// never less than -0.0.
+  ///
+  ///      NaN --> true
+  ///       +0 --> true
+  ///       -0 --> true
+  ///   x > +0 --> true
+  ///   x < -0 --> false
+  ///
+  bool CannotBeOrderedLessThanZero(const Value *V, const TargetLibraryInfo *TLI);
+
+  /// Return true if we can prove that the specified FP value's sign bit is 0.
+  ///
+  ///      NaN --> true/false (depending on the NaN's sign bit)
+  ///       +0 --> true
+  ///       -0 --> false
+  ///   x > +0 --> true
+  ///   x < -0 --> false
+  ///
+  bool SignBitMustBeZero(const Value *V, const TargetLibraryInfo *TLI);
 
   /// If the specified value can be set by repeating the same byte in memory,
   /// return the i8 value that it is represented with. This is true for all i8
@@ -309,12 +329,12 @@ template <typename T> class ArrayRef;
   bool isKnownNonNull(const Value *V);
 
   /// Return true if this pointer couldn't possibly be null. If the context
-  /// instruction is specified, perform context-sensitive analysis and return
-  /// true if the pointer couldn't possibly be null at the specified
-  /// instruction.
+  /// instruction and dominator tree are specified, perform context-sensitive
+  /// analysis and return true if the pointer couldn't possibly be null at the
+  /// specified instruction.
   bool isKnownNonNullAt(const Value *V,
                         const Instruction *CtxI = nullptr,
-                        const DominatorTree *DT  = nullptr);
+                        const DominatorTree *DT = nullptr);
 
   /// Return true if it is valid to use the assumptions provided by an
   /// assume intrinsic, I, at the point in the control-flow identified by the
@@ -397,7 +417,7 @@ template <typename T> class ArrayRef;
   ///
   /// Note that this currently only considers the basic block that is
   /// the parent of I.
-  bool isKnownNotFullPoison(const Instruction *PoisonI);
+  bool programUndefinedIfFullPoison(const Instruction *PoisonI);
 
   /// \brief Specific patterns of select instructions we can match.
   enum SelectPatternFlavor {
@@ -461,11 +481,6 @@ template <typename T> class ArrayRef;
     RHS = R;
     return Result;
   }
-
-  /// Parse out a conservative ConstantRange from !range metadata.
-  ///
-  /// E.g. if RangeMD is !{i32 0, i32 10, i32 15, i32 20} then return [0, 20).
-  ConstantRange getConstantRangeFromMetadata(const MDNode &RangeMD);
 
   /// Return true if RHS is known to be implied true by LHS.  Return false if
   /// RHS is known to be implied false by LHS.  Otherwise, return None if no

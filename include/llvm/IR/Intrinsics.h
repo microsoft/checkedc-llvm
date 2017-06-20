@@ -28,7 +28,7 @@ class FunctionType;
 class Function;
 class LLVMContext;
 class Module;
-class AttributeSet;
+class AttributeList;
 
 /// This namespace contains an enum with a value for every intrinsic/builtin
 /// function known by LLVM. The enum values are returned by
@@ -69,7 +69,7 @@ namespace Intrinsic {
   bool isLeaf(ID id);
 
   /// Return the attributes for an intrinsic.
-  AttributeSet getAttributes(LLVMContext &C, ID id);
+  AttributeList getAttributes(LLVMContext &C, ID id);
 
   /// Create or insert an LLVM Function declaration for an intrinsic, and return
   /// it.
@@ -88,10 +88,10 @@ namespace Intrinsic {
                                 StringRef Name);
 
   /// Map a GCC builtin name to an intrinsic ID.
-  ID getIntrinsicForGCCBuiltin(const char *Prefix, const char *BuiltinName);
+  ID getIntrinsicForGCCBuiltin(const char *Prefix, StringRef BuiltinName);
 
   /// Map a MS builtin name to an intrinsic ID.
-  ID getIntrinsicForMSBuiltin(const char *Prefix, const char *BuiltinName);
+  ID getIntrinsicForMSBuiltin(const char *Prefix, StringRef BuiltinName);
 
   /// This is a type descriptor which explains the type requirements of an
   /// intrinsic. This is returned by getIntrinsicInfoTableEntries.
@@ -100,7 +100,7 @@ namespace Intrinsic {
       Void, VarArg, MMX, Token, Metadata, Half, Float, Double,
       Integer, Vector, Pointer, Struct,
       Argument, ExtendArgument, TruncArgument, HalfVecArgument,
-      SameVecWidthArgument, PtrToArgument, VecOfPtrsToElt
+      SameVecWidthArgument, PtrToArgument, PtrToElt, VecOfPtrsToElt
     } Kind;
 
     union {
@@ -123,7 +123,7 @@ namespace Intrinsic {
       assert(Kind == Argument || Kind == ExtendArgument ||
              Kind == TruncArgument || Kind == HalfVecArgument ||
              Kind == SameVecWidthArgument || Kind == PtrToArgument ||
-             Kind == VecOfPtrsToElt);
+             Kind == PtrToElt || Kind == VecOfPtrsToElt);
       return Argument_Info >> 3;
     }
     ArgKind getArgumentKind() const {

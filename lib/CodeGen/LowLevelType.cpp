@@ -1,4 +1,4 @@
-//===-- llvm/CodeGen/GlobalISel/LowLevelType.cpp --------------------------===//
+//===-- llvm/CodeGen/LowLevelType.cpp -------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -18,38 +18,21 @@
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
-LLT::LLT(Type &Ty, const DataLayout *DL) {
+LLT llvm::getLLTForType(Type &Ty, const DataLayout &DL) {
   if (auto VTy = dyn_cast<VectorType>(&Ty)) {
-    SizeOrAddrSpace = VTy->getElementType()->getPrimitiveSizeInBits();
-    NumElements = VTy->getNumElements();
-    Kind = NumElements == 1 ? Scalar : Vector;
+    auto NumElements = VTy->getNumElements();
+    LLT ScalarTy = getLLTForType(*VTy->getElementType(), DL);
+    if (NumElements == 1)
+      return ScalarTy;
+    return LLT::vector(NumElements, ScalarTy);
   } else if (auto PTy = dyn_cast<PointerType>(&Ty)) {
-    Kind = Pointer;
-    SizeOrAddrSpace = PTy->getAddressSpace();
-    NumElements = 1;
+    return LLT::pointer(PTy->getAddressSpace(), DL.getTypeSizeInBits(&Ty));
   } else if (Ty.isSized()) {
     // Aggregates are no different from real scalars as far as GlobalISel is
     // concerned.
-    Kind = Scalar;
-    SizeOrAddrSpace =
-        DL ? DL->getTypeSizeInBits(&Ty) : Ty.getPrimitiveSizeInBits();
-    NumElements = 1;
-    assert(SizeOrAddrSpace != 0 && "invalid zero-sized type");
-  } else {
-    Kind = Unsized;
-    SizeOrAddrSpace = NumElements = 0;
+    auto SizeInBits = DL.getTypeSizeInBits(&Ty);
+    assert(SizeInBits != 0 && "invalid zero-sized type");
+    return LLT::scalar(SizeInBits);
   }
-}
-
-void LLT::print(raw_ostream &OS) const {
-  if (isVector())
-    OS << "<" << NumElements << " x s" << SizeOrAddrSpace << ">";
-  else if (isPointer())
-    OS << "p" << getAddressSpace();
-  else if (isSized())
-    OS << "s" << getScalarSizeInBits();
-  else if (isValid())
-    OS << "unsized";
-  else
-    llvm_unreachable("trying to print an invalid type");
+  return LLT();
 }

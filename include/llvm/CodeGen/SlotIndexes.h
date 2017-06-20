@@ -346,9 +346,8 @@ namespace llvm {
 
     IndexListEntry* createEntry(MachineInstr *mi, unsigned index) {
       IndexListEntry *entry =
-        static_cast<IndexListEntry*>(
-          ileAllocator.Allocate(sizeof(IndexListEntry),
-          alignOf<IndexListEntry>()));
+          static_cast<IndexListEntry *>(ileAllocator.Allocate(
+              sizeof(IndexListEntry), alignof(IndexListEntry)));
 
       new (entry) IndexListEntry(mi, index);
 
@@ -406,7 +405,8 @@ namespace llvm {
     /// Returns the base index for the given instruction.
     SlotIndex getInstructionIndex(const MachineInstr &MI) const {
       // Instructions inside a bundle have the same number as the bundle itself.
-      Mi2IndexMap::const_iterator itr = mi2iMap.find(&getBundleStart(MI));
+      const MachineInstr &BundleStart = *getBundleStart(MI.getIterator());
+      Mi2IndexMap::const_iterator itr = mi2iMap.find(&BundleStart);
       assert(itr != mi2iMap.end() && "Instruction not found in maps.");
       return itr->second;
     }
@@ -602,19 +602,15 @@ namespace llvm {
       return newIndex;
     }
 
-    /// Remove the given machine instruction from the mapping.
-    void removeMachineInstrFromMaps(MachineInstr &MI) {
-      // remove index -> MachineInstr and
-      // MachineInstr -> index mappings
-      Mi2IndexMap::iterator mi2iItr = mi2iMap.find(&MI);
-      if (mi2iItr != mi2iMap.end()) {
-        IndexListEntry *miEntry(mi2iItr->second.listEntry());
-        assert(miEntry->getInstr() == &MI && "Instruction indexes broken.");
-        // FIXME: Eventually we want to actually delete these indexes.
-        miEntry->setInstr(nullptr);
-        mi2iMap.erase(mi2iItr);
-      }
-    }
+    /// Removes machine instruction (bundle) \p MI from the mapping.
+    /// This should be called before MachineInstr::eraseFromParent() is used to
+    /// remove a whole bundle or an unbundled instruction.
+    void removeMachineInstrFromMaps(MachineInstr &MI);
+
+    /// Removes a single machine instruction \p MI from the mapping.
+    /// This should be called before MachineInstr::eraseFromBundle() is used to
+    /// remove a single instruction (out of a bundle).
+    void removeSingleMachineInstrFromMaps(MachineInstr &MI);
 
     /// ReplaceMachineInstrInMaps - Replacing a machine instr with a new one in
     /// maps used by register allocator. \returns the index where the new

@@ -20,8 +20,8 @@
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
-#include "llvm/DebugInfo/CodeView/MemoryTypeTableBuilder.h"
 #include "llvm/DebugInfo/CodeView/TypeIndex.h"
+#include "llvm/DebugInfo/CodeView/TypeTableBuilder.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/MC/MCStreamer.h"
@@ -37,7 +37,7 @@ struct ClassInfo;
 class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
   MCStreamer &OS;
   llvm::BumpPtrAllocator Allocator;
-  codeview::MemoryTypeTableBuilder TypeTable;
+  codeview::TypeTableBuilder TypeTable;
 
   /// Represents the most general definition range.
   struct LocalVarDefRange {
@@ -48,9 +48,11 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
     /// Offset of variable data in memory.
     int DataOffset : 31;
 
-    /// Offset of the data into the user level struct. If zero, no splitting
-    /// occurred.
-    uint16_t StructOffset;
+    /// Non-zero if this is a piece of an aggregate.
+    uint16_t IsSubfield : 1;
+
+    /// Offset into aggregate.
+    uint16_t StructOffset : 15;
 
     /// Register containing the data or the register base of the memory
     /// location containing the data.
@@ -60,14 +62,18 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
     /// ranges.
     bool isDifferentLocation(LocalVarDefRange &O) {
       return InMemory != O.InMemory || DataOffset != O.DataOffset ||
-             StructOffset != O.StructOffset || CVRegister != O.CVRegister;
+             IsSubfield != O.IsSubfield || StructOffset != O.StructOffset ||
+             CVRegister != O.CVRegister;
     }
 
     SmallVector<std::pair<const MCSymbol *, const MCSymbol *>, 1> Ranges;
   };
 
   static LocalVarDefRange createDefRangeMem(uint16_t CVRegister, int Offset);
-  static LocalVarDefRange createDefRangeReg(uint16_t CVRegister);
+  static LocalVarDefRange createDefRangeGeneral(uint16_t CVRegister,
+                                                bool InMemory, int Offset,
+                                                bool IsSubfield,
+                                                uint16_t StructOffset);
 
   /// Similar to DbgVariable in DwarfDebug, but not dwarf-specific.
   struct LocalVariable {
@@ -191,6 +197,8 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
 
   void emitTypeInformation();
 
+  void emitCompilerInformation();
+
   void emitInlineeLinesSubsection();
 
   void emitDebugInfoForFunction(const Function *GV, FunctionInfo &FI);
@@ -202,12 +210,13 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
   void emitDebugInfoForUDTs(
       ArrayRef<std::pair<std::string, codeview::TypeIndex>> UDTs);
 
-  void emitDebugInfoForGlobal(const DIGlobalVariable *DIGV, MCSymbol *GVSym);
+  void emitDebugInfoForGlobal(const DIGlobalVariable *DIGV,
+                              const GlobalVariable *GV, MCSymbol *GVSym);
 
   /// Opens a subsection of the given kind in a .debug$S codeview section.
   /// Returns an end label for use with endCVSubsection when the subsection is
   /// finished.
-  MCSymbol *beginCVSubsection(codeview::ModuleSubstreamKind Kind);
+  MCSymbol *beginCVSubsection(codeview::ModuleDebugFragmentKind Kind);
 
   void endCVSubsection(MCSymbol *EndLabel);
 
@@ -218,7 +227,7 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
 
   void collectVariableInfo(const DISubprogram *SP);
 
-  void collectVariableInfoFromMMITable(DenseSet<InlinedVariable> &Processed);
+  void collectVariableInfoFromMFTable(DenseSet<InlinedVariable> &Processed);
 
   /// Records information about a local variable in the appropriate scope. In
   /// particular, locals from inlined code live inside the inlining site.
@@ -290,6 +299,13 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
 
   unsigned getPointerSizeInBytes();
 
+protected:
+  /// \brief Gather pre-function debug information.
+  void beginFunctionImpl(const MachineFunction *MF) override;
+
+  /// \brief Gather post-function debug information.
+  void endFunctionImpl(const MachineFunction *) override;
+
 public:
   CodeViewDebug(AsmPrinter *Asm);
 
@@ -297,12 +313,6 @@ public:
 
   /// \brief Emit the COFF section that holds the line table information.
   void endModule() override;
-
-  /// \brief Gather pre-function debug information.
-  void beginFunction(const MachineFunction *MF) override;
-
-  /// \brief Gather post-function debug information.
-  void endFunction(const MachineFunction *) override;
 
   /// \brief Process beginning of an instruction.
   void beginInstruction(const MachineInstr *MI) override;

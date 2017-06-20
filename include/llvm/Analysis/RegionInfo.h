@@ -626,12 +626,14 @@ public:
   /// are direct children of this Region. It does not iterate over any
   /// RegionNodes that are also element of a subregion of this Region.
   //@{
-  typedef df_iterator<RegionNodeT *, SmallPtrSet<RegionNodeT *, 8>, false,
-                      GraphTraits<RegionNodeT *>> element_iterator;
+  typedef df_iterator<RegionNodeT *, df_iterator_default_set<RegionNodeT *>,
+                      false, GraphTraits<RegionNodeT *>>
+      element_iterator;
 
-  typedef df_iterator<const RegionNodeT *, SmallPtrSet<const RegionNodeT *, 8>,
-                      false,
-                      GraphTraits<const RegionNodeT *>> const_element_iterator;
+  typedef df_iterator<const RegionNodeT *,
+                      df_iterator_default_set<const RegionNodeT *>, false,
+                      GraphTraits<const RegionNodeT *>>
+      const_element_iterator;
 
   element_iterator element_begin();
   element_iterator element_end();
@@ -676,7 +678,6 @@ class RegionInfoBase {
   friend class MachineRegionInfo;
   typedef DenseMap<BlockT *, BlockT *> BBtoBBMap;
   typedef DenseMap<BlockT *, RegionT *> BBtoRegionMap;
-  typedef SmallPtrSet<RegionT *, 4> RegionSet;
 
   RegionInfoBase();
   virtual ~RegionInfoBase();
@@ -707,10 +708,24 @@ class RegionInfoBase {
   /// The top level region.
   RegionT *TopLevelRegion;
 
-private:
   /// Map every BB to the smallest region, that contains BB.
   BBtoRegionMap BBtoRegion;
 
+protected:
+  /// \brief Update refences to a RegionInfoT held by the RegionT managed here
+  ///
+  /// This is a post-move helper. Regions hold references to the owning
+  /// RegionInfo object. After a move these need to be fixed.
+  template<typename TheRegionT>
+  void updateRegionTree(RegionInfoT &RI, TheRegionT *R) {
+    if (!R)
+      return;
+    R->RI = &RI;
+    for (auto &SubR : *R)
+      updateRegionTree(RI, SubR.get());
+  }
+
+private:
   /// \brief Wipe this region tree's state without releasing any resources.
   ///
   /// This is essentially a post-move helper only. It leaves the object in an
@@ -878,12 +893,18 @@ public:
 
   ~RegionInfo() override;
 
-  RegionInfo(RegionInfo &&Arg)
-    : Base(std::move(static_cast<Base &>(Arg))) {}
+  RegionInfo(RegionInfo &&Arg) : Base(std::move(static_cast<Base &>(Arg))) {
+    updateRegionTree(*this, TopLevelRegion);
+  }
   RegionInfo &operator=(RegionInfo &&RHS) {
     Base::operator=(std::move(static_cast<Base &>(RHS)));
+    updateRegionTree(*this, TopLevelRegion);
     return *this;
   }
+
+  /// Handle invalidation explicitly.
+  bool invalidate(Function &F, const PreservedAnalyses &PA,
+                  FunctionAnalysisManager::Invalidator &);
 
   // updateStatistics - Update statistic about created regions.
   void updateStatistics(Region *R) final;
@@ -932,7 +953,7 @@ public:
 /// \brief Analysis pass that exposes the \c RegionInfo for a function.
 class RegionInfoAnalysis : public AnalysisInfoMixin<RegionInfoAnalysis> {
   friend AnalysisInfoMixin<RegionInfoAnalysis>;
-  static char PassID;
+  static AnalysisKey Key;
 
 public:
   typedef RegionInfo Result;

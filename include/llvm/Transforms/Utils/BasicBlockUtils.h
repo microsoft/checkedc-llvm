@@ -78,14 +78,13 @@ void ReplaceInstWithInst(Instruction *From, Instruction *To);
 struct CriticalEdgeSplittingOptions {
   DominatorTree *DT;
   LoopInfo *LI;
-  bool MergeIdenticalEdges;
-  bool DontDeleteUselessPHIs;
-  bool PreserveLCSSA;
+  bool MergeIdenticalEdges = false;
+  bool DontDeleteUselessPHIs = false;
+  bool PreserveLCSSA = false;
 
   CriticalEdgeSplittingOptions(DominatorTree *DT = nullptr,
                                LoopInfo *LI = nullptr)
-      : DT(DT), LI(LI), MergeIdenticalEdges(false),
-        DontDeleteUselessPHIs(false), PreserveLCSSA(false) {}
+      : DT(DT), LI(LI) {}
 
   CriticalEdgeSplittingOptions &setMergeIdenticalEdges() {
     MergeIdenticalEdges = true;
@@ -230,8 +229,8 @@ ReturnInst *FoldReturnIntoUncondBranch(ReturnInst *RI, BasicBlock *BB,
                                        BasicBlock *Pred);
 
 /// Split the containing block at the specified instruction - everything before
-/// and including SplitBefore stays in the old basic block, and everything after
-/// SplitBefore is moved to a new block. The two blocks are connected by a
+/// SplitBefore stays in the old basic block, and the rest of the instructions
+/// in the BB are moved to a new block. The two blocks are connected by a
 /// conditional branch (with value of Cmp being the condition).
 /// Before:
 ///   Head

@@ -55,7 +55,8 @@ void StatepointLoweringState::startNewStatepoint(SelectionDAGBuilder &Builder) {
   NextSlotToAllocate = 0;
   // Need to resize this on each safepoint - we need the two to stay in sync and
   // the clear patterns of a SelectionDAGBuilder have no relation to
-  // FunctionLoweringInfo.  SmallBitVector::reset initializes all bits to false.
+  // FunctionLoweringInfo.  Also need to ensure used bits get cleared.
+  AllocatedStackSlots.clear();
   AllocatedStackSlots.resize(Builder.FuncInfo.StatepointStackSlots.size());
 }
 
@@ -82,9 +83,8 @@ StatepointLoweringState::allocateStackSlot(EVT ValueType,
   const size_t NumSlots = AllocatedStackSlots.size();
   assert(NextSlotToAllocate <= NumSlots && "Broken invariant");
 
-  // The stack slots in StatepointStackSlots beyond the first NumSlots were
-  // added in this instance of StatepointLoweringState, and cannot be re-used.
-  assert(NumSlots <= Builder.FuncInfo.StatepointStackSlots.size() &&
+  assert(AllocatedStackSlots.size() ==
+         Builder.FuncInfo.StatepointStackSlots.size() &&
          "Broken invariant");
 
   for (; NextSlotToAllocate < NumSlots; NextSlotToAllocate++) {
@@ -92,6 +92,7 @@ StatepointLoweringState::allocateStackSlot(EVT ValueType,
       const int FI = Builder.FuncInfo.StatepointStackSlots[NextSlotToAllocate];
       if (MFI.getObjectSize(FI) == SpillSize) {
         AllocatedStackSlots.set(NextSlotToAllocate);
+        // TODO: Is ValueType the right thing to use here?
         return Builder.DAG.getFrameIndex(FI, ValueType);
       }
     }
@@ -104,6 +105,10 @@ StatepointLoweringState::allocateStackSlot(EVT ValueType,
   MFI.markAsStatepointSpillSlotObjectIndex(FI);
 
   Builder.FuncInfo.StatepointStackSlots.push_back(FI);
+  AllocatedStackSlots.resize(AllocatedStackSlots.size()+1, true);
+  assert(AllocatedStackSlots.size() ==
+         Builder.FuncInfo.StatepointStackSlots.size() &&
+         "Broken invariant");
 
   StatepointMaxSlotsRequired = std::max<unsigned long>(
       StatepointMaxSlotsRequired, Builder.FuncInfo.StatepointStackSlots.size());
@@ -237,7 +242,8 @@ static void reservePreviousStackSlotForValue(const Value *IncomingValue,
 
   // Cache this slot so we find it when going through the normal
   // assignment loop.
-  SDValue Loc = Builder.DAG.getTargetFrameIndex(*Index, Incoming.getValueType());
+  SDValue Loc =
+      Builder.DAG.getTargetFrameIndex(*Index, Builder.getFrameIndexTy());
   Builder.StatepointLowering.setLocation(Incoming, Loc);
 }
 
@@ -338,7 +344,7 @@ spillIncomingStatepointValue(SDValue Incoming, SDValue Chain,
                                                        Builder);
     int Index = cast<FrameIndexSDNode>(Loc)->getIndex();
     // We use TargetFrameIndex so that isel will not select it into LEA
-    Loc = Builder.DAG.getTargetFrameIndex(Index, Incoming.getValueType());
+    Loc = Builder.DAG.getTargetFrameIndex(Index, Builder.getFrameIndexTy());
 
     // TODO: We can create TokenFactor node instead of
     //       chaining stores one after another, this may allow
@@ -351,8 +357,7 @@ spillIncomingStatepointValue(SDValue Incoming, SDValue Chain,
     // can consider allowing spills of smaller values to larger slots
     // (i.e. change the '==' in the assert below to a '>=').
     MachineFrameInfo &MFI = Builder.DAG.getMachineFunction().getFrameInfo();
-    assert((MFI.getObjectSize(Index) * 8) ==
-               Incoming.getValueType().getSizeInBits() &&
+    assert((MFI.getObjectSize(Index) * 8) == Incoming.getValueSizeInBits() &&
            "Bad spill:  stack slot does not match!");
 #endif
 
@@ -387,8 +392,10 @@ static void lowerIncomingStatepointValue(SDValue Incoming, bool LiveInOnly,
     // This handles allocas as arguments to the statepoint (this is only
     // really meaningful for a deopt value.  For GC, we'd be trying to
     // relocate the address of the alloca itself?)
+    assert(Incoming.getValueType() == Builder.getFrameIndexTy() &&
+           "Incoming value is a frame index!");
     Ops.push_back(Builder.DAG.getTargetFrameIndex(FI->getIndex(),
-                                                  Incoming.getValueType()));
+                                                  Builder.getFrameIndexTy()));
   } else if (LiveInOnly) {
     // If this value is live in (not live-on-return, or live-through), we can
     // treat it the same way patchpoint treats it's "live in" values.  We'll 
@@ -523,8 +530,10 @@ lowerStatepointMetaArgs(SmallVectorImpl<SDValue> &Ops,
     SDValue Incoming = Builder.getValue(V);
     if (FrameIndexSDNode *FI = dyn_cast<FrameIndexSDNode>(Incoming)) {
       // This handles allocas as arguments to the statepoint
+      assert(Incoming.getValueType() == Builder.getFrameIndexTy() &&
+             "Incoming value is a frame index!");
       Ops.push_back(Builder.DAG.getTargetFrameIndex(FI->getIndex(),
-                                                    Incoming.getValueType()));
+                                                    Builder.getFrameIndexTy()));
     }
   }
 
@@ -919,7 +928,7 @@ void SelectionDAGBuilder::visitGCResult(const GCResultInst &CI) {
 void SelectionDAGBuilder::visitGCRelocate(const GCRelocateInst &Relocate) {
 #ifndef NDEBUG
   // Consistency check
-  // We skip this check for relocates not in the same basic block as thier
+  // We skip this check for relocates not in the same basic block as their
   // statepoint. It would be too expensive to preserve validation info through
   // different basic blocks.
   if (Relocate.getStatepoint()->getParent() == Relocate.getParent())
@@ -945,8 +954,8 @@ void SelectionDAGBuilder::visitGCRelocate(const GCRelocateInst &Relocate) {
     return;
   }
 
-  SDValue SpillSlot = DAG.getTargetFrameIndex(*DerivedPtrLocation,
-                                              SD.getValueType());
+  SDValue SpillSlot =
+      DAG.getTargetFrameIndex(*DerivedPtrLocation, getFrameIndexTy());
 
   // Be conservative: flush all pending loads
   // TODO: Probably we can be less restrictive on this,
@@ -954,7 +963,9 @@ void SelectionDAGBuilder::visitGCRelocate(const GCRelocateInst &Relocate) {
   SDValue Chain = getRoot();
 
   SDValue SpillLoad =
-      DAG.getLoad(SpillSlot.getValueType(), getCurSDLoc(), Chain, SpillSlot,
+      DAG.getLoad(DAG.getTargetLoweringInfo().getValueType(DAG.getDataLayout(),
+                                                           Relocate.getType()),
+                  getCurSDLoc(), Chain, SpillSlot,
                   MachinePointerInfo::getFixedStack(DAG.getMachineFunction(),
                                                     *DerivedPtrLocation));
 

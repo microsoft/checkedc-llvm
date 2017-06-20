@@ -21,6 +21,7 @@
 
 namespace llvm {
 class BlockFrequencyInfo;
+class ProfileSummaryInfo;
 
 /// Direct function to compute a \c ModuleSummaryIndex from a given module.
 ///
@@ -30,14 +31,14 @@ class BlockFrequencyInfo;
 /// that information.
 ModuleSummaryIndex buildModuleSummaryIndex(
     const Module &M,
-    std::function<BlockFrequencyInfo *(const Function &F)> GetBFICallback =
-        nullptr);
+    std::function<BlockFrequencyInfo *(const Function &F)> GetBFICallback,
+    ProfileSummaryInfo *PSI);
 
 /// Analysis pass to provide the ModuleSummaryIndex object.
 class ModuleSummaryIndexAnalysis
     : public AnalysisInfoMixin<ModuleSummaryIndexAnalysis> {
   friend AnalysisInfoMixin<ModuleSummaryIndexAnalysis>;
-  static char PassID;
+  static AnalysisKey Key;
 
 public:
   typedef ModuleSummaryIndex Result;
@@ -69,11 +70,6 @@ public:
 // object for the module, to be written to bitcode or LLVM assembly.
 //
 ModulePass *createModuleSummaryIndexWrapperPass();
-
-/// Returns true if \p M is eligible for ThinLTO promotion.
-///
-/// Currently we check if it has any any InlineASM that uses an internal symbol.
-bool moduleCanBeRenamedForThinLTO(const Module &M);
 }
 
 #endif

@@ -23,7 +23,6 @@
 using namespace llvm;
 
 #define GET_INSTRINFO_CTOR_DTOR
-#define GET_INSTRINFO_NAMED_OPS
 #define GET_INSTRMAP_INFO
 #include "AMDGPUGenInstrInfo.inc"
 
@@ -31,11 +30,7 @@ using namespace llvm;
 void AMDGPUInstrInfo::anchor() {}
 
 AMDGPUInstrInfo::AMDGPUInstrInfo(const AMDGPUSubtarget &ST)
-  : AMDGPUGenInstrInfo(-1, -1), ST(ST) {}
-
-bool AMDGPUInstrInfo::enableClusterLoads() const {
-  return true;
-}
+  : AMDGPUGenInstrInfo(-1, -1), ST(ST), AMDGPUASI(ST.getAMDGPUAS()) {}
 
 // FIXME: This behaves strangely. If, for example, you have 32 load + stores,
 // the first 16 loads will be interleaved with the stores, and the next 16 will
@@ -91,6 +86,7 @@ static SIEncodingFamily subtargetEncodingFamily(const AMDGPUSubtarget &ST) {
   case AMDGPUSubtarget::SEA_ISLANDS:
     return SIEncodingFamily::SI;
   case AMDGPUSubtarget::VOLCANIC_ISLANDS:
+  case AMDGPUSubtarget::GFX9:
     return SIEncodingFamily::VI;
 
   // FIXME: This should never be called for r600 GPUs.

@@ -5,12 +5,12 @@
 define <2 x i64> @t1(i64 %x) nounwind  {
 ; X32-LABEL: t1:
 ; X32:       # BB#0:
-; X32-NEXT:    movq {{.*#+}} xmm0 = mem[0],zero
+; X32-NEXT:    movsd {{.*#+}} xmm0 = mem[0],zero
 ; X32-NEXT:    retl
 ;
 ; X64-LABEL: t1:
 ; X64:       # BB#0:
-; X64-NEXT:    movd %rdi, %xmm0
+; X64-NEXT:    movq %rdi, %xmm0
 ; X64-NEXT:    retq
   %tmp8 = insertelement <2 x i64> zeroinitializer, i64 %x, i32 0
   ret <2 x i64> %tmp8

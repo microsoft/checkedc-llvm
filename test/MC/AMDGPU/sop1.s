@@ -1,5 +1,5 @@
-// RUN: llvm-mc -arch=amdgcn -show-encoding %s | FileCheck --check-prefix=GCN --check-prefix=SICI %s
-// RUN: llvm-mc -arch=amdgcn -mcpu=SI -show-encoding %s | FileCheck --check-prefix=GCN --check-prefix=SICI %s
+// RUN: not llvm-mc -arch=amdgcn -show-encoding %s | FileCheck --check-prefix=GCN --check-prefix=SICI %s
+// RUN: not llvm-mc -arch=amdgcn -show-encoding %s 2>&1 | FileCheck --check-prefix=NOSICI %s
 // RUN: not llvm-mc -arch=amdgcn -mcpu=fiji -show-encoding %s 2>&1 | FileCheck --check-prefix=GCN --check-prefix=VI %s
 // RUN: not llvm-mc -arch=amdgcn -mcpu=fiji -show-encoding %s 2>&1 | FileCheck --check-prefix=NOVI %s
 
@@ -232,9 +232,17 @@ s_movreld_b64 s[2:3], s[4:5]
 // SICI: s_movreld_b64 s[2:3], s[4:5] ; encoding: [0x04,0x31,0x82,0xbe]
 // VI:   s_movreld_b64 s[2:3], s[4:5] ; encoding: [0x04,0x2d,0x82,0xbe]
 
-s_cbranch_join s[4:5]
-// SICI: s_cbranch_join s[4:5] ; encoding: [0x04,0x32,0x80,0xbe]
-// VI:   s_cbranch_join s[4:5] ; encoding: [0x04,0x2e,0x80,0xbe]
+s_cbranch_join s4
+// SICI: s_cbranch_join s4 ; encoding: [0x04,0x32,0x80,0xbe]
+// VI:   s_cbranch_join s4 ; encoding: [0x04,0x2e,0x80,0xbe]
+
+s_cbranch_join 1
+// NOSICI: error: invalid operand for instruction
+// NOVI: error: invalid operand for instruction
+
+s_cbranch_join 100
+// NOSICI: error: invalid operand for instruction
+// NOVI: error: invalid operand for instruction
 
 s_abs_i32 s1, s2
 // SICI: s_abs_i32 s1, s2 ; encoding: [0x02,0x34,0x81,0xbe]
@@ -242,3 +250,7 @@ s_abs_i32 s1, s2
 
 s_mov_fed_b32 s1, s2
 // SICI: s_mov_fed_b32 s1, s2 ; encoding: [0x02,0x35,0x81,0xbe]
+
+s_set_gpr_idx_idx s0
+// VI: s_set_gpr_idx_idx s0 ; encoding: [0x00,0x32,0x80,0xbe]
+// NOSICI: error: instruction not supported on this GPU

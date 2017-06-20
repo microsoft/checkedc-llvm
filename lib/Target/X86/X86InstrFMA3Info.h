@@ -1,4 +1,4 @@
-//===-- X86InstrFMA3Info.h - X86 FMA3 Instruction Information -------------===//
+//===- X86InstrFMA3Info.h - X86 FMA3 Instruction Information ----*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -18,9 +18,10 @@
 #include "X86.h"
 #include "llvm/ADT/DenseMap.h"
 #include <cassert>
+#include <cstdint>
 #include <set>
 
-using namespace llvm;
+namespace llvm {
 
 /// This class is used to group {132, 213, 231} forms of FMA opcodes together.
 /// Each of the groups has either 3 register opcodes, 3 memory opcodes,
@@ -202,7 +203,7 @@ public:
   static X86InstrFMA3Info *getX86InstrFMA3Info();
 
   /// Constructor. Just creates an object of the class.
-  X86InstrFMA3Info() {}
+  X86InstrFMA3Info() = default;
 
   /// Destructor. Deallocates the memory used for FMA3 Groups.
   ~X86InstrFMA3Info() {
@@ -312,4 +313,6 @@ public:
   }
 };
 
-#endif
+} // end namespace llvm
+
+#endif // LLVM_LIB_TARGET_X86_UTILS_X86INSTRFMA3INFO_H

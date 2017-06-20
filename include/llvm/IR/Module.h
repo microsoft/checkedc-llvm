@@ -26,13 +26,14 @@
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/DataTypes.h"
-#include <system_error>
 
 namespace llvm {
 template <typename T> class Optional;
+class Error;
 class FunctionType;
 class GVMaterializer;
 class LLVMContext;
+class MemoryBuffer;
 class RandomNumberGenerator;
 class StructType;
 template <class PtrType> class SmallPtrSetImpl;
@@ -158,6 +159,9 @@ private:
   std::string GlobalScopeAsm;     ///< Inline Asm at global scope.
   ValueSymbolTable *ValSymTab;    ///< Symbol table for values
   ComdatSymTabType ComdatSymTab;  ///< Symbol table for COMDATs
+  std::unique_ptr<MemoryBuffer>
+  OwnedMemoryBuffer;              ///< Memory buffer directly owned by this
+                                  ///< module, for legacy clients only.
   std::unique_ptr<GVMaterializer>
   Materializer;                   ///< Used to materialize GlobalValues
   std::string ModuleID;           ///< Human readable identifier for the module
@@ -307,7 +311,7 @@ public:
   ///   4. Finally, the function exists but has the wrong prototype: return the
   ///      function with a constantexpr cast to the right prototype.
   Constant *getOrInsertFunction(StringRef Name, FunctionType *T,
-                                AttributeSet AttributeList);
+                                AttributeList AttributeList);
 
   Constant *getOrInsertFunction(StringRef Name, FunctionType *T);
 
@@ -315,15 +319,24 @@ public:
   /// exist, add a prototype for the function and return it. This function
   /// guarantees to return a constant of pointer to the specified function type
   /// or a ConstantExpr BitCast of that type if the named function has a
-  /// different type. This version of the method takes a null terminated list of
+  /// different type. This version of the method takes a list of
   /// function arguments, which makes it easier for clients to use.
+  template<typename... ArgsTy>
   Constant *getOrInsertFunction(StringRef Name,
-                                AttributeSet AttributeList,
-                                Type *RetTy, ...) LLVM_END_WITH_NULL;
+                                AttributeList AttributeList,
+                                Type *RetTy, ArgsTy... Args)
+  {
+    SmallVector<Type*, sizeof...(ArgsTy)> ArgTys{Args...};
+    return getOrInsertFunction(Name,
+                               FunctionType::get(RetTy, ArgTys, false),
+                               AttributeList);
+  }
 
   /// Same as above, but without the attributes.
-  Constant *getOrInsertFunction(StringRef Name, Type *RetTy, ...)
-    LLVM_END_WITH_NULL;
+  template<typename... ArgsTy>
+  Constant *getOrInsertFunction(StringRef Name, Type *RetTy, ArgsTy... Args) {
+    return getOrInsertFunction(Name, AttributeList{}, RetTy, Args...);
+  }
 
   /// Look up the specified function in the module symbol table. If it does not
   /// exist, return null.
@@ -341,20 +354,23 @@ public:
     return getGlobalVariable(Name, false);
   }
 
-  GlobalVariable *getGlobalVariable(StringRef Name, bool AllowInternal) const {
-    return const_cast<Module *>(this)->getGlobalVariable(Name, AllowInternal);
-  }
+  GlobalVariable *getGlobalVariable(StringRef Name, bool AllowInternal) const;
 
-  GlobalVariable *getGlobalVariable(StringRef Name, bool AllowInternal = false);
+  GlobalVariable *getGlobalVariable(StringRef Name,
+                                    bool AllowInternal = false) {
+    return static_cast<const Module *>(this)->getGlobalVariable(Name,
+                                                                AllowInternal);
+  }
 
   /// Return the global variable in the module with the specified name, of
   /// arbitrary type. This method returns null if a global with the specified
   /// name is not found.
-  GlobalVariable *getNamedGlobal(StringRef Name) {
+  const GlobalVariable *getNamedGlobal(StringRef Name) const {
     return getGlobalVariable(Name, true);
   }
-  const GlobalVariable *getNamedGlobal(StringRef Name) const {
-    return const_cast<Module *>(this)->getNamedGlobal(Name);
+  GlobalVariable *getNamedGlobal(StringRef Name) {
+    return const_cast<GlobalVariable *>(
+                       static_cast<const Module *>(this)->getNamedGlobal(Name));
   }
 
   /// Look up the specified global in the module symbol table.
@@ -450,16 +466,14 @@ public:
   GVMaterializer *getMaterializer() const { return Materializer.get(); }
   bool isMaterialized() const { return !getMaterializer(); }
 
-  /// Make sure the GlobalValue is fully read. If the module is corrupt, this
-  /// returns true and fills in the optional string with information about the
-  /// problem. If successful, this returns false.
-  std::error_code materialize(GlobalValue *GV);
+  /// Make sure the GlobalValue is fully read.
+  llvm::Error materialize(GlobalValue *GV);
 
   /// Make sure all GlobalValues in this Module are fully read and clear the
   /// Materializer.
-  std::error_code materializeAll();
+  llvm::Error materializeAll();
 
-  std::error_code materializeMetadata();
+  llvm::Error materializeMetadata();
 
 /// @}
 /// @name Direct access to the globals list, functions list, and symbol table
@@ -584,73 +598,59 @@ public:
     return make_range(ifunc_begin(), ifunc_end());
   }
 
-/// @}
-/// @name Convenience iterators
-/// @{
+  /// @}
+  /// @name Convenience iterators
+  /// @{
 
-  template <bool IsConst> class global_object_iterator_t {
-    friend Module;
-
-    typename std::conditional<IsConst, const_iterator, iterator>::type
-        function_i,
-        function_e;
-    typename std::conditional<IsConst, const_global_iterator,
-                              global_iterator>::type global_i;
-
-    typedef
-        typename std::conditional<IsConst, const Module, Module>::type ModuleTy;
-
-    global_object_iterator_t(ModuleTy &M)
-        : function_i(M.begin()), function_e(M.end()),
-          global_i(M.global_begin()) {}
-    global_object_iterator_t(ModuleTy &M, int)
-        : function_i(M.end()), function_e(M.end()), global_i(M.global_end()) {}
-
-  public:
-    global_object_iterator_t &operator++() {
-      if (function_i != function_e)
-        ++function_i;
-      else
-        ++global_i;
-      return *this;
-    }
-
-    typename std::conditional<IsConst, const GlobalObject, GlobalObject>::type &
-    operator*() const {
-      if (function_i != function_e)
-        return *function_i;
-      else
-        return *global_i;
-    }
-
-    bool operator!=(const global_object_iterator_t &other) const {
-      return function_i != other.function_i || global_i != other.global_i;
-    }
-  };
-
-  typedef global_object_iterator_t</*IsConst=*/false> global_object_iterator;
-  typedef global_object_iterator_t</*IsConst=*/true>
+  typedef concat_iterator<GlobalObject, iterator, global_iterator>
+      global_object_iterator;
+  typedef concat_iterator<const GlobalObject, const_iterator,
+                          const_global_iterator>
       const_global_object_iterator;
 
-  global_object_iterator global_object_begin() {
-    return global_object_iterator(*this);
-  }
-  global_object_iterator global_object_end() {
-    return global_object_iterator(*this, 0);
-  }
-
-  const_global_object_iterator global_object_begin() const {
-    return const_global_object_iterator(*this);
-  }
-  const_global_object_iterator global_object_end() const {
-    return const_global_object_iterator(*this, 0);
-  }
-
   iterator_range<global_object_iterator> global_objects() {
-    return make_range(global_object_begin(), global_object_end());
+    return concat<GlobalObject>(functions(), globals());
   }
   iterator_range<const_global_object_iterator> global_objects() const {
-    return make_range(global_object_begin(), global_object_end());
+    return concat<const GlobalObject>(functions(), globals());
+  }
+
+  global_object_iterator global_object_begin() {
+    return global_objects().begin();
+  }
+  global_object_iterator global_object_end() { return global_objects().end(); }
+
+  const_global_object_iterator global_object_begin() const {
+    return global_objects().begin();
+  }
+  const_global_object_iterator global_object_end() const {
+    return global_objects().end();
+  }
+
+  typedef concat_iterator<GlobalValue, iterator, global_iterator,
+                          alias_iterator, ifunc_iterator>
+      global_value_iterator;
+  typedef concat_iterator<const GlobalValue, const_iterator,
+                          const_global_iterator, const_alias_iterator,
+                          const_ifunc_iterator>
+      const_global_value_iterator;
+
+  iterator_range<global_value_iterator> global_values() {
+    return concat<GlobalValue>(functions(), globals(), aliases(), ifuncs());
+  }
+  iterator_range<const_global_value_iterator> global_values() const {
+    return concat<const GlobalValue>(functions(), globals(), aliases(),
+                                     ifuncs());
+  }
+
+  global_value_iterator global_value_begin() { return global_values().begin(); }
+  global_value_iterator global_value_end() { return global_values().end(); }
+
+  const_global_value_iterator global_value_begin() const {
+    return global_values().begin();
+  }
+  const_global_value_iterator global_value_end() const {
+    return global_values().end();
   }
 
   /// @}
@@ -764,6 +764,10 @@ public:
 /// @name Utility functions for querying Debug information.
 /// @{
 
+  /// \brief Returns the Number of Register ParametersDwarf Version by checking
+  /// module flags.
+  unsigned getNumberRegisterParameters() const;
+
   /// \brief Returns the Dwarf Version by checking module flags.
   unsigned getDwarfVersion() const;
 
@@ -802,6 +806,9 @@ public:
   /// \brief Returns profile summary metadata
   Metadata *getProfileSummary();
   /// @}
+
+  /// Take ownership of the given memory buffer.
+  void setOwnedMemoryBuffer(std::unique_ptr<MemoryBuffer> MB);
 };
 
 /// \brief Given "llvm.used" or "llvm.compiler.used" as a global name, collect

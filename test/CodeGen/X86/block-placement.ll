@@ -177,6 +177,12 @@ exit:
   ret i32 %sum
 }
 
+; Tail duplication during layout can entirely remove body0 by duplicating it
+; into the entry block and into body1. This is a good thing but it isn't what
+; this test is looking for. So to make the blocks longer so they don't get
+; duplicated, we add some calls to dummy.
+declare void @dummy()
+
 define i32 @test_loop_rotate(i32 %i, i32* %a) {
 ; Check that we rotate conditional exits from the loop to the bottom of the
 ; loop, eliminating unconditional branches to the top.
@@ -194,6 +200,8 @@ body0:
   %base = phi i32 [ 0, %entry ], [ %sum, %body1 ]
   %next = add i32 %iv, 1
   %exitcond = icmp eq i32 %next, %i
+  call void @dummy()
+  call void @dummy()
   br i1 %exitcond, label %exit, label %body1
 
 body1:
@@ -306,7 +314,7 @@ exit:
 define void @unnatural_cfg1() {
 ; Test that we can handle a loop with an inner unnatural loop at the end of
 ; a function. This is a gross CFG reduced out of the single source GCC.
-; CHECK: unnatural_cfg1
+; CHECK-LABEL: unnatural_cfg1
 ; CHECK: %entry
 ; CHECK: %loop.body1
 ; CHECK: %loop.body2
@@ -344,17 +352,15 @@ define void @unnatural_cfg2() {
 ; Test that we can handle a loop with a nested natural loop *and* an unnatural
 ; loop. This was reduced from a crash on block placement when run over
 ; single-source GCC.
-; CHECK: unnatural_cfg2
+; CHECK-LABEL: unnatural_cfg2
 ; CHECK: %entry
 ; CHECK: %loop.body1
 ; CHECK: %loop.body2
-; CHECK: %loop.body3
-; CHECK: %loop.inner1.begin
-; The end block is folded with %loop.body3...
-; CHECK-NOT: %loop.inner1.end
 ; CHECK: %loop.body4
 ; CHECK: %loop.inner2.begin
-; The loop.inner2.end block is folded
+; CHECK: %loop.inner2.begin
+; CHECK: %loop.body3
+; CHECK: %loop.inner1.begin
 ; CHECK: %loop.header
 ; CHECK: %bail
 
@@ -470,12 +476,12 @@ define void @fpcmp_unanalyzable_branch(i1 %cond) {
 ; CHECK-LABEL: fpcmp_unanalyzable_branch:
 ; CHECK:       # BB#0: # %entry
 ; CHECK:       # BB#1: # %entry.if.then_crit_edge
-; CHECK:       .LBB10_4: # %if.then
-; CHECK:       .LBB10_5: # %if.end
+; CHECK:       .LBB10_5: # %if.then
+; CHECK:       .LBB10_6: # %if.end
 ; CHECK:       # BB#3: # %exit
 ; CHECK:       jne .LBB10_4
-; CHECK-NEXT:  jnp .LBB10_5
-; CHECK-NEXT:  jmp .LBB10_4
+; CHECK-NEXT:  jnp .LBB10_6
+; CHECK:       jmp .LBB10_5
 
 entry:
 ; Note that this branch must be strongly biased toward
@@ -551,7 +557,7 @@ define void @test_eh_lpad_successor() personality i8* bitcast (i32 (...)* @__gxx
 ; didn't correctly locate the fallthrough successor, assuming blindly that the
 ; first one was the fallthrough successor. As a result, we would add an
 ; erroneous jump to the landing pad thinking *that* was the default successor.
-; CHECK: test_eh_lpad_successor
+; CHECK-LABEL: test_eh_lpad_successor
 ; CHECK: %entry
 ; CHECK-NOT: jmp
 ; CHECK: %loop
@@ -579,7 +585,7 @@ define void @test_eh_throw() personality i8* bitcast (i32 (...)* @__gxx_personal
 ; fallthrough simply won't occur. Make sure we don't crash trying to update
 ; terminators for such constructs.
 ;
-; CHECK: test_eh_throw
+; CHECK-LABEL: test_eh_throw
 ; CHECK: %entry
 ; CHECK: %cleanup
 
@@ -601,7 +607,7 @@ define void @test_unnatural_cfg_backwards_inner_loop() {
 ; attempt to merge onto the wrong end of the inner loop just because we find it
 ; first. This was reduced from a crasher in GCC's single source.
 ;
-; CHECK: test_unnatural_cfg_backwards_inner_loop
+; CHECK-LABEL: test_unnatural_cfg_backwards_inner_loop
 ; CHECK: %entry
 ; CHECK: %loop2b
 ; CHECK: %loop1
@@ -641,7 +647,7 @@ define void @unanalyzable_branch_to_loop_header() {
 ; fallthrough because that happens to always produce unanalyzable branches on
 ; x86.
 ;
-; CHECK: unanalyzable_branch_to_loop_header
+; CHECK-LABEL: unanalyzable_branch_to_loop_header
 ; CHECK: %entry
 ; CHECK: %loop
 ; CHECK: %exit
@@ -665,7 +671,7 @@ define void @unanalyzable_branch_to_best_succ(i1 %cond) {
 ; This branch is now analyzable and hence the destination block becomes the
 ; hotter one. The right order is entry->bar->exit->foo.
 ;
-; CHECK: unanalyzable_branch_to_best_succ
+; CHECK-LABEL: unanalyzable_branch_to_best_succ
 ; CHECK: %entry
 ; CHECK: %bar
 ; CHECK: %exit
@@ -691,7 +697,7 @@ define void @unanalyzable_branch_to_free_block(float %x) {
 ; Ensure that we can handle unanalyzable branches where the destination block
 ; gets selected as the best free block in the CFG.
 ;
-; CHECK: unanalyzable_branch_to_free_block
+; CHECK-LABEL: unanalyzable_branch_to_free_block
 ; CHECK: %entry
 ; CHECK: %a
 ; CHECK: %b
@@ -721,7 +727,7 @@ define void @many_unanalyzable_branches() {
 ; Ensure that we don't crash as we're building up many unanalyzable branches,
 ; blocks, and loops.
 ;
-; CHECK: many_unanalyzable_branches
+; CHECK-LABEL: many_unanalyzable_branches
 ; CHECK: %entry
 ; CHECK: %exit
 
@@ -940,12 +946,12 @@ define void @benchmark_heapsort(i32 %n, double* nocapture %ra) {
 ;    strange layouts that are siginificantly less efficient, often times maing
 ;    it discontiguous.
 ;
-; CHECK: @benchmark_heapsort
+; CHECK-LABEL: @benchmark_heapsort
 ; CHECK: %entry
 ; First rotated loop top.
 ; CHECK: .p2align
 ; CHECK: %while.end
-; CHECK: %for.cond
+; %for.cond gets completely tail-duplicated away.
 ; CHECK: %if.then
 ; CHECK: %if.else
 ; CHECK: %if.end10
@@ -1448,9 +1454,50 @@ exit:
   ret void
 }
 
+; Because %endif has a higher frequency than %if, the calculations show we
+; shouldn't tail-duplicate %endif so that we can place it after %if. We were
+; previously undercounting the cost by ignoring execution frequency that didn't
+; come from the %if->%endif path.
+; CHECK-LABEL: higher_frequency_succ_tail_dup
+; CHECK: %entry
+; CHECK: %elseif
+; CHECK: %else
+; CHECK: %endif
+; CHECK: %then
+; CHECK: %ret
+define void @higher_frequency_succ_tail_dup(i1 %a, i1 %b, i1 %c) {
+entry:
+  br label %if
+if:                                               ; preds = %entry
+  call void @effect(i32 0)
+  br i1 %a, label %elseif, label %endif, !prof !11 ; even
+
+elseif:                                           ; preds = %if
+  call void @effect(i32 1)
+  br i1 %b, label %else, label %endif, !prof !11 ; even
+
+else:                                             ; preds = %elseif
+  call void @effect(i32 2)
+  br label %endif
+
+endif:                                            ; preds = %if, %elseif, %else
+  br i1 %c, label %then, label %ret, !prof !12 ; 5 to 3
+
+then:                                             ; preds = %endif
+  call void @effect(i32 3)
+  br label %ret
+
+ret:                                              ; preds = %endif, %then
+  ret void
+}
+
+declare void @effect(i32)
+
 !5 = !{!"branch_weights", i32 84, i32 16}
 !6 = !{!"function_entry_count", i32 10}
 !7 = !{!"branch_weights", i32 60, i32 40}
 !8 = !{!"branch_weights", i32 5001, i32 4999}
 !9 = !{!"branch_weights", i32 85, i32 15}
 !10 = !{!"branch_weights", i32 90, i32 10}
+!11 = !{!"branch_weights", i32 1, i32 1}
+!12 = !{!"branch_weights", i32 5, i32 3}

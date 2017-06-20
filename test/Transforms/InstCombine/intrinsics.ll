@@ -281,6 +281,19 @@ define i32 @cttz(i32 %a) {
   ret i32 %count
 }
 
+define i1 @cttz_knownbits(i32 %arg) {
+; CHECK-LABEL: @cttz_knownbits(
+; CHECK-NEXT:    [[OR:%.*]] = or i32 [[ARG:%.*]], 4
+; CHECK-NEXT:    [[CNT:%.*]] = call i32 @llvm.cttz.i32(i32 [[OR]], i1 true) #0
+; CHECK-NEXT:    [[RES:%.*]] = icmp eq i32 [[CNT]], 4
+; CHECK-NEXT:    ret i1 [[RES]]
+;
+  %or = or i32 %arg, 4
+  %cnt = call i32 @llvm.cttz.i32(i32 %or, i1 true) nounwind readnone
+  %res = icmp eq i32 %cnt, 4
+  ret i1 %res
+}
+
 define i8 @ctlz(i8 %a) {
 ; CHECK-LABEL: @ctlz(
 ; CHECK-NEXT:    ret i8 2
@@ -289,6 +302,19 @@ define i8 @ctlz(i8 %a) {
   %and = and i8 %or, 63
   %count = tail call i8 @llvm.ctlz.i8(i8 %and, i1 true) nounwind readnone
   ret i8 %count
+}
+
+define i1 @ctlz_knownbits(i8 %arg) {
+; CHECK-LABEL: @ctlz_knownbits(
+; CHECK-NEXT:    [[OR:%.*]] = or i8 [[ARG:%.*]], 32
+; CHECK-NEXT:    [[CNT:%.*]] = call i8 @llvm.ctlz.i8(i8 [[OR]], i1 true) #0
+; CHECK-NEXT:    [[RES:%.*]] = icmp eq i8 [[CNT]], 4
+; CHECK-NEXT:    ret i1 [[RES]]
+;
+  %or = or i8 %arg, 32
+  %cnt = call i8 @llvm.ctlz.i8(i8 %or, i1 true) nounwind readnone
+  %res = icmp eq i8 %cnt, 4
+  ret i1 %res
 }
 
 define void @cmp.simplify(i32 %a, i32 %b, i1* %c) {
@@ -351,33 +377,12 @@ define void @ctpop_cmp_vec(<2 x i32> %a, <2 x i1>* %b) {
 ; CHECK-NEXT: store volatile <2 x i1> %pop1.cmp, <2 x i1>* %b
 }
 
-define i32 @cttz_simplify1a(i32 %x) nounwind readnone ssp {
-  %tmp1 = tail call i32 @llvm.ctlz.i32(i32 %x, i1 false)
-  %shr3 = lshr i32 %tmp1, 5
-  ret i32 %shr3
-
-; CHECK-LABEL: @cttz_simplify1a(
-; CHECK: icmp eq i32 %x, 0
-; CHECK-NEXT: zext i1
-; CHECK-NEXT: ret i32
-}
-
-define i32 @cttz_simplify1b(i32 %x) nounwind readnone ssp {
-  %tmp1 = tail call i32 @llvm.ctlz.i32(i32 %x, i1 true)
-  %shr3 = lshr i32 %tmp1, 5
-  ret i32 %shr3
-
-; CHECK-LABEL: @cttz_simplify1b(
-; CHECK-NEXT: ret i32 0
-}
-
-define i32 @ctlz_undef(i32 %Value) nounwind {
+define i32 @ctlz_undef(i32 %Value) {
 ; CHECK-LABEL: @ctlz_undef(
 ; CHECK-NEXT:    ret i32 undef
 ;
   %ctlz = call i32 @llvm.ctlz.i32(i32 0, i1 true)
   ret i32 %ctlz
-
 }
 
 define i32 @ctlz_make_undef(i32 %a) {

@@ -38,6 +38,14 @@ class I<bits<6> opcode, dag OOL, dag IOL, string asmstr, InstrItinClass itin>
   let TSFlags{2}   = PPC970_Cracked;
   let TSFlags{5-3} = PPC970_Unit;
 
+  /// Indicate that the VSX instruction is to use VSX numbering/encoding.
+  /// Since ISA 3.0, there are scalar instructions that use the upper
+  /// half of the VSX register set only. Rather than adding further complexity
+  /// to the register class set, the VSX registers just include the Altivec
+  /// registers and this flag decides the numbering to be used for them.
+  bits<1> UseVSXReg = 0;
+  let TSFlags{6}   = UseVSXReg;
+
   // Fields used for relation models.
   string BaseName = "";
 
@@ -61,6 +69,8 @@ class PPC970_Unit_CRU      { bits<3> PPC970_Unit = 4;   }
 class PPC970_Unit_VALU     { bits<3> PPC970_Unit = 5;   }
 class PPC970_Unit_VPERM    { bits<3> PPC970_Unit = 6;   }
 class PPC970_Unit_BRU      { bits<3> PPC970_Unit = 7;   }
+
+class UseVSXReg { bits<1> UseVSXReg = 1; }
 
 // Two joined instructions; used to emit two adjacent instructions as one.
 // The itinerary from the first instruction is used for scheduling and
@@ -593,6 +603,12 @@ class XForm_17<bits<6> opcode, bits<10> xo, dag OOL, dag IOL, string asmstr,
   let Inst{31}    = 0;
 }
 
+class XForm_17a<bits<6> opcode, bits<10> xo, dag OOL, dag IOL, string asmstr,
+               InstrItinClass itin>
+  : XForm_17<opcode, xo, OOL, IOL, asmstr, itin > {
+  let FRA = 0;
+}
+
 // Used for QPX
 class XForm_18<bits<6> opcode, bits<10> xo, dag OOL, dag IOL, string asmstr,
                InstrItinClass itin, list<dag> pattern>
@@ -1057,6 +1073,20 @@ class XX3Form<bits<6> opcode, bits<8> xo, dag OOL, dag IOL, string asmstr,
   let Inst{29}    = XA{5};
   let Inst{30}    = XB{5};
   let Inst{31}    = XT{5};
+}
+
+class XX3Form_Zero<bits<6> opcode, bits<8> xo, dag OOL, dag IOL, string asmstr,
+              InstrItinClass itin, list<dag> pattern>
+  : XX3Form<opcode, xo, OOL, IOL, asmstr, itin, pattern> {
+  let XA = XT;
+  let XB = XT;
+}
+
+class XX3Form_SetZero<bits<6> opcode, bits<8> xo, dag OOL, dag IOL, string asmstr,
+               InstrItinClass itin, list<dag> pattern>
+    : XX3Form<opcode, xo, OOL, IOL, asmstr, itin, pattern> {
+  let XB = XT;
+  let XA = XT;
 }
 
 class XX3Form_1<bits<6> opcode, bits<8> xo, dag OOL, dag IOL, string asmstr, 

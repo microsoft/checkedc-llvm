@@ -12,7 +12,10 @@
 
 #include "llvm/CodeGen/GlobalISel/InstructionSelector.h"
 #include "llvm/CodeGen/GlobalISel/RegisterBankInfo.h"
+#include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 
@@ -32,29 +35,51 @@ bool InstructionSelector::constrainSelectedInstRegOperands(
   for (unsigned OpI = 0, OpE = I.getNumExplicitOperands(); OpI != OpE; ++OpI) {
     MachineOperand &MO = I.getOperand(OpI);
 
-    // There's nothing to be done on immediates and frame indexes.
-    if (MO.isImm() || MO.isFI())
+    // There's nothing to be done on non-register operands.
+    if (!MO.isReg())
       continue;
 
     DEBUG(dbgs() << "Converting operand: " << MO << '\n');
     assert(MO.isReg() && "Unsupported non-reg operand");
 
+    unsigned Reg = MO.getReg();
     // Physical registers don't need to be constrained.
-    if (TRI.isPhysicalRegister(MO.getReg()))
+    if (TRI.isPhysicalRegister(Reg))
       continue;
 
-    const TargetRegisterClass *RC = TII.getRegClass(I.getDesc(), OpI, &TRI, MF);
-    assert(RC && "Selected inst should have regclass operand");
+    // Register operands with a value of 0 (e.g. predicate operands) don't need
+    // to be constrained.
+    if (Reg == 0)
+      continue;
 
     // If the operand is a vreg, we should constrain its regclass, and only
     // insert COPYs if that's impossible.
-    // If the operand is a physreg, we only insert COPYs if the register class
-    // doesn't contain the register.
-    if (RBI.constrainGenericRegister(MO.getReg(), *RC, MRI))
-      continue;
+    // constrainOperandRegClass does that for us.
+    MO.setReg(constrainOperandRegClass(MF, TRI, MRI, TII, RBI, I, I.getDesc(),
+                                       Reg, OpI));
 
-    DEBUG(dbgs() << "Constraining with COPYs isn't implemented yet");
-    return false;
+    // Tie uses to defs as indicated in MCInstrDesc if this hasn't already been
+    // done.
+    if (MO.isUse()) {
+      int DefIdx = I.getDesc().getOperandConstraint(OpI, MCOI::TIED_TO);
+      if (DefIdx != -1 && !I.isRegTiedToUseOperand(DefIdx))
+        I.tieOperands(DefIdx, OpI);
+    }
   }
   return true;
+}
+
+bool InstructionSelector::isOperandImmEqual(
+    const MachineOperand &MO, int64_t Value,
+    const MachineRegisterInfo &MRI) const {
+
+  if (MO.getReg())
+    if (auto VRegVal = getConstantVRegVal(MO.getReg(), MRI))
+      return *VRegVal == Value;
+  return false;
+}
+
+bool InstructionSelector::isObviouslySafeToFold(MachineInstr &MI) const {
+  return !MI.mayLoadOrStore() && !MI.hasUnmodeledSideEffects() &&
+         MI.implicit_operands().begin() == MI.implicit_operands().end();
 }

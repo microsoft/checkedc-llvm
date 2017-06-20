@@ -16,6 +16,7 @@
 #include "X86RegisterInfo.h"
 #include "X86ShuffleDecodeConstantPool.h"
 #include "InstPrinter/X86ATTInstPrinter.h"
+#include "InstPrinter/X86InstComments.h"
 #include "MCTargetDesc/X86BaseInfo.h"
 #include "Utils/X86ShuffleDecode.h"
 #include "llvm/ADT/Optional.h"
@@ -41,6 +42,7 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/MCSectionELF.h"
+#include "llvm/MC/MCSectionMachO.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/ELF.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
@@ -68,9 +70,6 @@ public:
 
 private:
   MachineModuleInfoMachO &getMachOMMI() const;
-  Mangler *getMang() const {
-    return AsmPrinter.Mang;
-  }
 };
 
 } // end anonymous namespace
@@ -103,7 +102,7 @@ void X86AsmPrinter::StackMapShadowTracker::emitShadowPadding(
 }
 
 void X86AsmPrinter::EmitAndCountInstruction(MCInst &Inst) {
-  OutStreamer->EmitInstruction(Inst, getSubtargetInfo());
+  OutStreamer->EmitInstruction(Inst, getSubtargetInfo(), EnablePrintSchedInfo);
   SMShadowTracker.count(Inst, getSubtargetInfo(), CodeEmitter.get());
 }
 
@@ -216,6 +215,7 @@ MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
   case X86II::MO_GOT:       RefKind = MCSymbolRefExpr::VK_GOT; break;
   case X86II::MO_GOTOFF:    RefKind = MCSymbolRefExpr::VK_GOTOFF; break;
   case X86II::MO_PLT:       RefKind = MCSymbolRefExpr::VK_PLT; break;
+  case X86II::MO_ABS8:      RefKind = MCSymbolRefExpr::VK_X86_ABS8; break;
   case X86II::MO_PIC_BASE_OFFSET:
   case X86II::MO_DARWIN_NONLAZY_PIC_BASE:
     Expr = MCSymbolRefExpr::create(Sym, Ctx);
@@ -358,7 +358,7 @@ X86MCInstLower::LowerMachineOperand(const MachineInstr *MI,
                                     const MachineOperand &MO) const {
   switch (MO.getType()) {
   default:
-    MI->dump();
+    MI->print(errs());
     llvm_unreachable("unknown operand type");
   case MachineOperand::MO_Register:
     // Ignore all implicit register operands.
@@ -505,6 +505,7 @@ ReSimplify:
   case X86::TAILJMPd:
   case X86::TAILJMPd64: Opcode = X86::JMP_1;  goto SetTailJmpOpcode;
   case X86::TAILJMPd_CC:
+  case X86::TAILJMPd64_CC:
     Opcode = X86::GetCondBranchFromCond(
         static_cast<X86::CondCode>(MI->getOperand(1).getImm()));
     goto SetTailJmpOpcode;
@@ -893,30 +894,47 @@ void X86AsmPrinter::LowerSTATEPOINT(const MachineInstr &MI,
   SM.recordStatepoint(MI);
 }
 
-void X86AsmPrinter::LowerFAULTING_LOAD_OP(const MachineInstr &MI,
-                                       X86MCInstLower &MCIL) {
-  // FAULTING_LOAD_OP <def>, <MBB handler>, <load opcode>, <load operands>
+void X86AsmPrinter::LowerFAULTING_OP(const MachineInstr &FaultingMI,
+                                     X86MCInstLower &MCIL) {
+  // FAULTING_LOAD_OP <def>, <faltinf type>, <MBB handler>,
+  //                  <opcode>, <operands>
 
-  unsigned LoadDefRegister = MI.getOperand(0).getReg();
-  MCSymbol *HandlerLabel = MI.getOperand(1).getMBB()->getSymbol();
-  unsigned LoadOpcode = MI.getOperand(2).getImm();
-  unsigned LoadOperandsBeginIdx = 3;
+  unsigned DefRegister = FaultingMI.getOperand(0).getReg();
+  FaultMaps::FaultKind FK =
+      static_cast<FaultMaps::FaultKind>(FaultingMI.getOperand(1).getImm());
+  MCSymbol *HandlerLabel = FaultingMI.getOperand(2).getMBB()->getSymbol();
+  unsigned Opcode = FaultingMI.getOperand(3).getImm();
+  unsigned OperandsBeginIdx = 4;
 
-  FM.recordFaultingOp(FaultMaps::FaultingLoad, HandlerLabel);
+  assert(FK < FaultMaps::FaultKindMax && "Invalid Faulting Kind!");
+  FM.recordFaultingOp(FK, HandlerLabel);
 
-  MCInst LoadMI;
-  LoadMI.setOpcode(LoadOpcode);
+  MCInst MI;
+  MI.setOpcode(Opcode);
 
-  if (LoadDefRegister != X86::NoRegister)
-    LoadMI.addOperand(MCOperand::createReg(LoadDefRegister));
+  if (DefRegister != X86::NoRegister)
+    MI.addOperand(MCOperand::createReg(DefRegister));
 
-  for (auto I = MI.operands_begin() + LoadOperandsBeginIdx,
-            E = MI.operands_end();
+  for (auto I = FaultingMI.operands_begin() + OperandsBeginIdx,
+            E = FaultingMI.operands_end();
        I != E; ++I)
-    if (auto MaybeOperand = MCIL.LowerMachineOperand(&MI, *I))
-      LoadMI.addOperand(MaybeOperand.getValue());
+    if (auto MaybeOperand = MCIL.LowerMachineOperand(&FaultingMI, *I))
+      MI.addOperand(MaybeOperand.getValue());
 
-  OutStreamer->EmitInstruction(LoadMI, getSubtargetInfo());
+  OutStreamer->EmitInstruction(MI, getSubtargetInfo());
+}
+
+void X86AsmPrinter::LowerFENTRY_CALL(const MachineInstr &MI,
+                                     X86MCInstLower &MCIL) {
+  bool Is64Bits = Subtarget->is64Bit();
+  MCContext &Ctx = OutStreamer->getContext();
+  MCSymbol *fentry = Ctx.getOrCreateSymbol("__fentry__");
+  const MCSymbolRefExpr *Op =
+      MCSymbolRefExpr::create(fentry, MCSymbolRefExpr::VK_None, Ctx);
+
+  EmitAndCountInstruction(
+      MCInstBuilder(Is64Bits ? X86::CALL64pcrel32 : X86::CALLpcrel32)
+          .addExpr(Op));
 }
 
 void X86AsmPrinter::LowerPATCHABLE_OP(const MachineInstr &MI,
@@ -1022,16 +1040,6 @@ void X86AsmPrinter::LowerPATCHPOINT(const MachineInstr &MI,
            getSubtargetInfo());
 }
 
-void X86AsmPrinter::recordSled(MCSymbol *Sled, const MachineInstr &MI,
-                               SledKind Kind) {
-  auto Fn = MI.getParent()->getParent()->getFunction();
-  auto Attr = Fn->getFnAttribute("function-instrument");
-  bool AlwaysInstrument =
-      Attr.isStringAttribute() && Attr.getValueAsString() == "xray-always";
-  Sleds.emplace_back(
-      XRayFunctionEntry{Sled, CurrentFnSym, Kind, AlwaysInstrument, Fn});
-}
-
 void X86AsmPrinter::LowerPATCHABLE_FUNCTION_ENTER(const MachineInstr &MI,
                                                   X86MCInstLower &MCIL) {
   // We want to emit the following pattern:
@@ -1125,49 +1133,6 @@ void X86AsmPrinter::LowerPATCHABLE_TAIL_CALL(const MachineInstr &MI, X86MCInstLo
   OutStreamer->EmitInstruction(TC, getSubtargetInfo());
 }
 
-void X86AsmPrinter::EmitXRayTable() {
-  if (Sleds.empty())
-    return;
-  if (Subtarget->isTargetELF()) {
-    auto PrevSection = OutStreamer->getCurrentSectionOnly();
-    auto Fn = MF->getFunction();
-    MCSection *Section = nullptr;
-    if (Fn->hasComdat()) {
-      Section = OutContext.getELFSection("xray_instr_map", ELF::SHT_PROGBITS,
-                                         ELF::SHF_ALLOC | ELF::SHF_GROUP, 0,
-                                         Fn->getComdat()->getName());
-    } else {
-      Section = OutContext.getELFSection("xray_instr_map", ELF::SHT_PROGBITS,
-                                         ELF::SHF_ALLOC);
-    }
-
-    // Before we switch over, we force a reference to a label inside the
-    // xray_instr_map section. Since EmitXRayTable() is always called just
-    // before the function's end, we assume that this is happening after the
-    // last return instruction.
-    //
-    // We then align the reference to 16 byte boundaries, which we determined
-    // experimentally to be beneficial to avoid causing decoder stalls.
-    MCSymbol *Tmp = OutContext.createTempSymbol("xray_synthetic_", true);
-    OutStreamer->EmitCodeAlignment(16);
-    OutStreamer->EmitSymbolValue(Tmp, 8, false);
-    OutStreamer->SwitchSection(Section);
-    OutStreamer->EmitLabel(Tmp);
-    for (const auto &Sled : Sleds) {
-      OutStreamer->EmitSymbolValue(Sled.Sled, 8);
-      OutStreamer->EmitSymbolValue(CurrentFnSym, 8);
-      auto Kind = static_cast<uint8_t>(Sled.Kind);
-      OutStreamer->EmitBytes(
-          StringRef(reinterpret_cast<const char *>(&Kind), 1));
-      OutStreamer->EmitBytes(
-          StringRef(reinterpret_cast<const char *>(&Sled.AlwaysInstrument), 1));
-      OutStreamer->EmitZeros(14);
-    }
-    OutStreamer->SwitchSection(PrevSection);
-  }
-  Sleds.clear();
-}
-
 // Returns instruction preceding MBBI in MachineFunction.
 // If MBBI is the first instruction of the first basic block, returns null.
 static MachineBasicBlock::const_iterator
@@ -1203,9 +1168,9 @@ static const Constant *getConstantFromPool(const MachineInstr &MI,
   return C;
 }
 
-static std::string getShuffleComment(const MachineOperand &DstOp,
-                                     const MachineOperand &SrcOp1,
-                                     const MachineOperand &SrcOp2,
+static std::string getShuffleComment(const MachineInstr *MI,
+                                     unsigned SrcOp1Idx,
+                                     unsigned SrcOp2Idx,
                                      ArrayRef<int> Mask) {
   std::string Comment;
 
@@ -1218,7 +1183,10 @@ static std::string getShuffleComment(const MachineOperand &DstOp,
     return X86ATTInstPrinter::getRegisterName(RegNum);
   };
 
-  // TODO: Add support for specifying an AVX512 style mask register in the comment.
+  const MachineOperand &DstOp = MI->getOperand(0);
+  const MachineOperand &SrcOp1 = MI->getOperand(SrcOp1Idx);
+  const MachineOperand &SrcOp2 = MI->getOperand(SrcOp2Idx);
+
   StringRef DstName = DstOp.isReg() ? GetRegisterName(DstOp.getReg()) : "mem";
   StringRef Src1Name =
       SrcOp1.isReg() ? GetRegisterName(SrcOp1.getReg()) : "mem";
@@ -1233,7 +1201,26 @@ static std::string getShuffleComment(const MachineOperand &DstOp,
         ShuffleMask[i] -= e;
 
   raw_string_ostream CS(Comment);
-  CS << DstName << " = ";
+  CS << DstName;
+
+  // Handle AVX512 MASK/MASXZ write mask comments.
+  // MASK: zmmX {%kY}
+  // MASKZ: zmmX {%kY} {z}
+  if (SrcOp1Idx > 1) {
+    assert((SrcOp1Idx == 2 || SrcOp1Idx == 3) && "Unexpected writemask");
+
+    const MachineOperand &WriteMaskOp = MI->getOperand(SrcOp1Idx - 1);
+    if (WriteMaskOp.isReg()) {
+      CS << " {%" << GetRegisterName(WriteMaskOp.getReg()) << "}";
+
+      if (SrcOp1Idx == 2) {
+        CS << " {z}";
+      }
+    }
+  }
+
+  CS << " = ";
+
   for (int i = 0, e = ShuffleMask.size(); i != e; ++i) {
     if (i != 0)
       CS << ",";
@@ -1272,6 +1259,13 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   X86MCInstLower MCInstLowering(*MF, *this);
   const X86RegisterInfo *RI = MF->getSubtarget<X86Subtarget>().getRegisterInfo();
 
+  // Add a comment about EVEX-2-VEX compression for AVX-512 instrs that
+  // are compressed from EVEX encoding to VEX encoding.
+  if (TM.Options.MCOptions.ShowMCEncoding) {
+    if (MI->getAsmPrinterFlags() & AC_EVEX_2_VEX)
+      OutStreamer->AddComment("EVEX TO VEX Compression ", false);
+  }
+
   switch (MI->getOpcode()) {
   case TargetOpcode::DBG_VALUE:
     llvm_unreachable("Should be handled target independently");
@@ -1309,6 +1303,7 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   case X86::TAILJMPr64:
   case X86::TAILJMPm64:
   case X86::TAILJMPd64:
+  case X86::TAILJMPd64_CC:
   case X86::TAILJMPr64_REX:
   case X86::TAILJMPm64_REX:
     // Lower these as normal, but add some comments.
@@ -1397,8 +1392,11 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   case TargetOpcode::STATEPOINT:
     return LowerSTATEPOINT(*MI, MCInstLowering);
 
-  case TargetOpcode::FAULTING_LOAD_OP:
-    return LowerFAULTING_LOAD_OP(*MI, MCInstLowering);
+  case TargetOpcode::FAULTING_OP:
+    return LowerFAULTING_OP(*MI, MCInstLowering);
+
+  case TargetOpcode::FENTRY_CALL:
+    return LowerFENTRY_CALL(*MI, MCInstLowering);
 
   case TargetOpcode::PATCHABLE_OP:
     return LowerPATCHABLE_OP(*MI, MCInstLowering);
@@ -1431,37 +1429,45 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
     return;
 
   case X86::SEH_PushReg:
+    assert(MF->hasWinCFI() && "SEH_ instruction in function without WinCFI?");
     OutStreamer->EmitWinCFIPushReg(RI->getSEHRegNum(MI->getOperand(0).getImm()));
     return;
 
   case X86::SEH_SaveReg:
+    assert(MF->hasWinCFI() && "SEH_ instruction in function without WinCFI?");
     OutStreamer->EmitWinCFISaveReg(RI->getSEHRegNum(MI->getOperand(0).getImm()),
                                    MI->getOperand(1).getImm());
     return;
 
   case X86::SEH_SaveXMM:
+    assert(MF->hasWinCFI() && "SEH_ instruction in function without WinCFI?");
     OutStreamer->EmitWinCFISaveXMM(RI->getSEHRegNum(MI->getOperand(0).getImm()),
                                    MI->getOperand(1).getImm());
     return;
 
   case X86::SEH_StackAlloc:
+    assert(MF->hasWinCFI() && "SEH_ instruction in function without WinCFI?");
     OutStreamer->EmitWinCFIAllocStack(MI->getOperand(0).getImm());
     return;
 
   case X86::SEH_SetFrame:
+    assert(MF->hasWinCFI() && "SEH_ instruction in function without WinCFI?");
     OutStreamer->EmitWinCFISetFrame(RI->getSEHRegNum(MI->getOperand(0).getImm()),
                                     MI->getOperand(1).getImm());
     return;
 
   case X86::SEH_PushFrame:
+    assert(MF->hasWinCFI() && "SEH_ instruction in function without WinCFI?");
     OutStreamer->EmitWinCFIPushFrame(MI->getOperand(0).getImm());
     return;
 
   case X86::SEH_EndPrologue:
+    assert(MF->hasWinCFI() && "SEH_ instruction in function without WinCFI?");
     OutStreamer->EmitWinCFIEndProlog();
     return;
 
   case X86::SEH_Epilogue: {
+    assert(MF->hasWinCFI() && "SEH_ instruction in function without WinCFI?");
     MachineBasicBlock::const_iterator MBBI(MI);
     // Check if preceded by a call and emit nop if so.
     for (MBBI = PrevCrossBBInst(MBBI);
@@ -1517,37 +1523,14 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
 
     assert(MI->getNumOperands() >= 6 &&
            "We should always have at least 6 operands!");
-    const MachineOperand &DstOp = MI->getOperand(0);
-    const MachineOperand &SrcOp = MI->getOperand(SrcIdx);
-    const MachineOperand &MaskOp = MI->getOperand(MaskIdx);
 
+    const MachineOperand &MaskOp = MI->getOperand(MaskIdx);
     if (auto *C = getConstantFromPool(*MI, MaskOp)) {
-      SmallVector<int, 16> Mask;
+      SmallVector<int, 64> Mask;
       DecodePSHUFBMask(C, Mask);
       if (!Mask.empty())
-        OutStreamer->AddComment(getShuffleComment(DstOp, SrcOp, SrcOp, Mask));
-    }
-    break;
-  }
-
-  case X86::VPERMILPDrm:
-  case X86::VPERMILPDYrm:
-  case X86::VPERMILPDZ128rm:
-  case X86::VPERMILPDZ256rm:
-  case X86::VPERMILPDZrm: {
-    if (!OutStreamer->isVerboseAsm())
-      break;
-    assert(MI->getNumOperands() > 5 &&
-           "We should always have at least 5 operands!");
-    const MachineOperand &DstOp = MI->getOperand(0);
-    const MachineOperand &SrcOp = MI->getOperand(1);
-    const MachineOperand &MaskOp = MI->getOperand(5);
-
-    if (auto *C = getConstantFromPool(*MI, MaskOp)) {
-      SmallVector<int, 8> Mask;
-      DecodeVPERMILPMask(C, 64, Mask);
-      if (!Mask.empty())
-        OutStreamer->AddComment(getShuffleComment(DstOp, SrcOp, SrcOp, Mask));
+        OutStreamer->AddComment(getShuffleComment(MI, SrcIdx, SrcIdx, Mask),
+                                !EnablePrintSchedInfo);
     }
     break;
   }
@@ -1555,54 +1538,102 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   case X86::VPERMILPSrm:
   case X86::VPERMILPSYrm:
   case X86::VPERMILPSZ128rm:
+  case X86::VPERMILPSZ128rmk:
+  case X86::VPERMILPSZ128rmkz:
   case X86::VPERMILPSZ256rm:
-  case X86::VPERMILPSZrm: {
+  case X86::VPERMILPSZ256rmk:
+  case X86::VPERMILPSZ256rmkz:
+  case X86::VPERMILPSZrm:
+  case X86::VPERMILPSZrmk:
+  case X86::VPERMILPSZrmkz:
+  case X86::VPERMILPDrm:
+  case X86::VPERMILPDYrm:
+  case X86::VPERMILPDZ128rm:
+  case X86::VPERMILPDZ128rmk:
+  case X86::VPERMILPDZ128rmkz:
+  case X86::VPERMILPDZ256rm:
+  case X86::VPERMILPDZ256rmk:
+  case X86::VPERMILPDZ256rmkz:
+  case X86::VPERMILPDZrm:
+  case X86::VPERMILPDZrmk:
+  case X86::VPERMILPDZrmkz: {
     if (!OutStreamer->isVerboseAsm())
       break;
-    assert(MI->getNumOperands() > 5 &&
-           "We should always have at least 5 operands!");
-    const MachineOperand &DstOp = MI->getOperand(0);
-    const MachineOperand &SrcOp = MI->getOperand(1);
-    const MachineOperand &MaskOp = MI->getOperand(5);
+    unsigned SrcIdx, MaskIdx;
+    unsigned ElSize;
+    switch (MI->getOpcode()) {
+    default: llvm_unreachable("Invalid opcode");
+    case X86::VPERMILPSrm:
+    case X86::VPERMILPSYrm:
+    case X86::VPERMILPSZ128rm:
+    case X86::VPERMILPSZ256rm:
+    case X86::VPERMILPSZrm:
+      SrcIdx = 1; MaskIdx = 5; ElSize = 32; break;
+    case X86::VPERMILPSZ128rmkz:
+    case X86::VPERMILPSZ256rmkz:
+    case X86::VPERMILPSZrmkz:
+      SrcIdx = 2; MaskIdx = 6; ElSize = 32; break;
+    case X86::VPERMILPSZ128rmk:
+    case X86::VPERMILPSZ256rmk:
+    case X86::VPERMILPSZrmk:
+      SrcIdx = 3; MaskIdx = 7; ElSize = 32; break;
+    case X86::VPERMILPDrm:
+    case X86::VPERMILPDYrm:
+    case X86::VPERMILPDZ128rm:
+    case X86::VPERMILPDZ256rm:
+    case X86::VPERMILPDZrm:
+      SrcIdx = 1; MaskIdx = 5; ElSize = 64; break;
+    case X86::VPERMILPDZ128rmkz:
+    case X86::VPERMILPDZ256rmkz:
+    case X86::VPERMILPDZrmkz:
+      SrcIdx = 2; MaskIdx = 6; ElSize = 64; break;
+    case X86::VPERMILPDZ128rmk:
+    case X86::VPERMILPDZ256rmk:
+    case X86::VPERMILPDZrmk:
+      SrcIdx = 3; MaskIdx = 7; ElSize = 64; break;
+    }
 
+    assert(MI->getNumOperands() >= 6 &&
+           "We should always have at least 6 operands!");
+
+    const MachineOperand &MaskOp = MI->getOperand(MaskIdx);
     if (auto *C = getConstantFromPool(*MI, MaskOp)) {
       SmallVector<int, 16> Mask;
-      DecodeVPERMILPMask(C, 32, Mask);
+      DecodeVPERMILPMask(C, ElSize, Mask);
       if (!Mask.empty())
-        OutStreamer->AddComment(getShuffleComment(DstOp, SrcOp, SrcOp, Mask));
+        OutStreamer->AddComment(getShuffleComment(MI, SrcIdx, SrcIdx, Mask),
+                                !EnablePrintSchedInfo);
     }
     break;
   }
 
   case X86::VPERMIL2PDrm:
   case X86::VPERMIL2PSrm:
-  case X86::VPERMIL2PDrmY:
-  case X86::VPERMIL2PSrmY: {
+  case X86::VPERMIL2PDYrm:
+  case X86::VPERMIL2PSYrm: {
     if (!OutStreamer->isVerboseAsm())
       break;
-    assert(MI->getNumOperands() > 7 &&
-      "We should always have at least 7 operands!");
-    const MachineOperand &DstOp = MI->getOperand(0);
-    const MachineOperand &SrcOp1 = MI->getOperand(1);
-    const MachineOperand &SrcOp2 = MI->getOperand(2);
-    const MachineOperand &MaskOp = MI->getOperand(6);
-    const MachineOperand &CtrlOp = MI->getOperand(MI->getNumOperands() - 1);
+    assert(MI->getNumOperands() >= 8 &&
+           "We should always have at least 8 operands!");
 
+    const MachineOperand &CtrlOp = MI->getOperand(MI->getNumOperands() - 1);
     if (!CtrlOp.isImm())
       break;
 
     unsigned ElSize;
     switch (MI->getOpcode()) {
     default: llvm_unreachable("Invalid opcode");
-    case X86::VPERMIL2PSrm: case X86::VPERMIL2PSrmY: ElSize = 32; break;
-    case X86::VPERMIL2PDrm: case X86::VPERMIL2PDrmY: ElSize = 64; break;
+    case X86::VPERMIL2PSrm: case X86::VPERMIL2PSYrm: ElSize = 32; break;
+    case X86::VPERMIL2PDrm: case X86::VPERMIL2PDYrm: ElSize = 64; break;
     }
 
+    const MachineOperand &MaskOp = MI->getOperand(6);
     if (auto *C = getConstantFromPool(*MI, MaskOp)) {
       SmallVector<int, 16> Mask;
       DecodeVPERMIL2PMask(C, (unsigned)CtrlOp.getImm(), ElSize, Mask);
       if (!Mask.empty())
-        OutStreamer->AddComment(getShuffleComment(DstOp, SrcOp1, SrcOp2, Mask));
+        OutStreamer->AddComment(getShuffleComment(MI, 1, 2, Mask),
+                                !EnablePrintSchedInfo);
     }
     break;
   }
@@ -1610,18 +1641,16 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   case X86::VPPERMrrm: {
     if (!OutStreamer->isVerboseAsm())
       break;
-    assert(MI->getNumOperands() > 6 &&
-           "We should always have at least 6 operands!");
-    const MachineOperand &DstOp = MI->getOperand(0);
-    const MachineOperand &SrcOp1 = MI->getOperand(1);
-    const MachineOperand &SrcOp2 = MI->getOperand(2);
-    const MachineOperand &MaskOp = MI->getOperand(6);
+    assert(MI->getNumOperands() >= 7 &&
+           "We should always have at least 7 operands!");
 
+    const MachineOperand &MaskOp = MI->getOperand(6);
     if (auto *C = getConstantFromPool(*MI, MaskOp)) {
       SmallVector<int, 16> Mask;
       DecodeVPPERMMask(C, Mask);
       if (!Mask.empty())
-        OutStreamer->AddComment(getShuffleComment(DstOp, SrcOp1, SrcOp2, Mask));
+        OutStreamer->AddComment(getShuffleComment(MI, 1, 2, Mask),
+                                !EnablePrintSchedInfo);
     }
     break;
   }
@@ -1659,7 +1688,8 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   CASE_ALL_MOV_RM()
     if (!OutStreamer->isVerboseAsm())
       break;
-    if (MI->getNumOperands() > 4)
+    if (MI->getNumOperands() <= 4)
+      break;
     if (auto *C = getConstantFromPool(*MI, MI->getOperand(4))) {
       std::string Comment;
       raw_string_ostream CS(Comment);
@@ -1680,7 +1710,7 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
             CS << "?";
         }
         CS << "]";
-        OutStreamer->AddComment(CS.str());
+        OutStreamer->AddComment(CS.str(), !EnablePrintSchedInfo);
       } else if (auto *CV = dyn_cast<ConstantVector>(C)) {
         CS << "<";
         for (int i = 0, NumOperands = CV->getNumOperands(); i < NumOperands; ++i) {
@@ -1712,7 +1742,7 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
           }
         }
         CS << ">";
-        OutStreamer->AddComment(CS.str());
+        OutStreamer->AddComment(CS.str(), !EnablePrintSchedInfo);
       }
     }
     break;

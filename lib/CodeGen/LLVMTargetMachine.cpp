@@ -42,8 +42,8 @@ static cl::opt<cl::boolOrDefault>
 EnableFastISelOption("fast-isel", cl::Hidden,
   cl::desc("Enable the \"fast\" instruction selector"));
 
-static cl::opt<bool>
-    EnableGlobalISel("global-isel", cl::Hidden, cl::init(false),
+static cl::opt<cl::boolOrDefault>
+    EnableGlobalISel("global-isel", cl::Hidden,
                      cl::desc("Enable the \"global\" instruction selector"));
 
 void LLVMTargetMachine::initAsmInfo() {
@@ -85,7 +85,7 @@ void LLVMTargetMachine::initAsmInfo() {
 LLVMTargetMachine::LLVMTargetMachine(const Target &T,
                                      StringRef DataLayoutString,
                                      const Triple &TT, StringRef CPU,
-                                     StringRef FS, TargetOptions Options,
+                                     StringRef FS, const TargetOptions &Options,
                                      Reloc::Model RM, CodeModel::Model CM,
                                      CodeGenOpt::Level OL)
     : TargetMachine(T, DataLayoutString, TT, CPU, FS, Options) {
@@ -105,7 +105,8 @@ TargetIRAnalysis LLVMTargetMachine::getTargetIRAnalysis() {
 static MCContext *
 addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM,
                         bool DisableVerify, AnalysisID StartBefore,
-                        AnalysisID StartAfter, AnalysisID StopAfter,
+                        AnalysisID StartAfter, AnalysisID StopBefore,
+                        AnalysisID StopAfter,
                         MachineFunctionInitializer *MFInitializer = nullptr) {
 
   // When in emulated TLS mode, add the LowerEmuTLS pass.
@@ -120,7 +121,8 @@ addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM,
   // Targets may override createPassConfig to provide a target-specific
   // subclass.
   TargetPassConfig *PassConfig = TM->createPassConfig(PM);
-  PassConfig->setStartStopPasses(StartBefore, StartAfter, StopAfter);
+  PassConfig->setStartStopPasses(StartBefore, StartAfter, StopBefore,
+                                 StopAfter);
 
   // Set PassConfig options provided by TargetMachine.
   PassConfig->setDisableVerify(DisableVerify);
@@ -147,7 +149,9 @@ addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM,
     TM->setFastISel(true);
 
   // Ask the target for an isel.
-  if (LLVM_UNLIKELY(EnableGlobalISel)) {
+  // Enable GlobalISel if the target wants to, but allow that to be overriden.
+  if (EnableGlobalISel == cl::BOU_TRUE || (EnableGlobalISel == cl::BOU_UNSET &&
+                                           PassConfig->isGlobalISelEnabled())) {
     if (PassConfig->addIRTranslator())
       return nullptr;
 
@@ -170,11 +174,12 @@ addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM,
 
     // Pass to reset the MachineFunction if the ISel failed.
     PM.add(createResetMachineFunctionPass(
-        PassConfig->reportDiagnosticWhenGlobalISelFallback()));
+        PassConfig->reportDiagnosticWhenGlobalISelFallback(),
+        PassConfig->isGlobalISelAbortEnabled()));
 
     // Provide a fallback path when we do not want to abort on
     // not-yet-supported input.
-    if (LLVM_UNLIKELY(!PassConfig->isGlobalISelAbortEnabled()) &&
+    if (!PassConfig->isGlobalISelAbortEnabled() &&
         PassConfig->addInstSelector())
       return nullptr;
 
@@ -191,15 +196,16 @@ addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM,
 bool LLVMTargetMachine::addPassesToEmitFile(
     PassManagerBase &PM, raw_pwrite_stream &Out, CodeGenFileType FileType,
     bool DisableVerify, AnalysisID StartBefore, AnalysisID StartAfter,
-    AnalysisID StopAfter, MachineFunctionInitializer *MFInitializer) {
+    AnalysisID StopBefore, AnalysisID StopAfter,
+    MachineFunctionInitializer *MFInitializer) {
   // Add common CodeGen passes.
   MCContext *Context =
       addPassesToGenerateCode(this, PM, DisableVerify, StartBefore, StartAfter,
-                              StopAfter, MFInitializer);
+                              StopBefore, StopAfter, MFInitializer);
   if (!Context)
     return true;
 
-  if (StopAfter) {
+  if (StopBefore || StopAfter) {
     PM.add(createPrintMIRPass(Out));
     return false;
   }
@@ -284,7 +290,7 @@ bool LLVMTargetMachine::addPassesToEmitMC(PassManagerBase &PM, MCContext *&Ctx,
                                           bool DisableVerify) {
   // Add common CodeGen passes.
   Ctx = addPassesToGenerateCode(this, PM, DisableVerify, nullptr, nullptr,
-                                nullptr);
+                                nullptr, nullptr);
   if (!Ctx)
     return true;
 

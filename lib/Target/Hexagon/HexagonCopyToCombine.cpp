@@ -77,7 +77,7 @@ public:
     MachineFunctionPass::getAnalysisUsage(AU);
   }
 
-  const char *getPassName() const override {
+  StringRef getPassName() const override {
     return "Hexagon Copy-To-Combine Pass";
   }
 
@@ -440,22 +440,28 @@ HexagonCopyToCombine::findPotentialNewifiableTFRs(MachineBasicBlock &BB) {
 
     // Put instructions that last defined integer or double registers into the
     // map.
-    for (unsigned I = 0, E = MI.getNumOperands(); I != E; ++I) {
-      MachineOperand &Op = MI.getOperand(I);
-      if (!Op.isReg() || !Op.isDef() || !Op.getReg())
-        continue;
-      unsigned Reg = Op.getReg();
-      if (Hexagon::DoubleRegsRegClass.contains(Reg)) {
-        for (MCSubRegIterator SubRegs(Reg, TRI); SubRegs.isValid(); ++SubRegs) {
-          LastDef[*SubRegs] = &MI;
-        }
-      } else if (Hexagon::IntRegsRegClass.contains(Reg))
-        LastDef[Reg] = &MI;
+    for (MachineOperand &Op : MI.operands()) {
+      if (Op.isReg()) {
+        if (!Op.isDef() || !Op.getReg())
+          continue;
+        unsigned Reg = Op.getReg();
+        if (Hexagon::DoubleRegsRegClass.contains(Reg)) {
+          for (MCSubRegIterator SubRegs(Reg, TRI); SubRegs.isValid(); ++SubRegs)
+            LastDef[*SubRegs] = &MI;
+        } else if (Hexagon::IntRegsRegClass.contains(Reg))
+          LastDef[Reg] = &MI;
+      } else if (Op.isRegMask()) {
+        for (unsigned Reg : Hexagon::IntRegsRegClass)
+          if (Op.clobbersPhysReg(Reg))
+            LastDef[Reg] = &MI;
+      }
     }
   }
 }
 
 bool HexagonCopyToCombine::runOnMachineFunction(MachineFunction &MF) {
+  if (skipFunction(*MF.getFunction()))
+    return false;
 
   if (IsCombinesDisabled) return false;
 
@@ -580,22 +586,25 @@ void HexagonCopyToCombine::combine(MachineInstr &I1, MachineInstr &I2,
   unsigned I2DestReg = I2.getOperand(0).getReg();
   bool IsI1Loreg = (I2DestReg - I1DestReg) == 1;
   unsigned LoRegDef = IsI1Loreg ? I1DestReg : I2DestReg;
+  unsigned SubLo;
 
   const TargetRegisterClass *SuperRC = nullptr;
   if (Hexagon::IntRegsRegClass.contains(LoRegDef)) {
     SuperRC = &Hexagon::DoubleRegsRegClass;
+    SubLo = Hexagon::isub_lo;
   } else if (Hexagon::VectorRegsRegClass.contains(LoRegDef)) {
     assert(ST->useHVXOps());
     if (ST->useHVXSglOps())
       SuperRC = &Hexagon::VecDblRegsRegClass;
     else
       SuperRC = &Hexagon::VecDblRegs128BRegClass;
-  }
-  // Get the double word register.
-  unsigned DoubleRegDest =
-    TRI->getMatchingSuperReg(LoRegDef, Hexagon::subreg_loreg, SuperRC);
-  assert(DoubleRegDest != 0 && "Expect a valid register");
+    SubLo = Hexagon::vsub_lo;
+  } else
+    llvm_unreachable("Unexpected register class");
 
+  // Get the double word register.
+  unsigned DoubleRegDest = TRI->getMatchingSuperReg(LoRegDef, SubLo, SuperRC);
+  assert(DoubleRegDest != 0 && "Expect a valid register");
 
   // Setup source operands.
   MachineOperand &LoOperand = IsI1Loreg ? I1.getOperand(1) : I2.getOperand(1);

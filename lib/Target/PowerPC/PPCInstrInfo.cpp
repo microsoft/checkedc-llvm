@@ -65,7 +65,9 @@ UseOldLatencyCalc("ppc-old-latency-calc", cl::Hidden,
 void PPCInstrInfo::anchor() {}
 
 PPCInstrInfo::PPCInstrInfo(PPCSubtarget &STI)
-    : PPCGenInstrInfo(PPC::ADJCALLSTACKDOWN, PPC::ADJCALLSTACKUP),
+    : PPCGenInstrInfo(PPC::ADJCALLSTACKDOWN, PPC::ADJCALLSTACKUP,
+                      /* CatchRetOpcode */ -1,
+                      STI.isPPC64() ? PPC::BLR8 : PPC::BLR),
       Subtarget(STI), RI(STI.getTargetMachine()) {}
 
 /// CreateTargetHazardRecognizer - Return the hazard recognizer to use for
@@ -273,6 +275,7 @@ unsigned PPCInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
   case PPC::RESTORE_CRBIT:
   case PPC::LVX:
   case PPC::LXVD2X:
+  case PPC::LXVX:
   case PPC::QVLFDX:
   case PPC::QVLFSXs:
   case PPC::QVLFDXb:
@@ -302,6 +305,7 @@ unsigned PPCInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
   case PPC::SPILL_CRBIT:
   case PPC::STVX:
   case PPC::STXVD2X:
+  case PPC::STXVX:
   case PPC::QVSTFDX:
   case PPC::QVSTFSXs:
   case PPC::QVSTFDXb:
@@ -436,8 +440,8 @@ void PPCInstrInfo::insertNoop(MachineBasicBlock &MBB,
   BuildMI(MBB, MI, DL, get(Opcode));
 }
 
-/// getNoopForMachoTarget - Return the noop instruction to use for a noop.
-void PPCInstrInfo::getNoopForMachoTarget(MCInst &NopInst) const {
+/// Return the noop instruction to use for a noop.
+void PPCInstrInfo::getNoop(MCInst &NopInst) const {
   NopInst.setOpcode(PPC::NOP);
 }
 
@@ -605,7 +609,10 @@ bool PPCInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
   return true;
 }
 
-unsigned PPCInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
+unsigned PPCInstrInfo::removeBranch(MachineBasicBlock &MBB,
+                                    int *BytesRemoved) const {
+  assert(!BytesRemoved && "code size not handled");
+
   MachineBasicBlock::iterator I = MBB.getLastNonDebugInstr();
   if (I == MBB.end())
     return 0;
@@ -634,15 +641,17 @@ unsigned PPCInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
   return 2;
 }
 
-unsigned PPCInstrInfo::InsertBranch(MachineBasicBlock &MBB,
+unsigned PPCInstrInfo::insertBranch(MachineBasicBlock &MBB,
                                     MachineBasicBlock *TBB,
                                     MachineBasicBlock *FBB,
                                     ArrayRef<MachineOperand> Cond,
-                                    const DebugLoc &DL) const {
+                                    const DebugLoc &DL,
+                                    int *BytesAdded) const {
   // Shouldn't be a fall through.
-  assert(TBB && "InsertBranch must not be told to insert a fallthrough");
+  assert(TBB && "insertBranch must not be told to insert a fallthrough");
   assert((Cond.size() == 2 || Cond.size() == 0) &&
          "PPC branch conditions have two components!");
+  assert(!BytesAdded && "code size not handled");
 
   bool isPPC64 = Subtarget.isPPC64();
 
@@ -655,12 +664,14 @@ unsigned PPCInstrInfo::InsertBranch(MachineBasicBlock &MBB,
                               (isPPC64 ? PPC::BDNZ8 : PPC::BDNZ) :
                               (isPPC64 ? PPC::BDZ8  : PPC::BDZ))).addMBB(TBB);
     else if (Cond[0].getImm() == PPC::PRED_BIT_SET)
-      BuildMI(&MBB, DL, get(PPC::BC)).addOperand(Cond[1]).addMBB(TBB);
+      BuildMI(&MBB, DL, get(PPC::BC)).add(Cond[1]).addMBB(TBB);
     else if (Cond[0].getImm() == PPC::PRED_BIT_UNSET)
-      BuildMI(&MBB, DL, get(PPC::BCn)).addOperand(Cond[1]).addMBB(TBB);
+      BuildMI(&MBB, DL, get(PPC::BCn)).add(Cond[1]).addMBB(TBB);
     else                // Conditional branch
       BuildMI(&MBB, DL, get(PPC::BCC))
-        .addImm(Cond[0].getImm()).addOperand(Cond[1]).addMBB(TBB);
+          .addImm(Cond[0].getImm())
+          .add(Cond[1])
+          .addMBB(TBB);
     return 1;
   }
 
@@ -670,12 +681,14 @@ unsigned PPCInstrInfo::InsertBranch(MachineBasicBlock &MBB,
                             (isPPC64 ? PPC::BDNZ8 : PPC::BDNZ) :
                             (isPPC64 ? PPC::BDZ8  : PPC::BDZ))).addMBB(TBB);
   else if (Cond[0].getImm() == PPC::PRED_BIT_SET)
-    BuildMI(&MBB, DL, get(PPC::BC)).addOperand(Cond[1]).addMBB(TBB);
+    BuildMI(&MBB, DL, get(PPC::BC)).add(Cond[1]).addMBB(TBB);
   else if (Cond[0].getImm() == PPC::PRED_BIT_UNSET)
-    BuildMI(&MBB, DL, get(PPC::BCn)).addOperand(Cond[1]).addMBB(TBB);
+    BuildMI(&MBB, DL, get(PPC::BCn)).add(Cond[1]).addMBB(TBB);
   else
     BuildMI(&MBB, DL, get(PPC::BCC))
-      .addImm(Cond[0].getImm()).addOperand(Cond[1]).addMBB(TBB);
+        .addImm(Cond[0].getImm())
+        .add(Cond[1])
+        .addMBB(TBB);
   BuildMI(&MBB, DL, get(PPC::B)).addMBB(FBB);
   return 2;
 }
@@ -685,9 +698,6 @@ bool PPCInstrInfo::canInsertSelect(const MachineBasicBlock &MBB,
                 ArrayRef<MachineOperand> Cond,
                 unsigned TrueReg, unsigned FalseReg,
                 int &CondCycles, int &TrueCycles, int &FalseCycles) const {
-  if (!Subtarget.hasISEL())
-    return false;
-
   if (Cond.size() != 2)
     return false;
 
@@ -728,9 +738,6 @@ void PPCInstrInfo::insertSelect(MachineBasicBlock &MBB,
                                 unsigned FalseReg) const {
   assert(Cond.size() == 2 &&
          "PPC branch conditions have two components!");
-
-  assert(Subtarget.hasISEL() &&
-         "Cannot insert select on target without ISEL support");
 
   // Get the register classes.
   MachineRegisterInfo &MRI = MBB.getParent()->getRegInfo();
@@ -852,28 +859,10 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
       llvm_unreachable("nop VSX copy");
 
     DestReg = SuperReg;
-  } else if (PPC::VRRCRegClass.contains(DestReg) &&
-             PPC::VSRCRegClass.contains(SrcReg)) {
-    unsigned SuperReg =
-      TRI->getMatchingSuperReg(DestReg, PPC::sub_128, &PPC::VSRCRegClass);
-
-    if (VSXSelfCopyCrash && SrcReg == SuperReg)
-      llvm_unreachable("nop VSX copy");
-
-    DestReg = SuperReg;
   } else if (PPC::F8RCRegClass.contains(SrcReg) &&
              PPC::VSRCRegClass.contains(DestReg)) {
     unsigned SuperReg =
       TRI->getMatchingSuperReg(SrcReg, PPC::sub_64, &PPC::VSRCRegClass);
-
-    if (VSXSelfCopyCrash && DestReg == SuperReg)
-      llvm_unreachable("nop VSX copy");
-
-    SrcReg = SuperReg;
-  } else if (PPC::VRRCRegClass.contains(SrcReg) &&
-             PPC::VSRCRegClass.contains(DestReg)) {
-    unsigned SuperReg =
-      TRI->getMatchingSuperReg(SrcReg, PPC::sub_128, &PPC::VSRCRegClass);
 
     if (VSXSelfCopyCrash && DestReg == SuperReg)
       llvm_unreachable("nop VSX copy");
@@ -1003,19 +992,22 @@ PPCInstrInfo::StoreRegToStackSlot(MachineFunction &MF,
                                        FrameIdx));
     NonRI = true;
   } else if (PPC::VSRCRegClass.hasSubClassEq(RC)) {
-    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::STXVD2X))
+    unsigned Op = Subtarget.hasP9Vector() ? PPC::STXVX : PPC::STXVD2X;
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(Op))
                                        .addReg(SrcReg,
                                                getKillRegState(isKill)),
                                        FrameIdx));
     NonRI = true;
   } else if (PPC::VSFRCRegClass.hasSubClassEq(RC)) {
-    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::STXSDX))
+    unsigned Opc = Subtarget.hasP9Vector() ? PPC::DFSTOREf64 : PPC::STXSDX;
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(Opc))
                                        .addReg(SrcReg,
                                                getKillRegState(isKill)),
                                        FrameIdx));
     NonRI = true;
   } else if (PPC::VSSRCRegClass.hasSubClassEq(RC)) {
-    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::STXSSPX))
+    unsigned Opc = Subtarget.hasP9Vector() ? PPC::DFSTOREf32 : PPC::STXSSPX;
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(Opc))
                                        .addReg(SrcReg,
                                                getKillRegState(isKill)),
                                        FrameIdx));
@@ -1064,6 +1056,15 @@ PPCInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
 
   PPCFunctionInfo *FuncInfo = MF.getInfo<PPCFunctionInfo>();
   FuncInfo->setHasSpills();
+
+  // We need to avoid a situation in which the value from a VRRC register is
+  // spilled using an Altivec instruction and reloaded into a VSRC register
+  // using a VSX instruction. The issue with this is that the VSX
+  // load/store instructions swap the doublewords in the vector and the Altivec
+  // ones don't. The register classes on the spill/reload may be different if
+  // the register is defined using an Altivec instruction and is then used by a
+  // VSX instruction.
+  RC = updatedRC(RC);
 
   bool NonRI = false, SpillsVRS = false;
   if (StoreRegToStackSlot(MF, SrcReg, isKill, FrameIdx, RC, NewMIs,
@@ -1124,16 +1125,19 @@ bool PPCInstrInfo::LoadRegFromStackSlot(MachineFunction &MF, const DebugLoc &DL,
                                        FrameIdx));
     NonRI = true;
   } else if (PPC::VSRCRegClass.hasSubClassEq(RC)) {
-    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::LXVD2X), DestReg),
+    unsigned Op = Subtarget.hasP9Vector() ? PPC::LXVX : PPC::LXVD2X;
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(Op), DestReg),
                                        FrameIdx));
     NonRI = true;
   } else if (PPC::VSFRCRegClass.hasSubClassEq(RC)) {
-    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::LXSDX), DestReg),
-                                       FrameIdx));
+    unsigned Opc = Subtarget.hasP9Vector() ? PPC::DFLOADf64 : PPC::LXSDX;
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(Opc),
+                                               DestReg), FrameIdx));
     NonRI = true;
   } else if (PPC::VSSRCRegClass.hasSubClassEq(RC)) {
-    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::LXSSPX), DestReg),
-                                       FrameIdx));
+    unsigned Opc = Subtarget.hasP9Vector() ? PPC::DFLOADf32 : PPC::LXSSPX;
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(Opc),
+                                               DestReg), FrameIdx));
     NonRI = true;
   } else if (PPC::VRSAVERCRegClass.hasSubClassEq(RC)) {
     assert(Subtarget.isDarwin() &&
@@ -1176,6 +1180,16 @@ PPCInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
   PPCFunctionInfo *FuncInfo = MF.getInfo<PPCFunctionInfo>();
   FuncInfo->setHasSpills();
 
+  // We need to avoid a situation in which the value from a VRRC register is
+  // spilled using an Altivec instruction and reloaded into a VSRC register
+  // using a VSX instruction. The issue with this is that the VSX
+  // load/store instructions swap the doublewords in the vector and the Altivec
+  // ones don't. The register classes on the spill/reload may be different if
+  // the register is defined using an Altivec instruction and is then used by a
+  // VSX instruction.
+  if (Subtarget.hasVSX() && RC == &PPC::VRRCRegClass)
+    RC = &PPC::VSRCRegClass;
+
   bool NonRI = false, SpillsVRS = false;
   if (LoadRegFromStackSlot(MF, DL, DestReg, FrameIdx, RC, NewMIs,
                            NonRI, SpillsVRS))
@@ -1199,7 +1213,7 @@ PPCInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
 }
 
 bool PPCInstrInfo::
-ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const {
+reverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const {
   assert(Cond.size() == 2 && "Invalid PPC branch opcode!");
   if (Cond[1].getReg() == PPC::CTR8 || Cond[1].getReg() == PPC::CTR)
     Cond[0].setImm(Cond[0].getImm() == 0 ? 1 : 0);
@@ -1479,7 +1493,7 @@ bool PPCInstrInfo::DefinesPredicate(MachineInstr &MI,
   return Found;
 }
 
-bool PPCInstrInfo::isPredicable(MachineInstr &MI) const {
+bool PPCInstrInfo::isPredicable(const MachineInstr &MI) const {
   unsigned OpC = MI.getOpcode();
   switch (OpC) {
   default:
@@ -1822,8 +1836,7 @@ unsigned PPCInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     PatchPointOpers Opers(&MI);
     return Opers.getNumPatchBytes();
   } else {
-    const MCInstrDesc &Desc = get(Opcode);
-    return Desc.getSize();
+    return get(Opcode).getSize();
   }
 }
 
@@ -1872,6 +1885,48 @@ bool PPCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         .addReg(Reg);
     return true;
   }
+  case PPC::DFLOADf32:
+  case PPC::DFLOADf64:
+  case PPC::DFSTOREf32:
+  case PPC::DFSTOREf64: {
+    assert(Subtarget.hasP9Vector() &&
+           "Invalid D-Form Pseudo-ops on non-P9 target.");
+    unsigned UpperOpcode, LowerOpcode;
+    switch (MI.getOpcode()) {
+    case PPC::DFLOADf32:
+      UpperOpcode = PPC::LXSSP;
+      LowerOpcode = PPC::LFS;
+      break;
+    case PPC::DFLOADf64:
+      UpperOpcode = PPC::LXSD;
+      LowerOpcode = PPC::LFD;
+      break;
+    case PPC::DFSTOREf32:
+      UpperOpcode = PPC::STXSSP;
+      LowerOpcode = PPC::STFS;
+      break;
+    case PPC::DFSTOREf64:
+      UpperOpcode = PPC::STXSD;
+      LowerOpcode = PPC::STFD;
+      break;
+    }
+    unsigned TargetReg = MI.getOperand(0).getReg();
+    unsigned Opcode;
+    if ((TargetReg >= PPC::F0 && TargetReg <= PPC::F31) ||
+        (TargetReg >= PPC::VSL0 && TargetReg <= PPC::VSL31))
+      Opcode = LowerOpcode;
+    else
+      Opcode = UpperOpcode;
+    MI.setDesc(get(Opcode));
+    return true;
+  }
   }
   return false;
+}
+
+const TargetRegisterClass *
+PPCInstrInfo::updatedRC(const TargetRegisterClass *RC) const {
+  if (Subtarget.hasVSX() && RC == &PPC::VRRCRegClass)
+    return &PPC::VSRCRegClass;
+  return RC;
 }

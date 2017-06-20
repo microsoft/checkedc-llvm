@@ -30,3 +30,14 @@
 # CHECK: 	aese v0.8h, v1.8h
 # CHECK:	^
 
+	.arch armv8.1-a+noras
+	esb
+
+# CHECK: error: instruction requires: ras
+# CHECK:         esb
+
+	.arch armv8.1-a+nolse
+        casa  w5, w7, [x20]
+
+# CHECK: error: instruction requires: lse
+# CHECK:        casa  w5, w7, [x20]

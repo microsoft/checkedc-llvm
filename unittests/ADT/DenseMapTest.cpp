@@ -496,55 +496,6 @@ TEST(DenseMapCustomTest, StringRefTest) {
   EXPECT_EQ(42, M.lookup(StringRef("a", 0)));
 }
 
-struct CachedHashTest {
-  unsigned Val;
-  unsigned *Counter = nullptr;
-  CachedHashTest(unsigned Val) : Val(Val) {}
-  CachedHashTest(unsigned Val, unsigned *Counter)
-      : Val(Val), Counter(Counter) {}
-};
-}
-namespace llvm {
-template <> struct DenseMapInfo<CachedHashTest> {
-  static CachedHashTest getEmptyKey() { return ~0; }
-  static CachedHashTest getTombstoneKey() { return ~0U - 1; }
-  static unsigned getHashValue(const CachedHashTest &X) {
-    ++*X.Counter;
-    return X.Val;
-  }
-  static bool isEqual(const CachedHashTest &LHS, const CachedHashTest &RHS) {
-    return LHS.Val == RHS.Val;
-  }
-};
-}
-namespace {
-
-TEST(DenseMapCustomTest, CachedHashTest) {
-  unsigned Counter = 0;
-  CachedHashTest Val(0, &Counter);
-  DenseMap<CachedHashTest, int> Map;
-
-  Map[Val] = 0;
-  ASSERT_EQ(1u, Counter);
-
-  Map.reserve(64);
-  ASSERT_EQ(2u, Counter);
-}
-
-// Like above, but now cache the hash.
-TEST(DenseMapCustomTest, CachedHashTest2) {
-  unsigned Counter = 0;
-  CachedHashTest Val(0, &Counter);
-  typedef CachedHash<CachedHashTest> Cached;
-  DenseMap<Cached, int> Map;
-
-  Map[Val] = 0;
-  ASSERT_EQ(1u, Counter);
-
-  Map.reserve(64);
-  ASSERT_EQ(1u, Counter);
-}
-
 // Key traits that allows lookup with either an unsigned or char* key;
 // In the latter case, "a" == 0, "b" == 1 and so on.
 struct TestDenseMapInfo {
@@ -628,5 +579,19 @@ TEST(DenseMapCustomTest, TryEmplaceTest) {
   EXPECT_FALSE(Try2.second);
   EXPECT_EQ(Try1.first, Try2.first);
   EXPECT_NE(nullptr, P);
+}
+
+TEST(DenseMapCustomTest, ConstTest) {
+  // Test that const pointers work okay for count and find, even when the
+  // underlying map is a non-const pointer.
+  DenseMap<int *, int> Map;
+  int A;
+  int *B = &A;
+  const int *C = &A;
+  Map.insert({B, 0});
+  EXPECT_EQ(Map.count(B), 1u);
+  EXPECT_EQ(Map.count(C), 1u);
+  EXPECT_NE(Map.find(B), Map.end());
+  EXPECT_NE(Map.find(C), Map.end());
 }
 }

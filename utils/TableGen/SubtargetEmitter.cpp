@@ -14,7 +14,9 @@
 #include "CodeGenTarget.h"
 #include "CodeGenSchedule.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/MC/MCSchedule.h"
 #include "llvm/MC/SubtargetFeature.h"
@@ -27,6 +29,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -42,7 +45,7 @@ class SubtargetEmitter {
   // The SchedClassDesc table indexes into a global write resource table, write
   // latency table, and read advance table.
   struct SchedClassTables {
-    std::vector<std::vector<MCSchedClassDesc> > ProcSchedClasses;
+    std::vector<std::vector<MCSchedClassDesc>> ProcSchedClasses;
     std::vector<MCWriteProcResEntry> WriteProcResources;
     std::vector<MCWriteLatencyEntry> WriteLatencies;
     std::vector<std::string> WriterNames;
@@ -81,12 +84,12 @@ class SubtargetEmitter {
                                  Record *ItinData,
                                  std::string &ItinString, unsigned NOperandCycles);
   void EmitStageAndOperandCycleData(raw_ostream &OS,
-                                    std::vector<std::vector<InstrItinerary> >
+                                    std::vector<std::vector<InstrItinerary>>
                                       &ProcItinLists);
   void EmitItineraries(raw_ostream &OS,
-                       std::vector<std::vector<InstrItinerary> >
+                       std::vector<std::vector<InstrItinerary>>
                          &ProcItinLists);
-  void EmitProcessorProp(raw_ostream &OS, const Record *R, const char *Name,
+  void EmitProcessorProp(raw_ostream &OS, const Record *R, StringRef Name,
                          char Separator);
   void EmitProcessorResources(const CodeGenProcModel &ProcModel,
                               raw_ostream &OS);
@@ -294,7 +297,7 @@ void SubtargetEmitter::FormItineraryStageString(const std::string &Name,
     // For each unit
     for (unsigned j = 0, M = UnitList.size(); j < M;) {
       // Add name and bitwise or
-      ItinString += Name + "FU::" + UnitList[j]->getName();
+      ItinString += Name + "FU::" + UnitList[j]->getName().str();
       if (++j < M) ItinString += " | ";
     }
 
@@ -341,7 +344,7 @@ void SubtargetEmitter::FormItineraryBypassString(const std::string &Name,
   unsigned N = BypassList.size();
   unsigned i = 0;
   for (; i < N;) {
-    ItinString += Name + "Bypass::" + BypassList[i]->getName();
+    ItinString += Name + "Bypass::" + BypassList[i]->getName().str();
     if (++i < NOperandCycles) ItinString += ", ";
   }
   for (; i < NOperandCycles;) {
@@ -357,9 +360,8 @@ void SubtargetEmitter::FormItineraryBypassString(const std::string &Name,
 //
 void SubtargetEmitter::
 EmitStageAndOperandCycleData(raw_ostream &OS,
-                             std::vector<std::vector<InstrItinerary> >
+                             std::vector<std::vector<InstrItinerary>>
                                &ProcItinLists) {
-
   // Multiple processor models may share an itinerary record. Emit it once.
   SmallPtrSet<Record*, 8> ItinsDefSet;
 
@@ -498,7 +500,7 @@ EmitStageAndOperandCycleData(raw_ostream &OS,
       int NumUOps = ItinData ? ItinData->getValueAsInt("NumMicroOps") : 0;
       InstrItinerary Intinerary = { NumUOps, FindStage, FindStage + NStages,
                                     FindOperandCycle,
-                                    FindOperandCycle + NOperandCycles};
+                                    FindOperandCycle + NOperandCycles };
 
       // Inject - empty slots will be 0, 0
       ItinList[SchedClassIdx] = Intinerary;
@@ -530,13 +532,12 @@ EmitStageAndOperandCycleData(raw_ostream &OS,
 //
 void SubtargetEmitter::
 EmitItineraries(raw_ostream &OS,
-                std::vector<std::vector<InstrItinerary> > &ProcItinLists) {
-
+                std::vector<std::vector<InstrItinerary>> &ProcItinLists) {
   // Multiple processor models may share an itinerary record. Emit it once.
   SmallPtrSet<Record*, 8> ItinsDefSet;
 
   // For each processor's machine model
-  std::vector<std::vector<InstrItinerary> >::iterator
+  std::vector<std::vector<InstrItinerary>>::iterator
       ProcItinListsIter = ProcItinLists.begin();
   for (CodeGenSchedModels::ProcIter PI = SchedModels.procModelBegin(),
          PE = SchedModels.procModelEnd(); PI != PE; ++PI, ++ProcItinListsIter) {
@@ -587,7 +588,7 @@ EmitItineraries(raw_ostream &OS,
 // value defined in the C++ header. The Record is null if the processor does not
 // define a model.
 void SubtargetEmitter::EmitProcessorProp(raw_ostream &OS, const Record *R,
-                                         const char *Name, char Separator) {
+                                         StringRef Name, char Separator) {
   OS << "  ";
   int V = R ? R->getValueAsInt(Name) : -1;
   if (V >= 0)
@@ -916,6 +917,8 @@ void SubtargetEmitter::GenSchedClassTables(const CodeGenProcModel &ProcModel,
         SCDesc.NumMicroOps += WriteRes->getValueAsInt("NumMicroOps");
         SCDesc.BeginGroup |= WriteRes->getValueAsBit("BeginGroup");
         SCDesc.EndGroup |= WriteRes->getValueAsBit("EndGroup");
+        SCDesc.BeginGroup |= WriteRes->getValueAsBit("SingleIssue");
+        SCDesc.EndGroup |= WriteRes->getValueAsBit("SingleIssue");
 
         // Create an entry for each ProcResource listed in WriteRes.
         RecVec PRVec = WriteRes->getValueAsListOfDefs("ProcResources");
@@ -1240,7 +1243,7 @@ void SubtargetEmitter::EmitSchedModel(raw_ostream &OS) {
      << "#endif\n";
 
   if (SchedModels.hasItineraries()) {
-    std::vector<std::vector<InstrItinerary> > ProcItinLists;
+    std::vector<std::vector<InstrItinerary>> ProcItinLists;
     // Emit the stage data
     EmitStageAndOperandCycleData(OS, ProcItinLists);
     EmitItineraries(OS, ProcItinLists);
@@ -1424,13 +1427,13 @@ void SubtargetEmitter::run(raw_ostream &OS) {
      << Target << "WriteProcResTable, "
      << Target << "WriteLatencyTable, "
      << Target << "ReadAdvanceTable, ";
+  OS << '\n'; OS.indent(22);
   if (SchedModels.hasItineraries()) {
-    OS << '\n'; OS.indent(22);
     OS << Target << "Stages, "
        << Target << "OperandCycles, "
        << Target << "ForwardingPaths";
   } else
-    OS << "0, 0, 0";
+    OS << "nullptr, nullptr, nullptr";
   OS << ");\n}\n\n";
 
   OS << "} // end namespace llvm\n\n";
@@ -1510,7 +1513,7 @@ void SubtargetEmitter::run(raw_ostream &OS) {
        << Target << "OperandCycles, "
        << Target << "ForwardingPaths";
   } else
-    OS << "0, 0, 0";
+    OS << "nullptr, nullptr, nullptr";
   OS << ") {}\n\n";
 
   EmitSchedModelHelpers(ClassName, OS);

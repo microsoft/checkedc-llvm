@@ -25,7 +25,9 @@ static uint64_t extractBitsForFixup(MCFixupKind Kind, uint64_t Value) {
     return Value;
 
   switch (unsigned(Kind)) {
+  case SystemZ::FK_390_PC12DBL:
   case SystemZ::FK_390_PC16DBL:
+  case SystemZ::FK_390_PC24DBL:
   case SystemZ::FK_390_PC32DBL:
     return (int64_t)Value / 2;
 
@@ -49,7 +51,7 @@ public:
   }
   const MCFixupKindInfo &getFixupKindInfo(MCFixupKind Kind) const override;
   void applyFixup(const MCFixup &Fixup, char *Data, unsigned DataSize,
-                  uint64_t Value, bool IsPCRel) const override;
+                  uint64_t Value, bool IsPCRel, MCContext &Ctx) const override;
   bool mayNeedRelaxation(const MCInst &Inst) const override {
     return false;
   }
@@ -72,7 +74,9 @@ public:
 const MCFixupKindInfo &
 SystemZMCAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
   const static MCFixupKindInfo Infos[SystemZ::NumTargetFixupKinds] = {
+    { "FK_390_PC12DBL",  4, 12, MCFixupKindInfo::FKF_IsPCRel },
     { "FK_390_PC16DBL",  0, 16, MCFixupKindInfo::FKF_IsPCRel },
+    { "FK_390_PC24DBL",  0, 24, MCFixupKindInfo::FKF_IsPCRel },
     { "FK_390_PC32DBL",  0, 32, MCFixupKindInfo::FKF_IsPCRel },
     { "FK_390_TLS_CALL", 0, 0, 0 }
   };
@@ -87,15 +91,18 @@ SystemZMCAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
 
 void SystemZMCAsmBackend::applyFixup(const MCFixup &Fixup, char *Data,
                                      unsigned DataSize, uint64_t Value,
-                                     bool IsPCRel) const {
+                                     bool IsPCRel, MCContext &Ctx) const {
   MCFixupKind Kind = Fixup.getKind();
   unsigned Offset = Fixup.getOffset();
-  unsigned Size = (getFixupKindInfo(Kind).TargetSize + 7) / 8;
+  unsigned BitSize = getFixupKindInfo(Kind).TargetSize;
+  unsigned Size = (BitSize + 7) / 8;
 
   assert(Offset + Size <= DataSize && "Invalid fixup offset!");
 
   // Big-endian insertion of Size bytes.
   Value = extractBitsForFixup(Kind, Value);
+  if (BitSize < 64)
+    Value &= ((uint64_t)1 << BitSize) - 1;
   unsigned ShiftValue = (Size * 8) - 8;
   for (unsigned I = 0; I != Size; ++I) {
     Data[Offset + I] |= uint8_t(Value >> ShiftValue);

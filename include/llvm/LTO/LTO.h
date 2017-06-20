@@ -19,49 +19,27 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/CodeGen/Analysis.h"
+#include "llvm/Analysis/ObjectUtils.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
 #include "llvm/LTO/Config.h"
 #include "llvm/Linker/IRMover.h"
-#include "llvm/Object/IRObjectFile.h"
+#include "llvm/Object/IRSymtab.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/thread.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/IPO/FunctionImport.h"
 
 namespace llvm {
 
+class BitcodeModule;
 class Error;
 class LLVMContext;
 class MemoryBufferRef;
 class Module;
 class Target;
 class raw_pwrite_stream;
-
-/// Helper to load a module from bitcode.
-std::unique_ptr<Module> loadModuleFromBuffer(const MemoryBufferRef &Buffer,
-                                             LLVMContext &Context, bool Lazy);
-
-/// Provide a "loader" for the FunctionImporter to access function from other
-/// modules.
-class ModuleLoader {
-  /// The context that will be used for importing.
-  LLVMContext &Context;
-
-  /// Map from Module identifier to MemoryBuffer. Used by clients like the
-  /// FunctionImported to request loading a Module.
-  StringMap<MemoryBufferRef> &ModuleMap;
-
-public:
-  ModuleLoader(LLVMContext &Context, StringMap<MemoryBufferRef> &ModuleMap)
-      : Context(Context), ModuleMap(ModuleMap) {}
-
-  /// Load a module on demand.
-  std::unique_ptr<Module> operator()(StringRef Identifier) {
-    return loadModuleFromBuffer(ModuleMap[Identifier], Context, /*Lazy*/ true);
-  }
-};
-
 
 /// Resolve Weak and LinkOnce values in the \p Index. Linkage changes recorded
 /// in the index and the ThinLTO backends must apply the changes to the Module
@@ -85,154 +63,130 @@ void thinLTOInternalizeAndPromoteInIndex(
 
 namespace lto {
 
+/// Given the original \p Path to an output file, replace any path
+/// prefix matching \p OldPrefix with \p NewPrefix. Also, create the
+/// resulting directory if it does not yet exist.
+std::string getThinLTOOutputFile(const std::string &Path,
+                                 const std::string &OldPrefix,
+                                 const std::string &NewPrefix);
+
+/// Setup optimization remarks.
+Expected<std::unique_ptr<tool_output_file>>
+setupOptimizationRemarks(LLVMContext &Context, StringRef LTORemarksFilename,
+                         bool LTOPassRemarksWithHotness, int Count = -1);
+
 class LTO;
 struct SymbolResolution;
 class ThinBackendProc;
 
-/// An input file. This is a wrapper for IRObjectFile that exposes only the
+/// An input file. This is a symbol table wrapper that only exposes the
 /// information that an LTO client should need in order to do symbol resolution.
 class InputFile {
+public:
+  class Symbol;
+
+private:
   // FIXME: Remove LTO class friendship once we have bitcode symbol tables.
   friend LTO;
   InputFile() = default;
 
-  // FIXME: Remove the LLVMContext once we have bitcode symbol tables.
-  LLVMContext Ctx;
-  std::unique_ptr<object::IRObjectFile> Obj;
+  std::vector<BitcodeModule> Mods;
+  SmallVector<char, 0> Strtab;
+  std::vector<Symbol> Symbols;
+
+  // [begin, end) for each module
+  std::vector<std::pair<size_t, size_t>> ModuleSymIndices;
+
+  StringRef TargetTriple, SourceFileName, COFFLinkerOpts;
+  std::vector<StringRef> ComdatTable;
 
 public:
+  ~InputFile();
+
   /// Create an InputFile.
   static Expected<std::unique_ptr<InputFile>> create(MemoryBufferRef Object);
 
-  class symbol_iterator;
-
-  /// This is a wrapper for object::basic_symbol_iterator that exposes only the
-  /// information that an LTO client should need in order to do symbol
-  /// resolution.
-  ///
-  /// This object is ephemeral; it is only valid as long as an iterator obtained
-  /// from symbols() refers to it.
-  class Symbol {
-    friend symbol_iterator;
+  /// The purpose of this class is to only expose the symbol information that an
+  /// LTO client should need in order to do symbol resolution.
+  class Symbol : irsymtab::Symbol {
     friend LTO;
 
-    object::basic_symbol_iterator I;
-    const GlobalValue *GV;
-    uint32_t Flags;
-    SmallString<64> Name;
-
-    bool shouldSkip() {
-      return !(Flags & object::BasicSymbolRef::SF_Global) ||
-             (Flags & object::BasicSymbolRef::SF_FormatSpecific);
-    }
-
-    void skip() {
-      const object::SymbolicFile *Obj = I->getObject();
-      auto E = Obj->symbol_end();
-      while (I != E) {
-        Flags = I->getFlags();
-        if (!shouldSkip())
-          break;
-        ++I;
-      }
-      if (I == E)
-        return;
-
-      Name.clear();
-      {
-        raw_svector_ostream OS(Name);
-        I->printName(OS);
-      }
-      GV = cast<object::IRObjectFile>(Obj)->getSymbolGV(I->getRawDataRefImpl());
-    }
-
   public:
-    Symbol(object::basic_symbol_iterator I) : I(I) { skip(); }
+    Symbol(const irsymtab::Symbol &S) : irsymtab::Symbol(S) {}
 
-    StringRef getName() const { return Name; }
-    StringRef getIRName() const {
-      if (GV)
-        return GV->getName();
-      return StringRef();
-    }
-    uint32_t getFlags() const { return Flags; }
-    GlobalValue::VisibilityTypes getVisibility() const {
-      if (GV)
-        return GV->getVisibility();
-      return GlobalValue::DefaultVisibility;
-    }
-    bool canBeOmittedFromSymbolTable() const {
-      return GV && llvm::canBeOmittedFromSymbolTable(GV);
-    }
-    Expected<const Comdat *> getComdat() const {
-      const GlobalObject *GO;
-      if (auto *GA = dyn_cast<GlobalAlias>(GV)) {
-        GO = GA->getBaseObject();
-        if (!GO)
-          return make_error<StringError>("Unable to determine comdat of alias!",
-                                         inconvertibleErrorCode());
-      } else {
-        GO = cast<GlobalObject>(GV);
-      }
-      if (GO)
-        return GO->getComdat();
-      return nullptr;
-    }
-    uint64_t getCommonSize() const {
-      assert(Flags & object::BasicSymbolRef::SF_Common);
-      if (!GV)
-        return 0;
-      return GV->getParent()->getDataLayout().getTypeAllocSize(
-          GV->getType()->getElementType());
-    }
-    unsigned getCommonAlignment() const {
-      assert(Flags & object::BasicSymbolRef::SF_Common);
-      if (!GV)
-        return 0;
-      return GV->getAlignment();
-    }
-  };
-
-  class symbol_iterator {
-    Symbol Sym;
-
-  public:
-    symbol_iterator(object::basic_symbol_iterator I) : Sym(I) {}
-
-    symbol_iterator &operator++() {
-      ++Sym.I;
-      Sym.skip();
-      return *this;
-    }
-
-    symbol_iterator operator++(int) {
-      symbol_iterator I = *this;
-      ++*this;
-      return I;
-    }
-
-    const Symbol &operator*() const { return Sym; }
-    const Symbol *operator->() const { return &Sym; }
-
-    bool operator!=(const symbol_iterator &Other) const {
-      return Sym.I != Other.Sym.I;
-    }
+    using irsymtab::Symbol::isUndefined;
+    using irsymtab::Symbol::isCommon;
+    using irsymtab::Symbol::isWeak;
+    using irsymtab::Symbol::isIndirect;
+    using irsymtab::Symbol::getName;
+    using irsymtab::Symbol::getVisibility;
+    using irsymtab::Symbol::canBeOmittedFromSymbolTable;
+    using irsymtab::Symbol::isTLS;
+    using irsymtab::Symbol::getComdatIndex;
+    using irsymtab::Symbol::getCommonSize;
+    using irsymtab::Symbol::getCommonAlignment;
+    using irsymtab::Symbol::getCOFFWeakExternalFallback;
+    using irsymtab::Symbol::isExecutable;
   };
 
   /// A range over the symbols in this InputFile.
-  iterator_range<symbol_iterator> symbols() {
-    return llvm::make_range(symbol_iterator(Obj->symbol_begin()),
-                            symbol_iterator(Obj->symbol_end()));
-  }
+  ArrayRef<Symbol> symbols() const { return Symbols; }
 
-  StringRef getSourceFileName() const {
-    return Obj->getModule().getSourceFileName();
-  }
+  /// Returns linker options specified in the input file.
+  StringRef getCOFFLinkerOpts() const { return COFFLinkerOpts; }
 
-  MemoryBufferRef getMemoryBufferRef() const {
-    return Obj->getMemoryBufferRef();
+  /// Returns the path to the InputFile.
+  StringRef getName() const;
+
+  /// Returns the input file's target triple.
+  StringRef getTargetTriple() const { return TargetTriple; }
+
+  /// Returns the source file path specified at compile time.
+  StringRef getSourceFileName() const { return SourceFileName; }
+
+  // Returns a table with all the comdats used by this file.
+  ArrayRef<StringRef> getComdatTable() const { return ComdatTable; }
+
+private:
+  ArrayRef<Symbol> module_symbols(unsigned I) const {
+    const auto &Indices = ModuleSymIndices[I];
+    return {Symbols.data() + Indices.first, Symbols.data() + Indices.second};
   }
 };
+
+/// This class wraps an output stream for a native object. Most clients should
+/// just be able to return an instance of this base class from the stream
+/// callback, but if a client needs to perform some action after the stream is
+/// written to, that can be done by deriving from this class and overriding the
+/// destructor.
+class NativeObjectStream {
+public:
+  NativeObjectStream(std::unique_ptr<raw_pwrite_stream> OS) : OS(std::move(OS)) {}
+  std::unique_ptr<raw_pwrite_stream> OS;
+  virtual ~NativeObjectStream() = default;
+};
+
+/// This type defines the callback to add a native object that is generated on
+/// the fly.
+///
+/// Stream callbacks must be thread safe.
+typedef std::function<std::unique_ptr<NativeObjectStream>(unsigned Task)>
+    AddStreamFn;
+
+/// This is the type of a native object cache. To request an item from the
+/// cache, pass a unique string as the Key. For hits, the cached file will be
+/// added to the link and this function will return AddStreamFn(). For misses,
+/// the cache will return a stream callback which must be called at most once to
+/// produce content for the stream. The native object stream produced by the
+/// stream callback will add the file to the link after the stream is written
+/// to.
+///
+/// Clients generally look like this:
+///
+/// if (AddStreamFn AddStream = Cache(Task, Key))
+///   ProduceContent(AddStream);
+typedef std::function<AddStreamFn(unsigned Task, StringRef Key)>
+    NativeObjectCache;
 
 /// A ThinBackend defines what happens after the thin-link phase during ThinLTO.
 /// The details of this type definition aren't important; clients can only
@@ -240,7 +194,7 @@ public:
 typedef std::function<std::unique_ptr<ThinBackendProc>(
     Config &C, ModuleSummaryIndex &CombinedIndex,
     StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
-    AddOutputFn AddOutput)>
+    AddStreamFn AddStream, NativeObjectCache Cache)>
     ThinBackend;
 
 /// This ThinBackend runs the individual backend jobs in-process.
@@ -273,8 +227,9 @@ ThinBackend createWriteIndexesThinBackend(std::string OldPrefix,
 ///   and pass it and an array of symbol resolutions to the add() function.
 /// - Call the getMaxTasks() function to get an upper bound on the number of
 ///   native object files that LTO may add to the link.
-/// - Call the run() function. This function will use the supplied AddOutput
-///   function to add up to getMaxTasks() native object files to the link.
+/// - Call the run() function. This function will use the supplied AddStream
+///   and Cache functions to add up to getMaxTasks() native object files to
+///   the link.
 class LTO {
   friend InputFile;
 
@@ -286,6 +241,7 @@ public:
   /// Until that is fixed, a Config argument is required.
   LTO(Config Conf, ThinBackend Backend = nullptr,
       unsigned ParallelCodeGenParallelismLevel = 1);
+  ~LTO();
 
   /// Add an input file to the LTO link, using the provided symbol resolutions.
   /// The symbol resolutions must appear in the enumeration order given by
@@ -297,9 +253,15 @@ public:
   /// full description of tasks see LTOBackend.h.
   unsigned getMaxTasks() const;
 
-  /// Runs the LTO pipeline. This function calls the supplied AddOutput function
-  /// to add native object files to the link.
-  Error run(AddOutputFn AddOutput);
+  /// Runs the LTO pipeline. This function calls the supplied AddStream
+  /// function to add native object files to the link.
+  ///
+  /// The Cache parameter is optional. If supplied, it will be used to cache
+  /// native object files and add them to the link.
+  ///
+  /// The client will receive at most one callback (via either AddStream or
+  /// Cache) for each task identifier.
+  Error run(AddStreamFn AddStream, NativeObjectCache Cache = nullptr);
 
 private:
   Config Conf;
@@ -309,6 +271,8 @@ private:
     struct CommonResolution {
       uint64_t Size = 0;
       unsigned Align = 0;
+      /// Record if at least one instance of the common was marked as prevailing
+      bool Prevailing = false;
     };
     std::map<std::string, CommonResolution> Commons;
 
@@ -324,7 +288,7 @@ private:
 
     ThinBackend Backend;
     ModuleSummaryIndex CombinedIndex;
-    MapVector<StringRef, MemoryBufferRef> ModuleMap;
+    MapVector<StringRef, BitcodeModule> ModuleMap;
     DenseMap<GlobalValue::GUID, StringRef> PrevailingModuleForGUID;
   } ThinLTO;
 
@@ -338,6 +302,10 @@ private:
   struct GlobalResolution {
     /// The unmangled name of the global.
     std::string IRName;
+
+    /// Keep track if the symbol is visible outside of ThinLTO (i.e. in
+    /// either a regular object or the regular LTO partition).
+    bool VisibleOutsideThinLTO = false;
 
     bool UnnamedAddr = true;
 
@@ -362,24 +330,34 @@ private:
       /// This global is either used by more than one partition or has an
       /// external reference, and therefore cannot be internalized.
       External = -2u,
+
+      /// The RegularLTO partition
+      RegularLTO = 0,
     };
   };
 
   // Global mapping from mangled symbol names to resolutions.
   StringMap<GlobalResolution> GlobalResolutions;
 
-  void addSymbolToGlobalRes(object::IRObjectFile *Obj,
-                            SmallPtrSet<GlobalValue *, 8> &Used,
-                            const InputFile::Symbol &Sym, SymbolResolution Res,
+  void addSymbolToGlobalRes(const InputFile::Symbol &Sym, SymbolResolution Res,
                             unsigned Partition);
 
-  Error addRegularLTO(std::unique_ptr<InputFile> Input,
-                      ArrayRef<SymbolResolution> Res);
-  Error addThinLTO(std::unique_ptr<InputFile> Input,
-                   ArrayRef<SymbolResolution> Res);
+  // These functions take a range of symbol resolutions [ResI, ResE) and consume
+  // the resolutions used by a single input module by incrementing ResI. After
+  // these functions return, [ResI, ResE) will refer to the resolution range for
+  // the remaining modules in the InputFile.
+  Error addModule(InputFile &Input, unsigned ModI,
+                  const SymbolResolution *&ResI, const SymbolResolution *ResE);
+  Error addRegularLTO(BitcodeModule BM,
+                      ArrayRef<InputFile::Symbol> Syms,
+                      const SymbolResolution *&ResI,
+                      const SymbolResolution *ResE);
+  Error addThinLTO(BitcodeModule BM, ArrayRef<InputFile::Symbol> Syms,
+                   const SymbolResolution *&ResI, const SymbolResolution *ResE);
 
-  Error runRegularLTO(AddOutputFn AddOutput);
-  Error runThinLTO(AddOutputFn AddOutput);
+  Error runRegularLTO(AddStreamFn AddStream);
+  Error runThinLTO(AddStreamFn AddStream, NativeObjectCache Cache,
+                   bool HasRegularLTO);
 
   mutable bool CalledGetMaxTasks = false;
 };

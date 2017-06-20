@@ -107,7 +107,7 @@ static bool isCoroutineIntrinsicName(StringRef Name) {
       "llvm.coro.done",    "llvm.coro.end",     "llvm.coro.frame",
       "llvm.coro.free",    "llvm.coro.id",      "llvm.coro.param",
       "llvm.coro.promise", "llvm.coro.resume",  "llvm.coro.save",
-      "llvm.coro.size",    "llvm.coro.suspend",
+      "llvm.coro.size",    "llvm.coro.subfn.addr", "llvm.coro.suspend",
   };
   return Intrinsic::lookupLLVMIntrinsicByName(CoroIntrinsics, Name) != -1;
 }
@@ -245,9 +245,9 @@ void coro::Shape::buildFrom(Function &F) {
           if (CoroBegin)
             report_fatal_error(
                 "coroutine should have exactly one defining @llvm.coro.begin");
-          CB->addAttribute(AttributeSet::ReturnIndex, Attribute::NonNull);
-          CB->addAttribute(AttributeSet::ReturnIndex, Attribute::NoAlias);
-          CB->removeAttribute(AttributeSet::FunctionIndex,
+          CB->addAttribute(AttributeList::ReturnIndex, Attribute::NonNull);
+          CB->addAttribute(AttributeList::ReturnIndex, Attribute::NoAlias);
+          CB->removeAttribute(AttributeList::FunctionIndex,
                               Attribute::NoDuplicate);
           CoroBegin = CB;
         }

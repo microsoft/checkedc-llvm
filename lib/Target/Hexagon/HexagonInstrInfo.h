@@ -16,9 +16,14 @@
 
 #include "HexagonRegisterInfo.h"
 #include "MCTargetDesc/HexagonBaseInfo.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineBranchProbabilityInfo.h"
-#include "llvm/Target/TargetFrameLowering.h"
+#include "llvm/CodeGen/MachineValueType.h"
 #include "llvm/Target/TargetInstrInfo.h"
+#include <cstdint>
+#include <vector>
 
 #define GET_INSTRINFO_HEADER
 #include "HexagonGenInstrInfo.inc"
@@ -29,8 +34,9 @@ struct EVT;
 class HexagonSubtarget;
 
 class HexagonInstrInfo : public HexagonGenInstrInfo {
-  virtual void anchor();
   const HexagonRegisterInfo RI;
+
+  virtual void anchor();
 
 public:
   explicit HexagonInstrInfo(HexagonSubtarget &ST);
@@ -73,7 +79,7 @@ public:
   ///    condition.  These operands can be passed to other TargetInstrInfo
   ///    methods to create new branches.
   ///
-  /// Note that RemoveBranch and InsertBranch must be implemented to support
+  /// Note that removeBranch and insertBranch must be implemented to support
   /// cases where this method returns success.
   ///
   /// If AllowModify is true, then this routine is allowed to modify the basic
@@ -87,7 +93,8 @@ public:
   /// Remove the branching code at the end of the specific MBB.
   /// This is only invoked in cases where AnalyzeBranch returns success. It
   /// returns the number of instructions that were removed.
-  unsigned RemoveBranch(MachineBasicBlock &MBB) const override;
+  unsigned removeBranch(MachineBasicBlock &MBB,
+                        int *BytesRemoved = nullptr) const override;
 
   /// Insert branch code into the end of the specified MachineBasicBlock.
   /// The operands to this method are the same as those
@@ -99,9 +106,10 @@ public:
   /// cases where AnalyzeBranch doesn't apply because there was no original
   /// branch to analyze.  At least this much must be implemented, else tail
   /// merging needs to be disabled.
-  unsigned InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
+  unsigned insertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
                         MachineBasicBlock *FBB, ArrayRef<MachineOperand> Cond,
-                        const DebugLoc &DL) const override;
+                        const DebugLoc &DL,
+                        int *BytesAdded = nullptr) const override;
 
   /// Analyze the loop code, return true if it cannot be understood. Upon
   /// success, this function returns false and returns information about the
@@ -195,7 +203,7 @@ public:
 
   /// Reverses the branch condition of the specified condition list,
   /// returning false on success and true if it cannot be reversed.
-  bool ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond)
+  bool reverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond)
         const override;
 
   /// Insert a noop into the instruction stream at the specified point.
@@ -227,7 +235,7 @@ public:
   /// Return true if the specified instruction can be predicated.
   /// By default, this returns true for every instruction with a
   /// PredicateOperand.
-  bool isPredicable(MachineInstr &MI) const override;
+  bool isPredicable(const MachineInstr &MI) const override;
 
   /// Test if the given instruction should be considered a scheduling boundary.
   /// This primarily includes labels and terminators.
@@ -258,7 +266,7 @@ public:
   /// PredCost.
   unsigned getInstrLatency(const InstrItineraryData *ItinData,
                            const MachineInstr &MI,
-                           unsigned *PredCost = 0) const override;
+                           unsigned *PredCost = nullptr) const override;
 
   /// Create machine specific model for scheduling.
   DFAPacketizer *
@@ -376,7 +384,6 @@ public:
   bool PredOpcodeHasJMP_c(unsigned Opcode) const;
   bool predOpcodeHasNot(ArrayRef<MachineOperand> Cond) const;
 
-
   short getAbsoluteForm(const MachineInstr &MI) const;
   unsigned getAddrMode(const MachineInstr &MI) const;
   unsigned getBaseAndOffset(const MachineInstr &MI, int &Offset,
@@ -397,7 +404,7 @@ public:
                           const MachineBranchProbabilityInfo *MBPI) const;
   int getDotNewPredOp(const MachineInstr &MI,
                       const MachineBranchProbabilityInfo *MBPI) const;
-  int getDotOldOp(const int opc) const;
+  int getDotOldOp(const MachineInstr &MI) const;
   HexagonII::SubInstructionGroup getDuplexCandidateGroup(const MachineInstr &MI)
                                                          const;
   short getEquivalentHWInstr(const MachineInstr &MI) const;
@@ -419,12 +426,10 @@ public:
   unsigned getUnits(const MachineInstr &MI) const;
   unsigned getValidSubTargets(const unsigned Opcode) const;
 
-
   /// getInstrTimingClassLatency - Compute the instruction latency of a given
   /// instruction using Timing Class information, if available.
   unsigned nonDbgBBSize(const MachineBasicBlock *BB) const;
   unsigned nonDbgBundleSize(MachineBasicBlock::const_iterator BundleHead) const;
-
 
   void immediateExtend(MachineInstr &MI) const;
   bool invertAndChangeJumpTarget(MachineInstr &MI,
@@ -436,6 +441,6 @@ public:
   short xformRegToImmOffset(const MachineInstr &MI) const;
 };
 
-}
+} // end namespace llvm
 
-#endif
+#endif // LLVM_LIB_TARGET_HEXAGON_HEXAGONINSTRINFO_H

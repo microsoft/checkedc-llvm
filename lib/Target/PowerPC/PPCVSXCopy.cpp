@@ -101,11 +101,8 @@ protected:
           // This is a copy *to* a VSX register from a non-VSX register.
           Changed = true;
 
-          const TargetRegisterClass *SrcRC =
-            IsVRReg(SrcMO.getReg(), MRI) ? &PPC::VSHRCRegClass :
-                                           &PPC::VSLRCRegClass;
+          const TargetRegisterClass *SrcRC = &PPC::VSLRCRegClass;
           assert((IsF8Reg(SrcMO.getReg(), MRI) ||
-                  IsVRReg(SrcMO.getReg(), MRI) ||
                   IsVSSReg(SrcMO.getReg(), MRI) ||
                   IsVSFReg(SrcMO.getReg(), MRI)) &&
                  "Unknown source for a VSX copy");
@@ -115,9 +112,8 @@ protected:
                   TII->get(TargetOpcode::SUBREG_TO_REG), NewVReg)
               .addImm(1) // add 1, not 0, because there is no implicit clearing
                          // of the high bits.
-              .addOperand(SrcMO)
-              .addImm(IsVRReg(SrcMO.getReg(), MRI) ? PPC::sub_128
-                                                   : PPC::sub_64);
+              .add(SrcMO)
+              .addImm(PPC::sub_64);
 
           // The source of the original copy is now the new virtual register.
           SrcMO.setReg(NewVReg);
@@ -126,25 +122,21 @@ protected:
           // This is a copy *from* a VSX register to a non-VSX register.
           Changed = true;
 
-          const TargetRegisterClass *DstRC =
-            IsVRReg(DstMO.getReg(), MRI) ? &PPC::VSHRCRegClass :
-                                           &PPC::VSLRCRegClass;
+          const TargetRegisterClass *DstRC = &PPC::VSLRCRegClass;
           assert((IsF8Reg(DstMO.getReg(), MRI) ||
                   IsVSFReg(DstMO.getReg(), MRI) ||
-                  IsVSSReg(DstMO.getReg(), MRI) ||
-                  IsVRReg(DstMO.getReg(), MRI)) &&
+                  IsVSSReg(DstMO.getReg(), MRI)) &&
                  "Unknown destination for a VSX copy");
 
           // Copy the VSX value into a new VSX register of the correct subclass.
           unsigned NewVReg = MRI.createVirtualRegister(DstRC);
           BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(TargetOpcode::COPY),
                   NewVReg)
-              .addOperand(SrcMO);
+              .add(SrcMO);
 
           // Transform the original copy into a subregister extraction copy.
           SrcMO.setReg(NewVReg);
-          SrcMO.setSubReg(IsVRReg(DstMO.getReg(), MRI) ? PPC::sub_128 :
-                                                         PPC::sub_64);
+          SrcMO.setSubReg(PPC::sub_64);
         }
       }
 

@@ -5,21 +5,19 @@
 
 target datalayout = "e-p:64:64"
 
-; X64: @[[JT0:.*]] = private constant [1 x <{ i8, i32, i8, i8, i8 }>] [<{ i8, i32, i8, i8, i8 }> <{ i8 -23, i32 trunc (i64 sub (i64 sub (i64 ptrtoint (void ()* @[[FNAME:.*]] to i64), i64 ptrtoint ([1 x <{ i8, i32, i8, i8, i8 }>]* @[[JT0]] to i64)), i64 5) to i32), i8 -52, i8 -52, i8 -52 }>], section ".text"
-; X64: @[[JT1:.*]] = private constant [1 x <{ i8, i32, i8, i8, i8 }>] [<{ i8, i32, i8, i8, i8 }> <{ i8 -23, i32 trunc (i64 sub (i64 sub (i64 ptrtoint (void ()* @[[GNAME:.*]] to i64), i64 ptrtoint ([1 x <{ i8, i32, i8, i8, i8 }>]* @[[JT1]] to i64)), i64 5) to i32), i8 -52, i8 -52, i8 -52 }>], section ".text"
+; X64: @f = alias void (), void ()* @[[JT0:.*]]
+; X64: @g = alias void (), void ()* @[[JT1:.*]]
+
 ; WASM32: private constant [0 x i8] zeroinitializer
 @0 = private unnamed_addr constant [2 x void ()*] [void ()* @f, void ()* @g], align 16
 
-; X64: @f = alias void (), bitcast ([1 x <{ i8, i32, i8, i8, i8 }>]* @[[JT0]] to void ()*)
-; X64: @g = alias void (), bitcast ([1 x <{ i8, i32, i8, i8, i8 }>]* @[[JT1]] to void ()*)
-
-; X64: define private void @[[FNAME]]()
+; X64: define internal void @f.cfi()
 ; WASM32: define void @f() !type !{{[0-9]+}} !wasm.index ![[I0:[0-9]+]]
 define void @f() !type !0 {
   ret void
 }
 
-; X64: define private void @[[GNAME]]()
+; X64: define internal void @g.cfi()
 ; WASM32: define void @g() !type !{{[0-9]+}} !wasm.index ![[I1:[0-9]+]]
 define void @g() !type !1 {
   ret void
@@ -31,15 +29,21 @@ define void @g() !type !1 {
 declare i1 @llvm.type.test(i8* %ptr, metadata %bitset) nounwind readnone
 
 define i1 @foo(i8* %p) {
-  ; X64: icmp eq i64 {{.*}}, ptrtoint ([1 x <{ i8, i32, i8, i8, i8 }>]* @[[JT0]] to i64)
-  ; WASM32: icmp eq i64 {{.*}}, 1
+  ; X64: icmp eq i64 {{.*}}, ptrtoint (void ()* @[[JT0]] to i64)
+  ; WASM32: icmp eq i64 {{.*}}, ptrtoint (i8* getelementptr (i8, i8* null, i64 1) to i64)
   %x = call i1 @llvm.type.test(i8* %p, metadata !"typeid1")
-  ; X64: icmp eq i64 {{.*}}, ptrtoint ([1 x <{ i8, i32, i8, i8, i8 }>]* @[[JT1]] to i64)
-  ; WASM32: icmp eq i64 {{.*}}, 2
+  ; X64: icmp eq i64 {{.*}}, ptrtoint (void ()* @[[JT1]] to i64)
+  ; WASM32: icmp eq i64 {{.*}}, mul (i64 ptrtoint (i8* getelementptr (i8, i8* null, i32 1) to i64), i64 2)
   %y = call i1 @llvm.type.test(i8* %p, metadata !"typeid2")
   %z = add i1 %x, %y
   ret i1 %z
 }
+
+; X64: define private void @[[JT0]]() #{{.*}} section ".text.cfi" align 8 {
+; X64:   call void asm sideeffect "jmp ${0:c}@plt\0Aint3\0Aint3\0Aint3\0A", "s"(void ()* @f.cfi)
+
+; X64: define private void @[[JT1]]() #{{.*}} section ".text.cfi" align 8 {
+; X64:   call void asm sideeffect "jmp ${0:c}@plt\0Aint3\0Aint3\0Aint3\0A", "s"(void ()* @g.cfi)
 
 ; WASM32: ![[I0]] = !{i64 1}
 ; WASM32: ![[I1]] = !{i64 2}

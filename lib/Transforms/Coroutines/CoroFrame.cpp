@@ -27,6 +27,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/circular_raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/Local.h"
 
 using namespace llvm;
 
@@ -65,9 +66,9 @@ public:
 // passes through a suspend point.
 //
 // For every basic block 'i' it maintains a BlockData that consists of:
-//   Consumes:  a bit vector which contains a set of indicies of blocks that can
+//   Consumes:  a bit vector which contains a set of indices of blocks that can
 //              reach block 'i'
-//   Kills: a bit vector which contains a set of indicies of blocks that can
+//   Kills: a bit vector which contains a set of indices of blocks that can
 //          reach block 'i', but one of the path will cross a suspend point
 //   Suspend: a boolean indicating whether block 'i' contains a suspend point.
 //   End: a boolean indicating whether block 'i' contains a coro.end intrinsic.
@@ -132,6 +133,7 @@ struct SuspendCrossingInfo {
 };
 } // end anonymous namespace
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
 LLVM_DUMP_METHOD void SuspendCrossingInfo::dump(StringRef Label,
                                                 BitVector const &BV) const {
   dbgs() << Label << ":";
@@ -150,6 +152,7 @@ LLVM_DUMP_METHOD void SuspendCrossingInfo::dump() const {
   }
   dbgs() << "\n";
 }
+#endif
 
 SuspendCrossingInfo::SuspendCrossingInfo(Function &F, coro::Shape &Shape)
     : Mapping(F) {
@@ -170,19 +173,22 @@ SuspendCrossingInfo::SuspendCrossingInfo(Function &F, coro::Shape &Shape)
   for (auto *CE : Shape.CoroEnds)
     getBlockData(CE->getParent()).End = true;
 
-  // Mark all suspend blocks and indicate that kill everything they consume.
-  // Note, that crossing coro.save is used to indicate suspend, as any code
+  // Mark all suspend blocks and indicate that they kill everything they
+  // consume. Note, that crossing coro.save also requires a spill, as any code
   // between coro.save and coro.suspend may resume the coroutine and all of the
   // state needs to be saved by that time.
-  for (CoroSuspendInst *CSI : Shape.CoroSuspends) {
-    CoroSaveInst *const CoroSave = CSI->getCoroSave();
-    BasicBlock *const CoroSaveBB = CoroSave->getParent();
-    auto &B = getBlockData(CoroSaveBB);
+  auto markSuspendBlock = [&](IntrinsicInst* BarrierInst) {
+    BasicBlock *SuspendBlock = BarrierInst->getParent();
+    auto &B = getBlockData(SuspendBlock);
     B.Suspend = true;
     B.Kills |= B.Consumes;
+  };
+  for (CoroSuspendInst *CSI : Shape.CoroSuspends) {
+    markSuspendBlock(CSI);
+    markSuspendBlock(CSI->getCoroSave());
   }
 
-  // Iterate propagating consumes and kills until they stop changing
+  // Iterate propagating consumes and kills until they stop changing.
   int Iteration = 0;
   (void)Iteration;
 
@@ -416,15 +422,31 @@ static Instruction *insertSpills(SpillInfo &Spills, coro::Shape &Shape) {
           report_fatal_error("Coroutines cannot handle non static allocas yet");
       } else {
         // Otherwise, create a store instruction storing the value into the
-        // coroutine frame. For, argument, we will place the store instruction
-        // right after the coroutine frame pointer instruction, i.e. bitcase of
-        // coro.begin from i8* to %f.frame*. For all other values, the spill is
-        // placed immediately after the definition.
-        Builder.SetInsertPoint(
-            isa<Argument>(CurrentValue)
-                ? FramePtr->getNextNode()
-                : dyn_cast<Instruction>(E.def())->getNextNode());
+        // coroutine frame.
 
+        Instruction *InsertPt = nullptr;
+        if (isa<Argument>(CurrentValue)) {
+          // For arguments, we will place the store instruction right after
+          // the coroutine frame pointer instruction, i.e. bitcast of
+          // coro.begin from i8* to %f.frame*.
+          InsertPt = FramePtr->getNextNode();
+        } else if (auto *II = dyn_cast<InvokeInst>(CurrentValue)) {
+          // If we are spilling the result of the invoke instruction, split the
+          // normal edge and insert the spill in the new block.
+          auto NewBB = SplitEdge(II->getParent(), II->getNormalDest());
+          InsertPt = NewBB->getTerminator();
+        } else if (dyn_cast<PHINode>(CurrentValue)) {
+          // Skip the PHINodes and EH pads instructions.
+          InsertPt =
+              &*cast<Instruction>(E.def())->getParent()->getFirstInsertionPt();
+        } else {
+          // For all other values, the spill is placed immediately after
+          // the definition.
+          assert(!isa<TerminatorInst>(E.def()) && "unexpected terminator");
+          InsertPt = cast<Instruction>(E.def())->getNextNode();
+        }
+
+        Builder.SetInsertPoint(InsertPt);
         auto *G = Builder.CreateConstInBoundsGEP2_32(
             FrameTy, FramePtr, 0, Index,
             CurrentValue->getName() + Twine(".spill.addr"));
@@ -480,7 +502,7 @@ static void rewritePHIs(BasicBlock &BB) {
   // loop:
   //    %n.val = phi i32[%n, %entry], [%inc, %loop]
   //
-  // It will create:
+  // It will create:  
   //
   // loop.from.entry:
   //    %n.loop.pre = phi i32 [%n, %entry]
@@ -530,6 +552,13 @@ static void rewritePHIs(Function &F) {
 static bool materializable(Instruction &V) {
   return isa<CastInst>(&V) || isa<GetElementPtrInst>(&V) ||
          isa<BinaryOperator>(&V) || isa<CmpInst>(&V) || isa<SelectInst>(&V);
+}
+
+// Check for structural coroutine intrinsics that should not be spilled into
+// the coroutine frame.
+static bool isCoroutineStructureIntrinsic(Instruction &I) {
+  return isa<CoroIdInst>(&I) || isa<CoroBeginInst>(&I) ||
+         isa<CoroSaveInst>(&I) || isa<CoroSuspendInst>(&I);
 }
 
 // For every use of the value that is across suspend point, recreate that value
@@ -637,15 +666,22 @@ static void splitAround(Instruction *I, const Twine &Name) {
 }
 
 void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
+  // Lower coro.dbg.declare to coro.dbg.value, since we are going to rewrite
+  // access to local variables.
+  LowerDbgDeclare(F);
+
   Shape.PromiseAlloca = Shape.CoroBegin->getId()->getPromise();
   if (Shape.PromiseAlloca) {
     Shape.CoroBegin->getId()->clearPromise();
   }
 
-  // Make sure that all coro.saves and the fallthrough coro.end are in their
-  // own block to simplify the logic of building up SuspendCrossing data.
-  for (CoroSuspendInst *CSI : Shape.CoroSuspends)
+  // Make sure that all coro.save, coro.suspend and the fallthrough coro.end
+  // intrinsics are in their own blocks to simplify the logic of building up
+  // SuspendCrossing data.
+  for (CoroSuspendInst *CSI : Shape.CoroSuspends) {
     splitAround(CSI->getCoroSave(), "CoroSave");
+    splitAround(CSI, "CoroSuspend");
+  }
 
   // Put fallthrough CoroEnd into its own block. Note: Shape::buildFrom places
   // the fallthrough coro.end as the first element of CoroEnds array.
@@ -669,30 +705,20 @@ void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
           Spills.emplace_back(&I, U);
 
   // Rewrite materializable instructions to be materialized at the use point.
-  std::sort(Spills.begin(), Spills.end());
   DEBUG(dump("Materializations", Spills));
   rewriteMaterializableInstructions(Builder, Spills);
 
   // Collect the spills for arguments and other not-materializable values.
   Spills.clear();
-  for (Argument &A : F.getArgumentList())
+  for (Argument &A : F.args())
     for (User *U : A.users())
       if (Checker.isDefinitionAcrossSuspend(A, U))
         Spills.emplace_back(&A, U);
 
   for (Instruction &I : instructions(F)) {
-    // token returned by CoroSave is an artifact of how we build save/suspend
-    // pairs and should not be part of the Coroutine Frame
-    if (isa<CoroSaveInst>(&I))
-      continue;
-    // CoroBeginInst returns a handle to a coroutine which is passed as a sole
-    // parameter to .resume and .cleanup parts and should not go into coroutine
-    // frame.
-    if (isa<CoroBeginInst>(&I))
-      continue;
-    // A token returned CoroIdInst is used to tie together structural intrinsics
-    // in a coroutine. It should not be saved to the coroutine frame.
-    if (isa<CoroIdInst>(&I))
+    // Values returned from coroutine structure intrinsics should not be part
+    // of the Coroutine Frame.
+    if (isCoroutineStructureIntrinsic(I))
       continue;
     // The Coroutine Promise always included into coroutine frame, no need to
     // check for suspend crossing.
@@ -710,7 +736,6 @@ void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
         Spills.emplace_back(&I, U);
       }
   }
-  std::sort(Spills.begin(), Spills.end());
   DEBUG(dump("Spills", Spills));
   moveSpillUsesAfterCoroBegin(F, Spills, Shape.CoroBegin);
   Shape.FrameTy = buildFrameType(F, Shape, Spills);

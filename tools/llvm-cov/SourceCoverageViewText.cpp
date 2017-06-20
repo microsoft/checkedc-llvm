@@ -29,7 +29,7 @@ void CoveragePrinterText::closeViewFile(OwnedStream OS) {
 }
 
 Error CoveragePrinterText::createIndexFile(
-    ArrayRef<StringRef> SourceFiles,
+    ArrayRef<std::string> SourceFiles,
     const coverage::CoverageMapping &Coverage) {
   auto OSOrErr = createOutputStream("index", "txt", /*InToplevel=*/true);
   if (Error E = OSOrErr.takeError())
@@ -38,7 +38,10 @@ Error CoveragePrinterText::createIndexFile(
   raw_ostream &OSRef = *OS.get();
 
   CoverageReport Report(Opts, Coverage);
-  Report.renderFileReports(OSRef);
+  Report.renderFileReports(OSRef, SourceFiles);
+
+  Opts.colored_ostream(OSRef, raw_ostream::CYAN) << "\n"
+                                                 << Opts.getLLVMVersionString();
 
   return Error::success();
 }
@@ -66,10 +69,9 @@ void SourceCoverageViewText::renderViewHeader(raw_ostream &) {}
 
 void SourceCoverageViewText::renderViewFooter(raw_ostream &) {}
 
-void SourceCoverageViewText::renderSourceName(raw_ostream &OS, bool WholeFile,
-                                              unsigned FirstUncoveredLineNo) {
-  std::string ViewInfo = WholeFile ? getVerboseSourceName() : getSourceName();
-  getOptions().colored_ostream(OS, raw_ostream::CYAN) << ViewInfo << ":\n";
+void SourceCoverageViewText::renderSourceName(raw_ostream &OS, bool WholeFile) {
+  getOptions().colored_ostream(OS, raw_ostream::CYAN) << getSourceName()
+                                                      << ":\n";
 }
 
 void SourceCoverageViewText::renderLinePrefix(raw_ostream &OS,
@@ -213,20 +215,25 @@ void SourceCoverageViewText::renderInstantiationView(raw_ostream &OS,
                                                      unsigned ViewDepth) {
   renderLinePrefix(OS, ViewDepth);
   OS << ' ';
-  ISV.View->print(OS, /*WholeFile=*/false, /*ShowSourceName=*/true, ViewDepth);
+  if (!ISV.View)
+    getOptions().colored_ostream(OS, raw_ostream::RED)
+        << "Unexecuted instantiation: " << ISV.FunctionName << "\n";
+  else
+    ISV.View->print(OS, /*WholeFile=*/false, /*ShowSourceName=*/true,
+                    ViewDepth);
 }
 
-void SourceCoverageViewText::renderCellInTitle(raw_ostream &OS,
-                                               StringRef CellText) {
+void SourceCoverageViewText::renderTitle(raw_ostream &OS, StringRef Title) {
   if (getOptions().hasProjectTitle())
     getOptions().colored_ostream(OS, raw_ostream::CYAN)
         << getOptions().ProjectTitle << "\n";
 
-  getOptions().colored_ostream(OS, raw_ostream::CYAN) << CellText << "\n";
+  getOptions().colored_ostream(OS, raw_ostream::CYAN) << Title << "\n";
 
   if (getOptions().hasCreatedTime())
     getOptions().colored_ostream(OS, raw_ostream::CYAN)
         << getOptions().CreatedTimeStr << "\n";
 }
 
-void SourceCoverageViewText::renderTableHeader(raw_ostream &, unsigned) {}
+void SourceCoverageViewText::renderTableHeader(raw_ostream &, unsigned,
+                                               unsigned) {}

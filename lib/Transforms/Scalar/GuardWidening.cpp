@@ -46,10 +46,12 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/KnownBits.h"
 #include "llvm/Transforms/Scalar.h"
 
 using namespace llvm;
@@ -536,9 +538,9 @@ bool GuardWideningImpl::parseRangeChecks(
     } else if (match(Check.getBase(),
                      m_Or(m_Value(OpLHS), m_ConstantInt(OpRHS)))) {
       unsigned BitWidth = OpLHS->getType()->getScalarSizeInBits();
-      APInt KnownZero(BitWidth, 0), KnownOne(BitWidth, 0);
-      computeKnownBits(OpLHS, KnownZero, KnownOne, DL);
-      if ((OpRHS->getValue() & KnownZero) == OpRHS->getValue()) {
+      KnownBits Known(BitWidth);
+      computeKnownBits(OpLHS, Known, DL);
+      if ((OpRHS->getValue() & Known.Zero) == OpRHS->getValue()) {
         Check.setBase(OpLHS);
         APInt NewOffset = Check.getOffsetValue() + OpRHS->getValue();
         Check.setOffset(ConstantInt::get(Ctx, NewOffset));
@@ -567,8 +569,7 @@ bool GuardWideningImpl::combineRangeChecks(
       return RC.getBase() == CurrentBase && RC.getLength() == CurrentLength;
     };
 
-    std::copy_if(Checks.begin(), Checks.end(),
-                 std::back_inserter(CurrentChecks), IsCurrentCheck);
+    copy_if(Checks, std::back_inserter(CurrentChecks), IsCurrentCheck);
     Checks.erase(remove_if(Checks, IsCurrentCheck), Checks.end());
 
     assert(CurrentChecks.size() != 0 && "We know we have at least one!");
@@ -657,8 +658,12 @@ PreservedAnalyses GuardWideningPass::run(Function &F,
   auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
   auto &LI = AM.getResult<LoopAnalysis>(F);
   auto &PDT = AM.getResult<PostDominatorTreeAnalysis>(F);
-  bool Changed = GuardWideningImpl(DT, PDT, LI).run();
-  return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  if (!GuardWideningImpl(DT, PDT, LI).run())
+    return PreservedAnalyses::all();
+
+  PreservedAnalyses PA;
+  PA.preserveSet<CFGAnalyses>();
+  return PA;
 }
 
 StringRef GuardWideningImpl::scoreTypeToString(WideningScore WS) {

@@ -12,29 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 //----------------------------------------------------------------------------//
-//                         Hexagon Intruction Flags +
-//
-//                        *** Must match BaseInfo.h ***
-//----------------------------------------------------------------------------//
-
-def TypeCVI_VA         : IType<13>;
-def TypeCVI_VA_DV      : IType<14>;
-def TypeCVI_VX         : IType<15>;
-def TypeCVI_VX_DV      : IType<16>;
-def TypeCVI_VP         : IType<17>;
-def TypeCVI_VP_VS      : IType<18>;
-def TypeCVI_VS         : IType<19>;
-def TypeCVI_VINLANESAT : IType<20>;
-def TypeCVI_VM_LD      : IType<21>;
-def TypeCVI_VM_TMP_LD  : IType<22>;
-def TypeCVI_VM_CUR_LD  : IType<23>;
-def TypeCVI_VM_VP_LDU  : IType<24>;
-def TypeCVI_VM_ST      : IType<25>;
-def TypeCVI_VM_NEW_ST  : IType<26>;
-def TypeCVI_VM_STU     : IType<27>;
-def TypeCVI_HIST       : IType<28>;
-//----------------------------------------------------------------------------//
-//                         Intruction Classes Definitions +
+//                         Instruction Classes Definitions +
 //----------------------------------------------------------------------------//
 
 let validSubTargets = HasV60SubT in
@@ -151,12 +129,6 @@ class CVI_VM_TMP_LD_Resource_long<dag outs, dag ins, string asmstr,
                                   list<dag> pattern = [], string cstr = "",
                                   InstrItinClass itin = CVI_VM_TMP_LD>
    : InstHexagon<outs, ins, asmstr, pattern, cstr, itin, TypeCVI_VM_TMP_LD>,
-     OpcodeHexagon, Requires<[HasV60T, UseHVX]>;
-
-class CVI_VM_CUR_LD_Resource<dag outs, dag ins, string asmstr,
-                             list<dag> pattern = [], string cstr = "",
-                             InstrItinClass itin = CVI_VM_CUR_LD>
-   : InstHexagon<outs, ins, asmstr, pattern, cstr, itin, TypeCVI_VM_CUR_LD>,
      OpcodeHexagon, Requires<[HasV60T, UseHVX]>;
 
 class CVI_VM_VP_LDU_Resource<dag outs, dag ins, string asmstr,

@@ -94,8 +94,10 @@ public:
 
 private:
   PassManagerBase *PM;
-  AnalysisID StartBefore, StartAfter;
-  AnalysisID StopAfter;
+  AnalysisID StartBefore = nullptr;
+  AnalysisID StartAfter = nullptr;
+  AnalysisID StopBefore = nullptr;
+  AnalysisID StopAfter = nullptr;
   bool Started;
   bool Stopped;
   bool AddingMachinePasses;
@@ -112,6 +114,10 @@ protected:
 
   /// Default setting for -enable-tail-merge on this target.
   bool EnableTailMerge;
+
+  /// Require processing of functions such that callees are generated before
+  /// callers.
+  bool RequireCodeGenSCCOrder;
 
 public:
   TargetPassConfig(TargetMachine *tm, PassManagerBase &pm);
@@ -143,11 +149,14 @@ public:
   /// This function expects that at least one of the StartAfter or the
   /// StartBefore pass IDs is null.
   void setStartStopPasses(AnalysisID StartBefore, AnalysisID StartAfter,
-                          AnalysisID StopAfter) {
-    if (StartAfter)
-      assert(!StartBefore && "Start after and start before passes are given");
+                          AnalysisID StopBefore, AnalysisID StopAfter) {
+    assert(!(StartBefore && StartAfter) &&
+           "Start after and start before passes are given");
+    assert(!(StopBefore && StopAfter) &&
+           "Stop after and stop before passed are given");
     this->StartBefore = StartBefore;
     this->StartAfter = StartAfter;
+    this->StopBefore = StopBefore;
     this->StopAfter = StopAfter;
     Started = (StartAfter == nullptr) && (StartBefore == nullptr);
   }
@@ -156,6 +165,11 @@ public:
 
   bool getEnableTailMerge() const { return EnableTailMerge; }
   void setEnableTailMerge(bool Enable) { setOpt(EnableTailMerge, Enable); }
+
+  bool requiresCodeGenSCCOrder() const { return RequireCodeGenSCCOrder; }
+  void setRequiresCodeGenSCCOrder(bool Enable = true) {
+    setOpt(RequireCodeGenSCCOrder, Enable);
+  }
 
   /// Allow the target to override a specific pass without overriding the pass
   /// pipeline. When passes are added to the standard pipeline at the
@@ -280,6 +294,10 @@ public:
   /// Add a pass to perform basic verification of the machine function if
   /// verification is enabled.
   void addVerifyPass(const std::string &Banner);
+
+  /// Check whether or not GlobalISel should be enabled by default.
+  /// Fallback/abort behavior is controlled via other methods.
+  virtual bool isGlobalISelEnabled() const;
 
   /// Check whether or not GlobalISel should abort on error.
   /// When this is disable, GlobalISel will fall back on SDISel instead of

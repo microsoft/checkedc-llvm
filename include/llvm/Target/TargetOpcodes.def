@@ -107,6 +107,9 @@ HANDLE_TARGET_OPCODE(LIFETIME_END)
 /// that must lie within the function and not contain another stackmap.
 HANDLE_TARGET_OPCODE(STACKMAP)
 
+/// FEntry all - This is a marker instruction which gets translated into a raw fentry call.
+HANDLE_TARGET_OPCODE(FENTRY_CALL)
+
 /// Patchable call instruction - this instruction represents a call to a
 /// constant address, followed by a series of NOPs. It is intended to
 /// support optimizations for dynamic languages (such as javascript) that
@@ -131,11 +134,13 @@ HANDLE_TARGET_OPCODE(STATEPOINT)
 /// frame index of the local stack allocation.
 HANDLE_TARGET_OPCODE(LOCAL_ESCAPE)
 
-/// Loading instruction that may page fault, bundled with associated
+/// Wraps a machine instruction which can fault, bundled with associated
+/// information on how to handle such a fault.
+/// For example loading instruction that may page fault, bundled with associated
 /// information on how to handle such a page fault.  It is intended to support
 /// "zero cost" null checks in managed languages by allowing LLVM to fold
 /// comparisons into existing memory operations.
-HANDLE_TARGET_OPCODE(FAULTING_LOAD_OP)
+HANDLE_TARGET_OPCODE(FAULTING_OP)
 
 /// Wraps a machine instruction to add patchability constraints.  An
 /// instruction wrapped in PATCHABLE_OP has to either have a minimum
@@ -153,7 +158,24 @@ HANDLE_TARGET_OPCODE(PATCHABLE_FUNCTION_ENTER)
 /// Wraps a return instruction and its operands to enable adding nop sleds
 /// either before or after the return. The nop sleds are useful for inserting
 /// instrumentation instructions at runtime.
+/// The patch here replaces the return instruction.
 HANDLE_TARGET_OPCODE(PATCHABLE_RET)
+
+/// This is a marker instruction which gets translated into a nop sled, useful
+/// for inserting instrumentation instructions at runtime.
+/// The patch here prepends the return instruction.
+/// The same thing as in x86_64 is not possible for ARM because it has multiple
+/// return instructions. Furthermore, CPU allows parametrized and even
+/// conditional return instructions. In the current ARM implementation we are
+/// making use of the fact that currently LLVM doesn't seem to generate
+/// conditional return instructions.
+/// On ARM, the same instruction can be used for popping multiple registers
+/// from the stack and returning (it just pops pc register too), and LLVM
+/// generates it sometimes. So we can't insert the sled between this stack
+/// adjustment and the return without splitting the original instruction into 2
+/// instructions. So on ARM, rather than jumping into the exit trampoline, we
+/// call it, it does the tracing, preserves the stack and returns.
+HANDLE_TARGET_OPCODE(PATCHABLE_FUNCTION_EXIT)
 
 /// Wraps a tail call instruction and its operands to enable adding nop sleds
 /// either before or after the tail exit. We use this as a disambiguation from
@@ -200,9 +222,14 @@ HANDLE_TARGET_OPCODE(G_XOR)
 /// stack-based object.
 HANDLE_TARGET_OPCODE(G_FRAME_INDEX)
 
+/// Generic reference to global value.
+HANDLE_TARGET_OPCODE(G_GLOBAL_VALUE)
+
 /// Generic instruction to extract blocks of bits from the register given
 /// (typically a sub-register COPY after instruction selection).
 HANDLE_TARGET_OPCODE(G_EXTRACT)
+
+HANDLE_TARGET_OPCODE(G_UNMERGE_VALUES)
 
 /// Generic instruction to insert blocks of bits from the registers given into
 /// the source.
@@ -211,6 +238,8 @@ HANDLE_TARGET_OPCODE(G_INSERT)
 /// Generic instruction to paste a variable number of components together into a
 /// larger register.
 HANDLE_TARGET_OPCODE(G_SEQUENCE)
+
+HANDLE_TARGET_OPCODE(G_MERGE_VALUES)
 
 /// Generic pointer to int conversion.
 HANDLE_TARGET_OPCODE(G_PTRTOINT)
@@ -230,6 +259,9 @@ HANDLE_TARGET_OPCODE(G_STORE)
 
 /// Generic conditional branch instruction.
 HANDLE_TARGET_OPCODE(G_BRCOND)
+
+/// Generic indirect branch instruction.
+HANDLE_TARGET_OPCODE(G_BRINDIRECT)
 
 /// Generic intrinsic use (without side effects).
 HANDLE_TARGET_OPCODE(G_INTRINSIC)
@@ -251,6 +283,12 @@ HANDLE_TARGET_OPCODE(G_CONSTANT)
 
 /// Generic floating constant.
 HANDLE_TARGET_OPCODE(G_FCONSTANT)
+
+/// Generic va_start instruction. Stores to its one pointer operand.
+HANDLE_TARGET_OPCODE(G_VASTART)
+
+/// Generic va_start instruction. Stores to its one pointer operand.
+HANDLE_TARGET_OPCODE(G_VAARG)
 
 // Generic sign extend
 HANDLE_TARGET_OPCODE(G_SEXT)
@@ -300,6 +338,14 @@ HANDLE_TARGET_OPCODE(G_UMULO)
 /// overflow flag.
 HANDLE_TARGET_OPCODE(G_SMULO)
 
+// Multiply two numbers at twice the incoming bit width (unsigned) and return
+// the high half of the result.
+HANDLE_TARGET_OPCODE(G_UMULH)
+
+// Multiply two numbers at twice the incoming bit width (signed) and return
+// the high half of the result.
+HANDLE_TARGET_OPCODE(G_SMULH)
+
 /// Generic FP addition.
 HANDLE_TARGET_OPCODE(G_FADD)
 
@@ -315,7 +361,13 @@ HANDLE_TARGET_OPCODE(G_FDIV)
 /// Generic FP remainder.
 HANDLE_TARGET_OPCODE(G_FREM)
 
-/// Generic float to signed-int conversion
+/// Generic FP exponentiation.
+HANDLE_TARGET_OPCODE(G_FPOW)
+
+/// Generic FP negation.
+HANDLE_TARGET_OPCODE(G_FNEG)
+
+/// Generic FP extension.
 HANDLE_TARGET_OPCODE(G_FPEXT)
 
 /// Generic float to signed-int conversion
@@ -333,15 +385,31 @@ HANDLE_TARGET_OPCODE(G_SITOFP)
 /// Generic unsigned-int to float conversion
 HANDLE_TARGET_OPCODE(G_UITOFP)
 
+/// Generic pointer offset
+HANDLE_TARGET_OPCODE(G_GEP)
+
+/// Clear the specified number of low bits in a pointer. This rounds the value
+/// *down* to the given alignment.
+HANDLE_TARGET_OPCODE(G_PTR_MASK)
+
 /// Generic BRANCH instruction. This is an unconditional branch.
 HANDLE_TARGET_OPCODE(G_BR)
+
+/// Generic insertelement.
+HANDLE_TARGET_OPCODE(G_INSERT_VECTOR_ELT)
+
+/// Generic extractelement.
+HANDLE_TARGET_OPCODE(G_EXTRACT_VECTOR_ELT)
+
+/// Generic shufflevector.
+HANDLE_TARGET_OPCODE(G_SHUFFLE_VECTOR)
 
 // TODO: Add more generic opcodes as we move along.
 
 /// Marker for the end of the generic opcode.
 /// This is used to check if an opcode is in the range of the
 /// generic opcodes.
-HANDLE_TARGET_OPCODE_MARKER(PRE_ISEL_GENERIC_OPCODE_END, G_BR)
+HANDLE_TARGET_OPCODE_MARKER(PRE_ISEL_GENERIC_OPCODE_END, G_SHUFFLE_VECTOR)
 
 /// BUILTIN_OP_END - This must be the last enum value in this list.
 /// The target-specific post-isel opcode values start here.

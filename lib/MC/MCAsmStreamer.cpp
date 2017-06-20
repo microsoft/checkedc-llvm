@@ -100,10 +100,13 @@ public:
   /// file if applicable as a QoI issue to make the output of the compiler
   /// more readable.  This only affects the MCAsmStreamer, and only when
   /// verbose assembly output is enabled.
-  void AddComment(const Twine &T) override;
+  void AddComment(const Twine &T, bool EOL = true) override;
 
   /// AddEncodingComment - Add a comment showing the encoding of an instruction.
-  void AddEncodingComment(const MCInst &Inst, const MCSubtargetInfo &);
+  /// If PrintSchedInfo - is true then the comment sched:[x:y] should
+  //    be added to output if it's being supported by target
+  void AddEncodingComment(const MCInst &Inst, const MCSubtargetInfo &,
+                          bool PrintSchedInfo);
 
   /// GetCommentOS - Return a raw_ostream that comments can be written to.
   /// Unlike AddComment, you are required to terminate comments with \n if you
@@ -130,7 +133,7 @@ public:
   void ChangeSection(MCSection *Section, const MCExpr *Subsection) override;
 
   void EmitLOHDirective(MCLOHType Kind, const MCLOHArgs &Args) override;
-  void EmitLabel(MCSymbol *Symbol) override;
+  void EmitLabel(MCSymbol *Symbol, SMLoc Loc = SMLoc()) override;
 
   void EmitAssemblerFlag(MCAssemblerFlag Flag) override;
   void EmitLinkerOptions(ArrayRef<std::string> Options) override;
@@ -150,8 +153,8 @@ public:
   void EndCOFFSymbolDef() override;
   void EmitCOFFSafeSEH(MCSymbol const *Symbol) override;
   void EmitCOFFSectionIndex(MCSymbol const *Symbol) override;
-  void EmitCOFFSecRel32(MCSymbol const *Symbol) override;
-  void emitELFSize(MCSymbolELF *Symbol, const MCExpr *Value) override;
+  void EmitCOFFSecRel32(MCSymbol const *Symbol, uint64_t Offset) override;
+  void emitELFSize(MCSymbol *Symbol, const MCExpr *Value) override;
   void EmitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                         unsigned ByteAlignment) override;
 
@@ -209,7 +212,8 @@ public:
                          unsigned MaxBytesToEmit = 0) override;
 
   void emitValueToOffset(const MCExpr *Offset,
-                         unsigned char Value = 0) override;
+                         unsigned char Value,
+                         SMLoc Loc) override;
 
   void EmitFileDirective(StringRef Filename) override;
   unsigned EmitDwarfFileDirective(unsigned FileNo, StringRef Directory,
@@ -277,7 +281,8 @@ public:
   void EmitWinEHHandler(const MCSymbol *Sym, bool Unwind, bool Except) override;
   void EmitWinEHHandlerData() override;
 
-  void EmitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI) override;
+  void EmitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI,
+                       bool PrintSchedInfo) override;
 
   void EmitBundleAlignMode(unsigned AlignPow2) override;
   void EmitBundleLock(bool AlignToEnd) override;
@@ -300,12 +305,14 @@ public:
 /// file if applicable as a QoI issue to make the output of the compiler
 /// more readable.  This only affects the MCAsmStreamer, and only when
 /// verbose assembly output is enabled.
-void MCAsmStreamer::AddComment(const Twine &T) {
+/// By deafult EOL is set to true so that each comment goes on its own line.
+void MCAsmStreamer::AddComment(const Twine &T, bool EOL) {
   if (!IsVerboseAsm) return;
 
   T.toVector(CommentToEmit);
-  // Each comment goes on its own line.
-  CommentToEmit.push_back('\n');
+ 
+  if (EOL)
+    CommentToEmit.push_back('\n'); // Place comment in a new line.
 }
 
 void MCAsmStreamer::EmitCommentsAndEOL() {
@@ -389,12 +396,13 @@ void MCAsmStreamer::emitExplicitComments() {
 void MCAsmStreamer::ChangeSection(MCSection *Section,
                                   const MCExpr *Subsection) {
   assert(Section && "Cannot switch to a null section!");
-  Section->PrintSwitchToSection(*MAI, OS, Subsection);
+  Section->PrintSwitchToSection(
+      *MAI, getContext().getObjectFileInfo()->getTargetTriple(), OS,
+      Subsection);
 }
 
-void MCAsmStreamer::EmitLabel(MCSymbol *Symbol) {
-  assert(Symbol->isUndefined() && "Cannot define a symbol twice!");
-  MCStreamer::EmitLabel(Symbol);
+void MCAsmStreamer::EmitLabel(MCSymbol *Symbol, SMLoc Loc) {
+  MCStreamer::EmitLabel(Symbol, Loc);
 
   Symbol->print(OS, MAI);
   OS << MAI->getLabelSuffix();
@@ -614,13 +622,15 @@ void MCAsmStreamer::EmitCOFFSectionIndex(MCSymbol const *Symbol) {
   EmitEOL();
 }
 
-void MCAsmStreamer::EmitCOFFSecRel32(MCSymbol const *Symbol) {
+void MCAsmStreamer::EmitCOFFSecRel32(MCSymbol const *Symbol, uint64_t Offset) {
   OS << "\t.secrel32\t";
   Symbol->print(OS, MAI);
+  if (Offset != 0)
+    OS << '+' << Offset;
   EmitEOL();
 }
 
-void MCAsmStreamer::emitELFSize(MCSymbolELF *Symbol, const MCExpr *Value) {
+void MCAsmStreamer::emitELFSize(MCSymbol *Symbol, const MCExpr *Value) {
   assert(MAI->hasDotTypeDotSizeDirective());
   OS << "\t.size\t";
   Symbol->print(OS, MAI);
@@ -749,7 +759,7 @@ static void PrintQuotedString(StringRef Data, raw_ostream &OS) {
 }
 
 void MCAsmStreamer::EmitBytes(StringRef Data) {
-  assert(getCurrentSection().first &&
+  assert(getCurrentSectionOnly() &&
          "Cannot emit contents before setting section!");
   if (Data.empty()) return;
 
@@ -794,7 +804,7 @@ void MCAsmStreamer::EmitIntValue(uint64_t Value, unsigned Size) {
 void MCAsmStreamer::EmitValueImpl(const MCExpr *Value, unsigned Size,
                                   SMLoc Loc) {
   assert(Size <= 8 && "Invalid size");
-  assert(getCurrentSection().first &&
+  assert(getCurrentSectionOnly() &&
          "Cannot emit contents before setting section!");
   const char *Directive = nullptr;
   switch (Size) {
@@ -1011,7 +1021,8 @@ void MCAsmStreamer::EmitCodeAlignment(unsigned ByteAlignment,
 }
 
 void MCAsmStreamer::emitValueToOffset(const MCExpr *Offset,
-                                      unsigned char Value) {
+                                      unsigned char Value,
+                                      SMLoc Loc) {
   // FIXME: Verify that Offset is associated with the current section.
   OS << ".org ";
   Offset->print(OS, MAI);
@@ -1497,7 +1508,8 @@ void MCAsmStreamer::EmitWinCFIEndProlog() {
 }
 
 void MCAsmStreamer::AddEncodingComment(const MCInst &Inst,
-                                       const MCSubtargetInfo &STI) {
+                                       const MCSubtargetInfo &STI,
+                                       bool PrintSchedInfo) {
   raw_ostream &OS = GetCommentOS();
   SmallString<256> Code;
   SmallVector<MCFixup, 4> Fixups;
@@ -1570,7 +1582,11 @@ void MCAsmStreamer::AddEncodingComment(const MCInst &Inst,
       }
     }
   }
-  OS << "]\n";
+  OS << "]";
+  // If we are not going to add fixup or schedul comments after this point then
+  // we have to end the current comment line with "\n".
+  if (Fixups.size() || !PrintSchedInfo)
+    OS << "\n";
 
   for (unsigned i = 0, e = Fixups.size(); i != e; ++i) {
     MCFixup &F = Fixups[i];
@@ -1580,16 +1596,20 @@ void MCAsmStreamer::AddEncodingComment(const MCInst &Inst,
   }
 }
 
-void MCAsmStreamer::EmitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI) {
-  assert(getCurrentSection().first &&
+void MCAsmStreamer::EmitInstruction(const MCInst &Inst,
+                                    const MCSubtargetInfo &STI,
+                                    bool PrintSchedInfo) {
+  assert(getCurrentSectionOnly() &&
          "Cannot emit contents before setting section!");
 
   // Show the encoding in a comment if we have a code emitter.
   if (Emitter)
-    AddEncodingComment(Inst, STI);
+    AddEncodingComment(Inst, STI, PrintSchedInfo);
 
   // Show the MCInst if enabled.
   if (ShowInst) {
+    if (PrintSchedInfo)
+      GetCommentOS() << "\n";
     Inst.dump_pretty(GetCommentOS(), InstPrinter.get(), "\n ");
     GetCommentOS() << "\n";
   }
@@ -1598,6 +1618,16 @@ void MCAsmStreamer::EmitInstruction(const MCInst &Inst, const MCSubtargetInfo &S
     getTargetStreamer()->prettyPrintAsm(*InstPrinter, OS, Inst, STI);
   else
     InstPrinter->printInst(&Inst, OS, "", STI);
+
+  if (PrintSchedInfo) {
+    std::string SI = STI.getSchedInfoStr(Inst);
+    if (!SI.empty())
+      GetCommentOS() << SI;
+  }
+
+  StringRef Comments = CommentToEmit;
+  if (Comments.size() && Comments.back() != '\n')
+    GetCommentOS() << "\n";
 
   EmitEOL();
 }

@@ -95,6 +95,11 @@ WebAssemblyTargetLowering::WebAssemblyTargetLowering(
     // Support minnan and maxnan, which otherwise default to expand.
     setOperationAction(ISD::FMINNAN, T, Legal);
     setOperationAction(ISD::FMAXNAN, T, Legal);
+    // WebAssembly currently has no builtin f16 support.
+    setOperationAction(ISD::FP16_TO_FP, T, Expand);
+    setOperationAction(ISD::FP_TO_FP16, T, Expand);
+    setLoadExtAction(ISD::EXTLOAD, T, MVT::f16, Expand);
+    setTruncStoreAction(T, MVT::f16, Expand);
   }
 
   for (auto T : {MVT::i32, MVT::i64}) {
@@ -253,7 +258,8 @@ bool WebAssemblyTargetLowering::allowsMisalignedMemoryAccesses(
   return true;
 }
 
-bool WebAssemblyTargetLowering::isIntDivCheap(EVT VT, AttributeSet Attr) const {
+bool WebAssemblyTargetLowering::isIntDivCheap(EVT VT,
+                                              AttributeList Attr) const {
   // The current thinking is that wasm engines will perform this optimization,
   // so we can save on code size.
   return true;
@@ -481,11 +487,11 @@ SDValue WebAssemblyTargetLowering::LowerFormalArguments(
     SDValue Chain, CallingConv::ID CallConv, bool IsVarArg,
     const SmallVectorImpl<ISD::InputArg> &Ins, const SDLoc &DL,
     SelectionDAG &DAG, SmallVectorImpl<SDValue> &InVals) const {
-  MachineFunction &MF = DAG.getMachineFunction();
-  auto *MFI = MF.getInfo<WebAssemblyFunctionInfo>();
-
   if (!CallingConvSupported(CallConv))
     fail(DL, DAG, "WebAssembly doesn't support non-C calling conventions");
+
+  MachineFunction &MF = DAG.getMachineFunction();
+  auto *MFI = MF.getInfo<WebAssemblyFunctionInfo>();
 
   // Set up the incoming ARGUMENTS value, which serves to represent the liveness
   // of the incoming values before they're represented by virtual registers.
@@ -525,6 +531,13 @@ SDValue WebAssemblyTargetLowering::LowerFormalArguments(
                     DAG.getTargetConstant(Ins.size(), DL, MVT::i32)));
     MFI->addParam(PtrVT);
   }
+
+  // Record the number and types of results.
+  SmallVector<MVT, 4> Params;
+  SmallVector<MVT, 4> Results;
+  ComputeSignatureVTs(*MF.getFunction(), DAG.getTarget(), Params, Results);
+  for (MVT VT : Results)
+    MFI->addResult(VT);
 
   return Chain;
 }
@@ -580,8 +593,8 @@ SDValue WebAssemblyTargetLowering::LowerCopyToReg(SDValue Op,
     unsigned Reg = cast<RegisterSDNode>(Op.getOperand(1))->getReg();
     EVT VT = Src.getValueType();
     SDValue Copy(
-        DAG.getMachineNode(VT == MVT::i32 ? WebAssembly::COPY_LOCAL_I32
-                                          : WebAssembly::COPY_LOCAL_I64,
+        DAG.getMachineNode(VT == MVT::i32 ? WebAssembly::COPY_I32
+                                          : WebAssembly::COPY_I64,
                            DL, VT, Src),
         0);
     return Op.getNode()->getNumValues() == 1

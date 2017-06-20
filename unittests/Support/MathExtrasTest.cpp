@@ -66,6 +66,31 @@ TEST(MathExtras, countLeadingZeros) {
   }
 }
 
+TEST(MathExtras, onesMask) {
+  EXPECT_EQ(0U, maskLeadingOnes<uint8_t>(0));
+  EXPECT_EQ(0U, maskTrailingOnes<uint8_t>(0));
+  EXPECT_EQ(0U, maskLeadingOnes<uint16_t>(0));
+  EXPECT_EQ(0U, maskTrailingOnes<uint16_t>(0));
+  EXPECT_EQ(0U, maskLeadingOnes<uint32_t>(0));
+  EXPECT_EQ(0U, maskTrailingOnes<uint32_t>(0));
+  EXPECT_EQ(0U, maskLeadingOnes<uint64_t>(0));
+  EXPECT_EQ(0U, maskTrailingOnes<uint64_t>(0));
+
+  EXPECT_EQ(0x00000003U, maskTrailingOnes<uint32_t>(2U));
+  EXPECT_EQ(0xC0000000U, maskLeadingOnes<uint32_t>(2U));
+
+  EXPECT_EQ(0x000007FFU, maskTrailingOnes<uint32_t>(11U));
+  EXPECT_EQ(0xFFE00000U, maskLeadingOnes<uint32_t>(11U));
+
+  EXPECT_EQ(0xFFFFFFFFU, maskTrailingOnes<uint32_t>(32U));
+  EXPECT_EQ(0xFFFFFFFFU, maskLeadingOnes<uint32_t>(32U));
+  EXPECT_EQ(0xFFFFFFFFFFFFFFFFULL, maskTrailingOnes<uint64_t>(64U));
+  EXPECT_EQ(0xFFFFFFFFFFFFFFFFULL, maskLeadingOnes<uint64_t>(64U));
+
+  EXPECT_EQ(0x0000FFFFFFFFFFFFULL, maskTrailingOnes<uint64_t>(48U));
+  EXPECT_EQ(0xFFFFFFFFFFFF0000ULL, maskLeadingOnes<uint64_t>(48U));
+}
+
 TEST(MathExtras, findFirstSet) {
   uint8_t Z8 = 0;
   uint16_t Z16 = 0;
@@ -163,6 +188,18 @@ TEST(MathExtras, isPowerOf2_64) {
   EXPECT_TRUE(isPowerOf2_64(1LL << 12));
   EXPECT_FALSE(isPowerOf2_64((1LL << 53) + 3));
   EXPECT_FALSE(isPowerOf2_64(0xABCDEF0ABCDEF0LL));
+}
+
+TEST(MathExtras, PowerOf2Ceil) {
+  EXPECT_EQ(0U, PowerOf2Ceil(0U));
+  EXPECT_EQ(8U, PowerOf2Ceil(8U));
+  EXPECT_EQ(8U, PowerOf2Ceil(7U));
+}
+
+TEST(MathExtras, PowerOf2Floor) {
+  EXPECT_EQ(0U, PowerOf2Floor(0U));
+  EXPECT_EQ(8U, PowerOf2Floor(8U));
+  EXPECT_EQ(4U, PowerOf2Floor(7U));
 }
 
 TEST(MathExtras, ByteSwap_32) {

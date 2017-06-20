@@ -1740,7 +1740,7 @@ TEST(YAMLIO, TestFlagsReadError) {
 //
 // Test error handling reading built-in uint8_t type
 //
-LLVM_YAML_IS_SEQUENCE_VECTOR(uint8_t)
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(uint8_t)
 TEST(YAMLIO, TestReadBuiltInTypesUint8Error) {
   std::vector<uint8_t> seq;
   Input yin("---\n"
@@ -1759,7 +1759,7 @@ TEST(YAMLIO, TestReadBuiltInTypesUint8Error) {
 //
 // Test error handling reading built-in uint16_t type
 //
-LLVM_YAML_IS_SEQUENCE_VECTOR(uint16_t)
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(uint16_t)
 TEST(YAMLIO, TestReadBuiltInTypesUint16Error) {
   std::vector<uint16_t> seq;
   Input yin("---\n"
@@ -1778,7 +1778,7 @@ TEST(YAMLIO, TestReadBuiltInTypesUint16Error) {
 //
 // Test error handling reading built-in uint32_t type
 //
-LLVM_YAML_IS_SEQUENCE_VECTOR(uint32_t)
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(uint32_t)
 TEST(YAMLIO, TestReadBuiltInTypesUint32Error) {
   std::vector<uint32_t> seq;
   Input yin("---\n"
@@ -1797,7 +1797,7 @@ TEST(YAMLIO, TestReadBuiltInTypesUint32Error) {
 //
 // Test error handling reading built-in uint64_t type
 //
-LLVM_YAML_IS_SEQUENCE_VECTOR(uint64_t)
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(uint64_t)
 TEST(YAMLIO, TestReadBuiltInTypesUint64Error) {
   std::vector<uint64_t> seq;
   Input yin("---\n"
@@ -1816,7 +1816,7 @@ TEST(YAMLIO, TestReadBuiltInTypesUint64Error) {
 //
 // Test error handling reading built-in int8_t type
 //
-LLVM_YAML_IS_SEQUENCE_VECTOR(int8_t)
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(int8_t)
 TEST(YAMLIO, TestReadBuiltInTypesint8OverError) {
   std::vector<int8_t> seq;
   Input yin("---\n"
@@ -1854,7 +1854,7 @@ TEST(YAMLIO, TestReadBuiltInTypesint8UnderError) {
 //
 // Test error handling reading built-in int16_t type
 //
-LLVM_YAML_IS_SEQUENCE_VECTOR(int16_t)
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(int16_t)
 TEST(YAMLIO, TestReadBuiltInTypesint16UnderError) {
   std::vector<int16_t> seq;
   Input yin("---\n"
@@ -1893,7 +1893,7 @@ TEST(YAMLIO, TestReadBuiltInTypesint16OverError) {
 //
 // Test error handling reading built-in int32_t type
 //
-LLVM_YAML_IS_SEQUENCE_VECTOR(int32_t)
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(int32_t)
 TEST(YAMLIO, TestReadBuiltInTypesint32UnderError) {
   std::vector<int32_t> seq;
   Input yin("---\n"
@@ -1931,7 +1931,7 @@ TEST(YAMLIO, TestReadBuiltInTypesint32OverError) {
 //
 // Test error handling reading built-in int64_t type
 //
-LLVM_YAML_IS_SEQUENCE_VECTOR(int64_t)
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(int64_t)
 TEST(YAMLIO, TestReadBuiltInTypesint64UnderError) {
   std::vector<int64_t> seq;
   Input yin("---\n"
@@ -2367,4 +2367,74 @@ TEST(YAMLIO, TestMapWithContext) {
             "...\n",
             out);
   out.clear();
+}
+
+LLVM_YAML_IS_STRING_MAP(int)
+
+TEST(YAMLIO, TestCustomMapping) {
+  std::map<std::string, int> x;
+  x["foo"] = 1;
+  x["bar"] = 2;
+
+  std::string out;
+  llvm::raw_string_ostream ostr(out);
+  Output xout(ostr, nullptr, 0);
+
+  xout << x;
+  ostr.flush();
+  EXPECT_EQ("---\n"
+            "bar:             2\n"
+            "foo:             1\n"
+            "...\n",
+            out);
+
+  Input yin(out);
+  std::map<std::string, int> y;
+  yin >> y;
+  EXPECT_EQ(2ul, y.size());
+  EXPECT_EQ(1, y["foo"]);
+  EXPECT_EQ(2, y["bar"]);
+}
+
+LLVM_YAML_IS_STRING_MAP(FooBar)
+
+TEST(YAMLIO, TestCustomMappingStruct) {
+  std::map<std::string, FooBar> x;
+  x["foo"].foo = 1;
+  x["foo"].bar = 2;
+  x["bar"].foo = 3;
+  x["bar"].bar = 4;
+
+  std::string out;
+  llvm::raw_string_ostream ostr(out);
+  Output xout(ostr, nullptr, 0);
+
+  xout << x;
+  ostr.flush();
+  EXPECT_EQ("---\n"
+            "bar:             \n"
+            "  foo:             3\n"
+            "  bar:             4\n"
+            "foo:             \n"
+            "  foo:             1\n"
+            "  bar:             2\n"
+            "...\n",
+            out);
+
+  Input yin(out);
+  std::map<std::string, FooBar> y;
+  yin >> y;
+  EXPECT_EQ(2ul, y.size());
+  EXPECT_EQ(1, y["foo"].foo);
+  EXPECT_EQ(2, y["foo"].bar);
+  EXPECT_EQ(3, y["bar"].foo);
+  EXPECT_EQ(4, y["bar"].bar);
+}
+
+TEST(YAMLIO, InvalidInput) {
+  // polluting 1 value in the sequence
+  Input yin("---\n- foo:  3\n  bar:  5\n1\n- foo:  3\n  bar:  5\n...\n");
+  std::vector<FooBar> Data;
+  yin >> Data;
+  EXPECT_TRUE((bool)yin.error());
 }

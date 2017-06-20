@@ -172,7 +172,7 @@ class CallGraphNode {
 public:
   /// \brief A pair of the calling instruction (a call or invoke)
   /// and the call graph node being called.
-  typedef std::pair<WeakVH, CallGraphNode *> CallRecord;
+  typedef std::pair<WeakTrackingVH, CallGraphNode *> CallRecord;
 
 public:
   typedef std::vector<CallRecord> CalledFunctionsVector;
@@ -272,7 +272,7 @@ public:
 private:
   friend class CallGraph;
 
-  AssertingVH<Function> F;
+  Function *F;
 
   std::vector<CallRecord> CalledFunctions;
 
@@ -297,7 +297,7 @@ private:
 /// resulting data.
 class CallGraphAnalysis : public AnalysisInfoMixin<CallGraphAnalysis> {
   friend AnalysisInfoMixin<CallGraphAnalysis>;
-  static char PassID;
+  static AnalysisKey Key;
 
 public:
   /// \brief A formulaic typedef to inform clients of the result type.

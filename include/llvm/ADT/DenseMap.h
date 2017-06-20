@@ -53,6 +53,9 @@ class DenseMapIterator;
 template <typename DerivedT, typename KeyT, typename ValueT, typename KeyInfoT,
           typename BucketT>
 class DenseMapBase : public DebugEpochBase {
+  template <typename T>
+  using const_arg_type_t = typename const_pointer_or_const_ref<T>::type;
+
 public:
   typedef unsigned size_type;
   typedef KeyT key_type;
@@ -77,7 +80,7 @@ public:
     return const_iterator(getBucketsEnd(), getBucketsEnd(), *this, true);
   }
 
-  bool LLVM_ATTRIBUTE_UNUSED_RESULT empty() const {
+  LLVM_NODISCARD bool empty() const {
     return getNumEntries() == 0;
   }
   unsigned size() const { return getNumEntries(); }
@@ -119,18 +122,18 @@ public:
   }
 
   /// Return 1 if the specified key is in the map, 0 otherwise.
-  size_type count(const KeyT &Val) const {
+  size_type count(const_arg_type_t<KeyT> Val) const {
     const BucketT *TheBucket;
     return LookupBucketFor(Val, TheBucket) ? 1 : 0;
   }
 
-  iterator find(const KeyT &Val) {
+  iterator find(const_arg_type_t<KeyT> Val) {
     BucketT *TheBucket;
     if (LookupBucketFor(Val, TheBucket))
       return iterator(TheBucket, getBucketsEnd(), *this, true);
     return end();
   }
-  const_iterator find(const KeyT &Val) const {
+  const_iterator find(const_arg_type_t<KeyT> Val) const {
     const BucketT *TheBucket;
     if (LookupBucketFor(Val, TheBucket))
       return const_iterator(TheBucket, getBucketsEnd(), *this, true);
@@ -159,7 +162,7 @@ public:
 
   /// lookup - Return the entry for the specified key, or a default
   /// constructed value if no such entry exists.
-  ValueT lookup(const KeyT &Val) const {
+  ValueT lookup(const_arg_type_t<KeyT> Val) const {
     const BucketT *TheBucket;
     if (LookupBucketFor(Val, TheBucket))
       return TheBucket->getSecond();
@@ -389,6 +392,8 @@ protected:
     return KeyInfoT::getHashValue(Val);
   }
   static const KeyT getEmptyKey() {
+    static_assert(std::is_base_of<DenseMapBase, DerivedT>::value,
+                  "Must pass the derived type to this template!");
     return KeyInfoT::getEmptyKey();
   }
   static const KeyT getTombstoneKey() {
@@ -742,6 +747,8 @@ class SmallDenseMap
   // simplicity of referring to them.
   typedef DenseMapBase<SmallDenseMap, KeyT, ValueT, KeyInfoT, BucketT> BaseT;
   friend class DenseMapBase<SmallDenseMap, KeyT, ValueT, KeyInfoT, BucketT>;
+  static_assert(isPowerOf2_64(InlineBuckets),
+                "InlineBuckets must be a power of 2.");
 
   unsigned Small : 1;
   unsigned NumEntries : 31;

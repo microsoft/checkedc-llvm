@@ -113,13 +113,15 @@ void MipsInstrInfo::BuildCondBr(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
   MIB.addMBB(TBB);
 }
 
-unsigned MipsInstrInfo::InsertBranch(MachineBasicBlock &MBB,
+unsigned MipsInstrInfo::insertBranch(MachineBasicBlock &MBB,
                                      MachineBasicBlock *TBB,
                                      MachineBasicBlock *FBB,
                                      ArrayRef<MachineOperand> Cond,
-                                     const DebugLoc &DL) const {
+                                     const DebugLoc &DL,
+                                     int *BytesAdded) const {
   // Shouldn't be a fall through.
-  assert(TBB && "InsertBranch must not be told to insert a fallthrough");
+  assert(TBB && "insertBranch must not be told to insert a fallthrough");
+  assert(!BytesAdded && "code size not handled");
 
   // # of condition operands:
   //  Unconditional branches: 0
@@ -145,16 +147,21 @@ unsigned MipsInstrInfo::InsertBranch(MachineBasicBlock &MBB,
   return 1;
 }
 
-unsigned MipsInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
+unsigned MipsInstrInfo::removeBranch(MachineBasicBlock &MBB,
+                                     int *BytesRemoved) const {
+  assert(!BytesRemoved && "code size not handled");
+
   MachineBasicBlock::reverse_iterator I = MBB.rbegin(), REnd = MBB.rend();
-  MachineBasicBlock::reverse_iterator FirstBr;
   unsigned removed;
 
   // Skip all the debug instructions.
   while (I != REnd && I->isDebugValue())
     ++I;
 
-  FirstBr = I;
+  if (I == REnd)
+    return 0;
+
+  MachineBasicBlock::iterator FirstBr = ++I.getReverse();
 
   // Up to 2 branches are removed.
   // Note that indirect branches are not removed.
@@ -162,14 +169,14 @@ unsigned MipsInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
     if (!getAnalyzableBrOpc(I->getOpcode()))
       break;
 
-  MBB.erase(I.base(), FirstBr.base());
+  MBB.erase((--I).getReverse(), FirstBr);
 
   return removed;
 }
 
-/// ReverseBranchCondition - Return the inverse opcode of the
+/// reverseBranchCondition - Return the inverse opcode of the
 /// specified Branch instruction.
-bool MipsInstrInfo::ReverseBranchCondition(
+bool MipsInstrInfo::reverseBranchCondition(
     SmallVectorImpl<MachineOperand> &Cond) const {
   assert( (Cond.size() && Cond.size() <= 3) &&
           "Invalid Mips branch condition!");
@@ -475,7 +482,7 @@ MipsInstrInfo::genInstrWithNewOpc(unsigned NewOpc,
       MIB->RemoveOperand(0);
 
     for (unsigned J = 0, E = I->getDesc().getNumOperands(); J < E; ++J) {
-      MIB.addOperand(I->getOperand(J));
+      MIB.add(I->getOperand(J));
     }
 
     MIB.addImm(0);
@@ -485,7 +492,7 @@ MipsInstrInfo::genInstrWithNewOpc(unsigned NewOpc,
       if (BranchWithZeroOperand && (unsigned)ZeroOperandPosition == J)
         continue;
 
-      MIB.addOperand(I->getOperand(J));
+      MIB.add(I->getOperand(J));
     }
   }
 
@@ -493,4 +500,32 @@ MipsInstrInfo::genInstrWithNewOpc(unsigned NewOpc,
 
   MIB.setMemRefs(I->memoperands_begin(), I->memoperands_end());
   return MIB;
+}
+
+bool MipsInstrInfo::findCommutedOpIndices(MachineInstr &MI, unsigned &SrcOpIdx1,
+                                          unsigned &SrcOpIdx2) const {
+  assert(!MI.isBundle() &&
+         "TargetInstrInfo::findCommutedOpIndices() can't handle bundles");
+
+  const MCInstrDesc &MCID = MI.getDesc();
+  if (!MCID.isCommutable())
+    return false;
+
+  switch (MI.getOpcode()) {
+  case Mips::DPADD_U_H:
+  case Mips::DPADD_U_W:
+  case Mips::DPADD_U_D:
+  case Mips::DPADD_S_H:
+  case Mips::DPADD_S_W:
+  case Mips::DPADD_S_D: {
+    // The first operand is both input and output, so it should not commute
+    if (!fixCommutedOpIndices(SrcOpIdx1, SrcOpIdx2, 2, 3))
+      return false;
+
+    if (!MI.getOperand(SrcOpIdx1).isReg() || !MI.getOperand(SrcOpIdx2).isReg())
+      return false;
+    return true;
+  }
+  }
+  return TargetInstrInfo::findCommutedOpIndices(MI, SrcOpIdx1, SrcOpIdx2);
 }

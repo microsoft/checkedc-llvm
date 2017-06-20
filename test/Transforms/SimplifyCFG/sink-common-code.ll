@@ -340,7 +340,7 @@ if.end:
 ; CHECK-LABEL: test13
 ; CHECK-DAG: select
 ; CHECK-DAG: load volatile
-; CHECK: store volatile {{.*}}, !tbaa !0
+; CHECK: store volatile {{.*}}, !tbaa ![[TBAA:[0-9]]]
 ; CHECK-NOT: load
 ; CHECK-NOT: store
 
@@ -384,12 +384,25 @@ if.else:
   %gepb = getelementptr inbounds %struct.anon, %struct.anon* %s, i32 0, i32 1
   %sv2 = load i32, i32* %gepb
   %cmp2 = icmp eq i32 %sv2, 57
+  call void @llvm.dbg.value(metadata i32 0, i64 0, metadata !9, metadata !DIExpression()), !dbg !11
   br label %if.end
 
 if.end:
   %p = phi i1 [ %cmp1, %if.then ], [ %cmp2, %if.else ]
   ret i32 1
 }
+
+declare void @llvm.dbg.value(metadata, i64, metadata, metadata)
+!llvm.module.flags = !{!5, !6}
+!llvm.dbg.cu = !{!7}
+
+!5 = !{i32 2, !"Dwarf Version", i32 4}
+!6 = !{i32 2, !"Debug Info Version", i32 3}
+!7 = distinct !DICompileUnit(language: DW_LANG_C99, file: !10)
+!8 = distinct !DISubprogram(name: "foo", unit: !7)
+!9 = !DILocalVariable(name: "b", line: 1, arg: 2, scope: !8)
+!10 = !DIFile(filename: "a.c", directory: "a/b")
+!11 = !DILocation(line: 1, column: 14, scope: !8)
 
 ; CHECK-LABEL: test14
 ; CHECK: getelementptr
@@ -478,6 +491,35 @@ if.end:
 
 ; CHECK-LABEL: test16
 ; CHECK: zext
+; CHECK: zext
+
+define zeroext i1 @test16a(i1 zeroext %flag, i1 zeroext %flag2, i32 %blksA, i32 %blksB, i32 %nblks, i8* %p) {
+
+entry:
+  br i1 %flag, label %if.then, label %if.else
+
+if.then:
+  %cmp = icmp uge i32 %blksA, %nblks
+  %frombool1 = zext i1 %cmp to i8
+  store i8 %frombool1, i8* %p
+  br label %if.end
+
+if.else:
+  br i1 %flag2, label %if.then2, label %if.end
+
+if.then2:
+  %add = add i32 %nblks, %blksB
+  %cmp2 = icmp ule i32 %add, %blksA
+  %frombool3 = zext i1 %cmp2 to i8
+  store i8 %frombool3, i8* %p
+  br label %if.end
+
+if.end:
+  ret i1 true
+}
+
+; CHECK-LABEL: test16a
+; CHECK: zext
 ; CHECK-NOT: zext
 
 define zeroext i1 @test17(i32 %flag, i32 %blksA, i32 %blksB, i32 %nblks) {
@@ -489,13 +531,13 @@ entry:
 
 if.then:
   %cmp = icmp uge i32 %blksA, %nblks
-  %frombool1 = zext i1 %cmp to i8
+  %frombool1 = call i8 @i1toi8(i1 %cmp)
   br label %if.end
 
 if.then2:
   %add = add i32 %nblks, %blksB
   %cmp2 = icmp ule i32 %add, %blksA
-  %frombool3 = zext i1 %cmp2 to i8
+  %frombool3 = call i8 @i1toi8(i1 %cmp2)
   br label %if.end
 
 if.end:
@@ -503,6 +545,7 @@ if.end:
   %tobool4 = icmp ne i8 %obeys.0, 0
   ret i1 %tobool4
 }
+declare i8 @i1toi8(i1)
 
 ; CHECK-LABEL: test17
 ; CHECK: if.then:
@@ -516,7 +559,7 @@ if.end:
 
 ; CHECK: [[x]]:
 ; CHECK-NEXT: %[[y:.*]] = phi i1 [ %cmp
-; CHECK-NEXT: %[[z:.*]] = zext i1 %[[y]]
+; CHECK-NEXT: %[[z:.*]] = call i8 @i1toi8(i1 %[[y]])
 ; CHECK-NEXT: br label %if.end
 
 ; CHECK: if.end:
@@ -639,6 +682,142 @@ declare void @g()
 ; CHECK-LABEL: test_pr30292
 ; CHECK: phi i32 [ 0, %entry ], [ %add1, %succ ], [ %add2, %two ]
 
-; CHECK: !0 = !{!1, !1, i64 0}
-; CHECK: !1 = !{!"float", !2}
-; CHECK: !2 = !{!"an example type tree"}
+define zeroext i1 @test_pr30244(i1 zeroext %flag, i1 zeroext %flag2, i32 %blksA, i32 %blksB, i32 %nblks) {
+
+entry:
+  %p = alloca i8
+  br i1 %flag, label %if.then, label %if.else
+
+if.then:
+  %cmp = icmp uge i32 %blksA, %nblks
+  %frombool1 = zext i1 %cmp to i8
+  store i8 %frombool1, i8* %p
+  br label %if.end
+
+if.else:
+  br i1 %flag2, label %if.then2, label %if.end
+
+if.then2:
+  %add = add i32 %nblks, %blksB
+  %cmp2 = icmp ule i32 %add, %blksA
+  %frombool3 = zext i1 %cmp2 to i8
+  store i8 %frombool3, i8* %p
+  br label %if.end
+
+if.end:
+  ret i1 true
+}
+
+; CHECK-LABEL: @test_pr30244
+; CHECK: store
+; CHECK: store
+
+define i32 @test_pr30373a(i1 zeroext %flag, i32 %x, i32 %y) {
+entry:
+  br i1 %flag, label %if.then, label %if.else
+
+if.then:
+  %x0 = call i32 @foo(i32 %x, i32 0) nounwind readnone
+  %y0 = call i32 @foo(i32 %x, i32 1) nounwind readnone
+  %z0 = lshr i32 %y0, 8
+  br label %if.end
+
+if.else:
+  %x1 = call i32 @foo(i32 %y, i32 0) nounwind readnone
+  %y1 = call i32 @foo(i32 %y, i32 1) nounwind readnone
+  %z1 = lshr exact i32 %y1, 8
+  br label %if.end
+
+if.end:
+  %xx = phi i32 [ %x0, %if.then ], [ %x1, %if.else ]
+  %yy = phi i32 [ %z0, %if.then ], [ %z1, %if.else ]
+  %ret = add i32 %xx, %yy
+  ret i32 %ret
+}
+
+; CHECK-LABEL: test_pr30373a
+; CHECK: lshr
+; CHECK-NOT: exact
+; CHECK: }
+
+define i32 @test_pr30373b(i1 zeroext %flag, i32 %x, i32 %y) {
+entry:
+  br i1 %flag, label %if.then, label %if.else
+
+if.then:
+  %x0 = call i32 @foo(i32 %x, i32 0) nounwind readnone
+  %y0 = call i32 @foo(i32 %x, i32 1) nounwind readnone
+  %z0 = lshr exact i32 %y0, 8
+  br label %if.end
+
+if.else:
+  %x1 = call i32 @foo(i32 %y, i32 0) nounwind readnone
+  %y1 = call i32 @foo(i32 %y, i32 1) nounwind readnone
+  %z1 = lshr i32 %y1, 8
+  br label %if.end
+
+if.end:
+  %xx = phi i32 [ %x0, %if.then ], [ %x1, %if.else ]
+  %yy = phi i32 [ %z0, %if.then ], [ %z1, %if.else ]
+  %ret = add i32 %xx, %yy
+  ret i32 %ret
+}
+
+; CHECK-LABEL: test_pr30373b
+; CHECK: lshr
+; CHECK-NOT: exact
+; CHECK: }
+
+; Check that simplifycfg doesn't sink and merge inline-asm instructions.
+
+define i32 @test_inline_asm1(i32 %c, i32 %r6) {
+entry:
+  %tobool = icmp eq i32 %c, 0
+  br i1 %tobool, label %if.else, label %if.then
+
+if.then:
+  %0 = call i32 asm "rorl $2, $0", "=&r,0,n,~{dirflag},~{fpsr},~{flags}"(i32 %r6, i32 8)
+  br label %if.end
+
+if.else:
+  %1 = call i32 asm "rorl $2, $0", "=&r,0,n,~{dirflag},~{fpsr},~{flags}"(i32 %r6, i32 6)
+  br label %if.end
+
+if.end:
+  %r6.addr.0 = phi i32 [ %0, %if.then ], [ %1, %if.else ]
+  ret i32 %r6.addr.0
+}
+
+; CHECK-LABEL: @test_inline_asm1(
+; CHECK: call i32 asm "rorl $2, $0", "=&r,0,n,~{dirflag},~{fpsr},~{flags}"(i32 %r6, i32 8)
+; CHECK: call i32 asm "rorl $2, $0", "=&r,0,n,~{dirflag},~{fpsr},~{flags}"(i32 %r6, i32 6)
+
+declare i32 @call_target()
+
+define void @test_operand_bundles(i1 %cond, i32* %ptr) {
+entry:
+  br i1 %cond, label %left, label %right
+
+left:
+  %val0 = call i32 @call_target() [ "deopt"(i32 10) ]
+  store i32 %val0, i32* %ptr
+  br label %merge
+
+right:
+  %val1 = call i32 @call_target() [ "deopt"(i32 20) ]
+  store i32 %val1, i32* %ptr
+  br label %merge
+
+merge:
+  ret void
+}
+
+; CHECK-LABEL: @test_operand_bundles(
+; CHECK: left:
+; CHECK-NEXT:   %val0 = call i32 @call_target() [ "deopt"(i32 10) ]
+; CHECK: right:
+; CHECK-NEXT:   %val1 = call i32 @call_target() [ "deopt"(i32 20) ]
+
+; CHECK: ![[TBAA]] = !{![[TYPE:[0-9]]], ![[TYPE]], i64 0}
+; CHECK: ![[TYPE]] = !{!"float", ![[TEXT:[0-9]]]}
+; CHECK: ![[TEXT]] = !{!"an example type tree"}

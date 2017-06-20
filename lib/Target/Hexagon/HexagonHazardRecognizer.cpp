@@ -13,12 +13,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "HexagonHazardRecognizer.h"
-#include "llvm/CodeGen/ScheduleDAG.h"
-#include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
-#include "llvm/CodeGen/MachineInstrBundle.h"
+#include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/CodeGen/ScheduleDAG.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cassert>
 
 using namespace llvm;
 
@@ -96,9 +97,9 @@ void HexagonHazardRecognizer::EmitInstruction(SUnit *SU) {
 
   // Keep the set of definitions for each packet, which is used to determine
   // if a .new can be used.
-  for (ConstMIOperands MO(*MI); MO.isValid(); ++MO)
-    if (MO->isReg() && MO->isDef() && !MO->isImplicit())
-      RegDefs.insert(MO->getReg());
+  for (const MachineOperand &MO : MI->operands())
+    if (MO.isReg() && MO.isDef() && !MO.isImplicit())
+      RegDefs.insert(MO.getReg());
 
   if (TII->isZeroCost(MI->getOpcode()))
     return;

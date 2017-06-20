@@ -8,7 +8,7 @@ target triple="amdgcn--"
 ; CHECK-NEXT: s_load_dwordx2 s[4:5], s[0:1], 0xb
 ; CHECK-NEXT: s_waitcnt lgkmcnt(0)
 ; CHECK: v_mbcnt_lo_u32_b32_e64
-; CHECK-NEXT: v_cmp_eq_i32_e32 vcc, 0, v0
+; CHECK-NEXT: v_cmp_eq_u32_e32 vcc, 0, v0
 ; CHECK-NEXT: s_and_saveexec_b64 s[2:3], vcc
 ; CHECK-NEXT: s_xor_b64 s[2:3], exec, s[2:3]
 ; BB0_1:
@@ -20,7 +20,7 @@ target triple="amdgcn--"
 ; CHECK-NEXT: s_mov_b32 s6, -1
 ; CHECK-NEXT: buffer_store_dword v1, off, s[4:7], 0
 ; CHECK-NEXT: s_endpgm
-define void @foobar(float %a0, float %a1, float addrspace(1)* %out) nounwind {
+define amdgpu_kernel void @foobar(float %a0, float %a1, float addrspace(1)* %out) nounwind {
 entry:
   %v0 = insertelement <4 x float> undef, float %a0, i32 0
   %tid = call i32 @llvm.amdgcn.mbcnt.lo(i32 -1, i32 0) #0

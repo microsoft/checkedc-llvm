@@ -23,6 +23,9 @@
 // the Coroutine library.
 //===----------------------------------------------------------------------===//
 
+#ifndef LLVM_LIB_TRANSFORMS_COROUTINES_COROINSTR_H
+#define LLVM_LIB_TRANSFORMS_COROUTINES_COROINSTR_H
+
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IntrinsicInst.h"
 
@@ -80,6 +83,13 @@ class LLVM_LIBRARY_VISIBILITY CoroIdInst : public IntrinsicInst {
   enum { AlignArg, PromiseArg, CoroutineArg, InfoArg };
 
 public:
+  CoroAllocInst *getCoroAlloc() {
+    for (User *U : users())
+      if (auto *CA = dyn_cast<CoroAllocInst>(U))
+        return CA;
+    return nullptr;
+  }
+
   IntrinsicInst *getCoroBegin() {
     for (User *U : users())
       if (auto *II = dyn_cast<IntrinsicInst>(U))
@@ -309,3 +319,5 @@ public:
 };
 
 } // End namespace llvm.
+
+#endif

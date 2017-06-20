@@ -43,7 +43,7 @@ define void @test2b(i32 %x, i32 %n) nounwind {
 ; CHECK-LABEL: test2b:
 ; CHECK:       # BB#0: # %entry
 ; CHECK-NEXT:    btl %esi, %edi
-; CHECK-NEXT:    jb .LBB1_2
+; CHECK-NEXT:    jae .LBB1_1
 ;
 entry:
   %tmp29 = lshr i32 %x, %n
@@ -83,7 +83,7 @@ define void @atest2b(i32 %x, i32 %n) nounwind {
 ; CHECK-LABEL: atest2b:
 ; CHECK:       # BB#0: # %entry
 ; CHECK-NEXT:    btl %esi, %edi
-; CHECK-NEXT:    jb .LBB3_2
+; CHECK-NEXT:    jae .LBB3_1
 ;
 entry:
   %tmp29 = ashr i32 %x, %n
@@ -103,7 +103,7 @@ define void @test3(i32 %x, i32 %n) nounwind {
 ; CHECK-LABEL: test3:
 ; CHECK:       # BB#0: # %entry
 ; CHECK-NEXT:    btl %esi, %edi
-; CHECK-NEXT:    jb .LBB4_2
+; CHECK-NEXT:    jae .LBB4_1
 ;
 entry:
   %tmp29 = shl i32 1, %n
@@ -123,7 +123,7 @@ define void @test3b(i32 %x, i32 %n) nounwind {
 ; CHECK-LABEL: test3b:
 ; CHECK:       # BB#0: # %entry
 ; CHECK-NEXT:    btl %esi, %edi
-; CHECK-NEXT:    jb .LBB5_2
+; CHECK-NEXT:    jae .LBB5_1
 ;
 entry:
   %tmp29 = shl i32 1, %n
@@ -596,3 +596,15 @@ define zeroext i1 @invert(i32 %flags, i32 %flag) nounwind {
   ret i1 %tobool
 }
 
+define zeroext i1 @extend(i32 %bit, i64 %bits) {
+; CHECK-LABEL: extend:
+; CHECK:       # BB#0:
+; CHECK-NEXT:  btl %edi, %esi
+entry:
+  %and = and i32 %bit, 31
+  %sh_prom = zext i32 %and to i64
+  %shl = shl i64 1, %sh_prom
+  %and1 = and i64 %shl, %bits
+  %tobool = icmp ne i64 %and1, 0
+  ret i1 %tobool
+}

@@ -30,6 +30,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/KnownBits.h"
 using namespace llvm;
 
 
@@ -1208,7 +1209,7 @@ SparcTargetLowering::LowerCall_64(TargetLowering::CallLoweringInfo &CLI,
     if (VA.isRegLoc()) {
       if (VA.needsCustom() && VA.getValVT() == MVT::f128
           && VA.getLocVT() == MVT::i128) {
-        // Store and reload into the interger register reg and reg+1.
+        // Store and reload into the integer register reg and reg+1.
         unsigned Offset = 8 * (VA.getLocReg() - SP::I0);
         unsigned StackOffset = Offset + Subtarget->getStackPointerBias() + 128;
         SDValue StackPtr = DAG.getRegister(SP::O6, PtrVT);
@@ -1685,9 +1686,10 @@ SparcTargetLowering::SparcTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SRA_PARTS, MVT::i32, Expand);
   setOperationAction(ISD::SRL_PARTS, MVT::i32, Expand);
 
-  // FIXME: Sparc provides these multiplies, but we don't have them yet.
-  setOperationAction(ISD::UMUL_LOHI, MVT::i32, Expand);
-  setOperationAction(ISD::SMUL_LOHI, MVT::i32, Expand);
+  // Expands to [SU]MUL_LOHI.
+  setOperationAction(ISD::MULHU,     MVT::i32, Expand);
+  setOperationAction(ISD::MULHS,     MVT::i32, Expand);
+  setOperationAction(ISD::MUL,       MVT::i32, Expand);
 
   if (Subtarget->is64Bit()) {
     setOperationAction(ISD::UMUL_LOHI, MVT::i64, Expand);
@@ -1874,24 +1876,24 @@ EVT SparcTargetLowering::getSetCCResultType(const DataLayout &, LLVMContext &,
 /// combiner.
 void SparcTargetLowering::computeKnownBitsForTargetNode
                                 (const SDValue Op,
-                                 APInt &KnownZero,
-                                 APInt &KnownOne,
+                                 KnownBits &Known,
+                                 const APInt &DemandedElts,
                                  const SelectionDAG &DAG,
                                  unsigned Depth) const {
-  APInt KnownZero2, KnownOne2;
-  KnownZero = KnownOne = APInt(KnownZero.getBitWidth(), 0);
+  KnownBits Known2;
+  Known.Zero.clearAllBits(); Known.One.clearAllBits();
 
   switch (Op.getOpcode()) {
   default: break;
   case SPISD::SELECT_ICC:
   case SPISD::SELECT_XCC:
   case SPISD::SELECT_FCC:
-    DAG.computeKnownBits(Op.getOperand(1), KnownZero, KnownOne, Depth+1);
-    DAG.computeKnownBits(Op.getOperand(0), KnownZero2, KnownOne2, Depth+1);
+    DAG.computeKnownBits(Op.getOperand(1), Known, Depth+1);
+    DAG.computeKnownBits(Op.getOperand(0), Known2, Depth+1);
 
     // Only known if known in both the LHS and RHS.
-    KnownOne &= KnownOne2;
-    KnownZero &= KnownZero2;
+    Known.One &= Known2.One;
+    Known.Zero &= Known2.Zero;
     break;
   }
 }
@@ -2176,8 +2178,8 @@ SparcTargetLowering::LowerF128Op(SDValue Op, SelectionDAG &DAG,
     Entry.Node = RetPtr;
     Entry.Ty   = PointerType::getUnqual(RetTy);
     if (!Subtarget->is64Bit())
-      Entry.isSRet = true;
-    Entry.isReturned = false;
+      Entry.IsSRet = true;
+    Entry.IsReturned = false;
     Args.push_back(Entry);
     RetTyABI = Type::getVoidTy(*DAG.getContext());
   }
@@ -2567,17 +2569,57 @@ static SDValue LowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG,
                                        const SparcSubtarget *Subtarget) {
   SDValue Chain = Op.getOperand(0);  // Legalize the chain.
   SDValue Size  = Op.getOperand(1);  // Legalize the size.
+  unsigned Align = cast<ConstantSDNode>(Op.getOperand(2))->getZExtValue();
+  unsigned StackAlign = Subtarget->getFrameLowering()->getStackAlignment();
   EVT VT = Size->getValueType(0);
   SDLoc dl(Op);
+
+  // TODO: implement over-aligned alloca. (Note: also implies
+  // supporting support for overaligned function frames + dynamic
+  // allocations, at all, which currently isn't supported)
+  if (Align > StackAlign) {
+    const MachineFunction &MF = DAG.getMachineFunction();
+    report_fatal_error("Function \"" + Twine(MF.getName()) + "\": "
+                       "over-aligned dynamic alloca not supported.");
+  }
+
+  // The resultant pointer needs to be above the register spill area
+  // at the bottom of the stack.
+  unsigned regSpillArea;
+  if (Subtarget->is64Bit()) {
+    regSpillArea = 128;
+  } else {
+    // On Sparc32, the size of the spill area is 92. Unfortunately,
+    // that's only 4-byte aligned, not 8-byte aligned (the stack
+    // pointer is 8-byte aligned). So, if the user asked for an 8-byte
+    // aligned dynamic allocation, we actually need to add 96 to the
+    // bottom of the stack, instead of 92, to ensure 8-byte alignment.
+
+    // That also means adding 4 to the size of the allocation --
+    // before applying the 8-byte rounding. Unfortunately, we the
+    // value we get here has already had rounding applied. So, we need
+    // to add 8, instead, wasting a bit more memory.
+
+    // Further, this only actually needs to be done if the required
+    // alignment is > 4, but, we've lost that info by this point, too,
+    // so we always apply it.
+
+    // (An alternative approach would be to always reserve 96 bytes
+    // instead of the required 92, but then we'd waste 4 extra bytes
+    // in every frame, not just those with dynamic stack allocations)
+
+    // TODO: modify code in SelectionDAGBuilder to make this less sad.
+
+    Size = DAG.getNode(ISD::ADD, dl, VT, Size,
+                       DAG.getConstant(8, dl, VT));
+    regSpillArea = 96;
+  }
 
   unsigned SPReg = SP::O6;
   SDValue SP = DAG.getCopyFromReg(Chain, dl, SPReg, VT);
   SDValue NewSP = DAG.getNode(ISD::SUB, dl, VT, SP, Size); // Value
   Chain = DAG.getCopyToReg(SP.getValue(1), dl, SPReg, NewSP);    // Output chain
 
-  // The resultant pointer is actually 16 words from the bottom of the stack,
-  // to provide a register spill area.
-  unsigned regSpillArea = Subtarget->is64Bit() ? 128 : 96;
   regSpillArea += Subtarget->getStackPointerBias();
 
   SDValue NewVal = DAG.getNode(ISD::ADD, dl, VT, NewSP,
@@ -3192,6 +3234,7 @@ SparcTargetLowering::emitEHSjLjSetJmp(MachineInstr &MI,
                                       MachineBasicBlock *MBB) const {
   DebugLoc DL = MI.getDebugLoc();
   const TargetInstrInfo *TII = Subtarget->getInstrInfo();
+  const TargetRegisterInfo *TRI = Subtarget->getRegisterInfo();
 
   MachineFunction *MF = MBB->getParent();
   MachineRegisterInfo &MRI = MF->getRegInfo();
@@ -3203,7 +3246,8 @@ SparcTargetLowering::emitEHSjLjSetJmp(MachineInstr &MI,
 
   unsigned DstReg = MI.getOperand(0).getReg();
   const TargetRegisterClass *RC = MRI.getRegClass(DstReg);
-  assert(RC->hasType(MVT::i32) && "Invalid destination!");
+  assert(TRI->isTypeLegalForClass(*RC, MVT::i32) && "Invalid destination!");
+  (void)TRI;
   unsigned mainDstReg = MRI.createVirtualRegister(RC);
   unsigned restoreDstReg = MRI.createVirtualRegister(RC);
 

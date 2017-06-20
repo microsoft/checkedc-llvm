@@ -78,9 +78,7 @@ namespace {
       MachineFunctionPass::getAnalysisUsage(AU);
     }
 
-    const char *getPassName() const override {
-      return "Hexagon NewValueJump";
-    }
+    StringRef getPassName() const override { return "Hexagon NewValueJump"; }
 
     bool runOnMachineFunction(MachineFunction &Fn) override;
     MachineFunctionProperties getRequiredProperties() const override {
@@ -132,6 +130,8 @@ static bool canBeFeederToNewValueJump(const HexagonInstrInfo *QII,
   if (II->getOpcode() == TargetOpcode::KILL)
     return false;
 
+  if (II->isImplicitDef())
+    return false;
 
   // Make sure there there is no 'def' or 'use' of any of the uses of
   // feeder insn between it's definition, this MI and jump, jmpInst
@@ -667,16 +667,6 @@ bool HexagonNewValueJump::runOnMachineFunction(MachineFunction &MF) {
                                   QII->get(opc))
                                     .addReg(cmpReg1, getKillRegState(MO1IsKill))
                                     .addReg(cmpOp2, getKillRegState(MO2IsKill))
-                                    .addMBB(jmpTarget);
-
-          else if ((cmpInstr->getOpcode() == Hexagon::C2_cmpeqi ||
-                    cmpInstr->getOpcode() == Hexagon::C2_cmpgti) &&
-                    cmpOp2 == -1 )
-            // Corresponding new-value compare jump instructions don't have the
-            // operand for -1 immediate value.
-            NewMI = BuildMI(*MBB, jmpPos, dl,
-                                  QII->get(opc))
-                                    .addReg(cmpReg1, getKillRegState(MO1IsKill))
                                     .addMBB(jmpTarget);
 
           else

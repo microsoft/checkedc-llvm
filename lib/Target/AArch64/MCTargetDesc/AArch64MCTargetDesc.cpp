@@ -84,9 +84,14 @@ static void adjustCodeGenOpts(const Triple &TT, Reloc::Model RM,
   // no matter how far away they are.
   else if (CM == CodeModel::JITDefault)
     CM = CodeModel::Large;
-  else if (CM != CodeModel::Small && CM != CodeModel::Large)
-    report_fatal_error(
-        "Only small and large code models are allowed on AArch64");
+  else if (CM != CodeModel::Small && CM != CodeModel::Large) {
+    if (!TT.isOSFuchsia())
+      report_fatal_error(
+          "Only small and large code models are allowed on AArch64");
+    else if (CM != CodeModel::Kernel)
+      report_fatal_error(
+          "Only small, kernel, and large code models are allowed on AArch64");
+  }
 }
 
 static MCInstPrinter *createAArch64MCInstPrinter(const Triple &T,
@@ -123,8 +128,8 @@ static MCInstrAnalysis *createAArch64InstrAnalysis(const MCInstrInfo *Info) {
 
 // Force static initialization.
 extern "C" void LLVMInitializeAArch64TargetMC() {
-  for (Target *T :
-       {&TheAArch64leTarget, &TheAArch64beTarget, &TheARM64Target}) {
+  for (Target *T : {&getTheAArch64leTarget(), &getTheAArch64beTarget(),
+                    &getTheARM64Target()}) {
     // Register the MC asm info.
     RegisterMCAsmInfoFn X(*T, createAArch64MCAsmInfo);
 
@@ -162,8 +167,8 @@ extern "C" void LLVMInitializeAArch64TargetMC() {
   }
 
   // Register the asm backend.
-  for (Target *T : {&TheAArch64leTarget, &TheARM64Target})
+  for (Target *T : {&getTheAArch64leTarget(), &getTheARM64Target()})
     TargetRegistry::RegisterMCAsmBackend(*T, createAArch64leAsmBackend);
-  TargetRegistry::RegisterMCAsmBackend(TheAArch64beTarget,
+  TargetRegistry::RegisterMCAsmBackend(getTheAArch64beTarget(),
                                        createAArch64beAsmBackend);
 }

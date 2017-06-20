@@ -17,6 +17,7 @@
 
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 
 #include <functional>
@@ -30,48 +31,18 @@ class raw_pwrite_stream;
 
 namespace lto {
 
-/// Abstract class representing a single Task output to be implemented by the
-/// client of the LTO API.
-///
-/// The general scheme the API is called is the following:
-///
-/// void process(NativeObjectOutput &Output) {
-///   /* check if caching is supported */
-///   if (Output.isCachingEnabled()) {
-///     auto Key = ComputeKeyForEntry(...); // "expensive" call
-///     if (Output.tryLoadFromCache())
-///        return; // Cache hit
-///   }
-///
-///   auto OS = Output.getStream();
-///
-///   OS << ....;
-/// }
-///
-class NativeObjectOutput {
-public:
-  // Return an allocated stream for the output, or null in case of failure.
-  virtual std::unique_ptr<raw_pwrite_stream> getStream() = 0;
-
-  // Try loading from a possible cache first, return true on cache hit.
-  virtual bool tryLoadFromCache(StringRef Key) { return false; }
-
-  // Returns true if a cache is available
-  virtual bool isCachingEnabled() const { return false; }
-
-  virtual ~NativeObjectOutput() = default;
-};
-
 /// LTO configuration. A linker can configure LTO by setting fields in this data
 /// structure and passing it to the lto::LTO constructor.
 struct Config {
+  // Note: when adding fields here, consider whether they need to be added to
+  // computeCacheKey in LTO.cpp.
   std::string CPU;
-  std::string Features;
   TargetOptions Options;
   std::vector<std::string> MAttrs;
   Reloc::Model RelocModel = Reloc::PIC_;
   CodeModel::Model CodeModel = CodeModel::Default;
   CodeGenOpt::Level CGOptLevel = CodeGenOpt::Default;
+  TargetMachine::CodeGenFileType CGFileType = TargetMachine::CGFT_ObjectFile;
   unsigned OptLevel = 2;
   bool DisableVerify = false;
 
@@ -83,6 +54,11 @@ struct Config {
   /// manager as the old one doesn't have this ability.
   std::string OptPipeline;
 
+  // If this field is set, it has the same effect of specifying an AA pipeline
+  // identified by the string. Only works with the new pass manager, in
+  // conjunction OptPipeline.
+  std::string AAPipeline;
+
   /// Setting this field will replace target triples in input files with this
   /// triple.
   std::string OverrideTriple;
@@ -90,6 +66,15 @@ struct Config {
   /// Setting this field will replace unspecified target triples in input files
   /// with this triple.
   std::string DefaultTriple;
+
+  /// Sample PGO profile path.
+  std::string SampleProfile;
+
+  /// Optimization remarks file path.
+  std::string RemarksFilename = "";
+
+  /// Whether to emit optimization remarks with hotness informations.
+  bool RemarksWithHotness = false;
 
   bool ShouldDiscardValueNames = true;
   DiagnosticHandlerFunction DiagHandler;
@@ -161,54 +146,6 @@ struct Config {
       CombinedIndexHookFn;
   CombinedIndexHookFn CombinedIndexHook;
 
-  Config() {}
-  // FIXME: Remove once MSVC can synthesize move ops.
-  Config(Config &&X)
-      : CPU(std::move(X.CPU)), Features(std::move(X.Features)),
-        Options(std::move(X.Options)), MAttrs(std::move(X.MAttrs)),
-        RelocModel(std::move(X.RelocModel)), CodeModel(std::move(X.CodeModel)),
-        CGOptLevel(std::move(X.CGOptLevel)), OptLevel(std::move(X.OptLevel)),
-        DisableVerify(std::move(X.DisableVerify)),
-        OptPipeline(std::move(X.OptPipeline)),
-        OverrideTriple(std::move(X.OverrideTriple)),
-        DefaultTriple(std::move(X.DefaultTriple)),
-        ShouldDiscardValueNames(std::move(X.ShouldDiscardValueNames)),
-        DiagHandler(std::move(X.DiagHandler)),
-        ResolutionFile(std::move(X.ResolutionFile)),
-        PreOptModuleHook(std::move(X.PreOptModuleHook)),
-        PostPromoteModuleHook(std::move(X.PostPromoteModuleHook)),
-        PostInternalizeModuleHook(std::move(X.PostInternalizeModuleHook)),
-        PostImportModuleHook(std::move(X.PostImportModuleHook)),
-        PostOptModuleHook(std::move(X.PostOptModuleHook)),
-        PreCodeGenModuleHook(std::move(X.PreCodeGenModuleHook)),
-        CombinedIndexHook(std::move(X.CombinedIndexHook)) {}
-  // FIXME: Remove once MSVC can synthesize move ops.
-  Config &operator=(Config &&X) {
-    CPU = std::move(X.CPU);
-    Features = std::move(X.Features);
-    Options = std::move(X.Options);
-    MAttrs = std::move(X.MAttrs);
-    RelocModel = std::move(X.RelocModel);
-    CodeModel = std::move(X.CodeModel);
-    CGOptLevel = std::move(X.CGOptLevel);
-    OptLevel = std::move(X.OptLevel);
-    DisableVerify = std::move(X.DisableVerify);
-    OptPipeline = std::move(X.OptPipeline);
-    OverrideTriple = std::move(X.OverrideTriple);
-    DefaultTriple = std::move(X.DefaultTriple);
-    ShouldDiscardValueNames = std::move(X.ShouldDiscardValueNames);
-    DiagHandler = std::move(X.DiagHandler);
-    ResolutionFile = std::move(X.ResolutionFile);
-    PreOptModuleHook = std::move(X.PreOptModuleHook);
-    PostPromoteModuleHook = std::move(X.PostPromoteModuleHook);
-    PostInternalizeModuleHook = std::move(X.PostInternalizeModuleHook);
-    PostImportModuleHook = std::move(X.PostImportModuleHook);
-    PostOptModuleHook = std::move(X.PostOptModuleHook);
-    PreCodeGenModuleHook = std::move(X.PreCodeGenModuleHook);
-    CombinedIndexHook = std::move(X.CombinedIndexHook);
-    return *this;
-  }
-
   /// This is a convenience function that configures this Config object to write
   /// temporary files named after the given OutputFileName for each of the LTO
   /// phases to disk. A client can use this function to implement -save-temps.
@@ -227,13 +164,6 @@ struct Config {
   Error addSaveTemps(std::string OutputFileName,
                      bool UseInputModulePath = false);
 };
-
-/// This type defines the callback to add a native object that is generated on
-/// the fly.
-///
-/// Output callbacks must be thread safe.
-typedef std::function<std::unique_ptr<NativeObjectOutput>(unsigned Task)>
-    AddOutputFn;
 
 /// A derived class of LLVMContext that initializes itself according to a given
 /// Config object. The purpose of this class is to tie ownership of the

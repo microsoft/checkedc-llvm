@@ -17,7 +17,7 @@ define x86_mmx @t0(i32 %A) nounwind {
 ; X64-LABEL: t0:
 ; X64:       ## BB#0:
 ; X64-NEXT:    ## kill: %EDI<def> %EDI<kill> %RDI<def>
-; X64-NEXT:    movd %rdi, %xmm0
+; X64-NEXT:    movq %rdi, %xmm0
 ; X64-NEXT:    pslldq {{.*#+}} xmm0 = zero,zero,zero,zero,zero,zero,zero,zero,xmm0[0,1,2,3,4,5,6,7]
 ; X64-NEXT:    pshufd {{.*#+}} xmm0 = xmm0[0,2,2,3]
 ; X64-NEXT:    retq
@@ -29,7 +29,7 @@ define x86_mmx @t0(i32 %A) nounwind {
 define <8 x i8> @t1(i8 zeroext %x) nounwind {
 ; X32-LABEL: t1:
 ; X32:       ## BB#0:
-; X32-NEXT:    movd {{.*#+}} xmm0 = mem[0],zero,zero,zero
+; X32-NEXT:    movss {{.*#+}} xmm0 = mem[0],zero,zero,zero
 ; X32-NEXT:    retl
 ;
 ; X64-LABEL: t1:
@@ -65,7 +65,7 @@ define void @t3() {
 ; X32:       ## BB#0:
 ; X32-NEXT:    movl L_g0$non_lazy_ptr, %eax
 ; X32-NEXT:    movl L_g1$non_lazy_ptr, %ecx
-; X32-NEXT:    movsd {{.*#+}} xmm0 = mem[0],zero
+; X32-NEXT:    movq {{.*#+}} xmm0 = mem[0],zero
 ; X32-NEXT:    punpcklwd {{.*#+}} xmm0 = xmm0[0,0,1,1,2,2,3,3]
 ; X32-NEXT:    movzwl (%eax), %eax
 ; X32-NEXT:    movd %eax, %xmm1

@@ -88,6 +88,7 @@ HexagonSubtarget::initializeSubtargetDependencies(StringRef CPU, StringRef FS) {
     { "hexagonv5", V5 },
     { "hexagonv55", V55 },
     { "hexagonv60", V60 },
+    { "hexagonv62", V62 },
   };
 
   auto foundIt = CpuTable.find(CPUString);
@@ -188,6 +189,11 @@ void HexagonSubtarget::getPostRAMutations(
   Mutations.push_back(make_unique<HexagonSubtarget::HexagonDAGMutation>());
 }
 
+void HexagonSubtarget::getSMSMutations(
+      std::vector<std::unique_ptr<ScheduleDAGMutation>> &Mutations) const {
+  Mutations.push_back(make_unique<HexagonSubtarget::HexagonDAGMutation>());
+}
+
 
 // Pin the vtable to this file.
 void HexagonSubtarget::anchor() {}
@@ -263,6 +269,10 @@ bool HexagonSubtarget::isBestZeroLatency(SUnit *Src, SUnit *Dst,
       const HexagonInstrInfo *TII) const {
   MachineInstr &SrcInst = *Src->getInstr();
   MachineInstr &DstInst = *Dst->getInstr();
+
+  // Ignore Boundary SU nodes as these have null instructions.
+  if (Dst->isBoundaryNode())
+    return false;
 
   if (SrcInst.isPHI() || DstInst.isPHI())
     return false;

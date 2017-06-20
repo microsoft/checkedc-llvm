@@ -23,7 +23,9 @@ class LitConfig(object):
                  useValgrind, valgrindLeakCheck, valgrindArgs,
                  noExecute, debug, isWindows,
                  params, config_prefix = None,
-                 maxIndividualTestTime = 0):
+                 maxIndividualTestTime = 0,
+                 maxFailures = None,
+                 parallelism_groups = []):
         # The name of the test runner.
         self.progname = progname
         # The items to add to the PATH environment variable.
@@ -60,6 +62,8 @@ class LitConfig(object):
             self.valgrindArgs.extend(self.valgrindUserArgs)
 
         self.maxIndividualTestTime = maxIndividualTestTime
+        self.maxFailures = maxFailures
+        self.parallelism_groups = parallelism_groups
 
     @property
     def maxIndividualTestTime(self):
@@ -81,7 +85,7 @@ class LitConfig(object):
             # a timeout per test. Check it's available.
             # See lit.util.killProcessAndChildren()
             try:
-                import psutil
+                import psutil  # noqa: F401
             except ImportError:
                 self.fatal("Setting a timeout per test requires the"
                            " Python psutil module but it could not be"

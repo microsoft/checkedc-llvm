@@ -57,15 +57,6 @@ struct InstantiationView {
   InstantiationView(StringRef FunctionName, unsigned Line,
                     std::unique_ptr<SourceCoverageView> View)
       : FunctionName(FunctionName), Line(Line), View(std::move(View)) {}
-  InstantiationView(InstantiationView &&RHS)
-      : FunctionName(std::move(RHS.FunctionName)), Line(std::move(RHS.Line)),
-        View(std::move(RHS.View)) {}
-  InstantiationView &operator=(InstantiationView &&RHS) {
-    FunctionName = std::move(RHS.FunctionName);
-    Line = std::move(RHS.Line);
-    View = std::move(RHS.View);
-    return *this;
-  }
 
   friend bool operator<(const InstantiationView &LHS,
                         const InstantiationView &RHS) {
@@ -142,7 +133,7 @@ public:
   virtual void closeViewFile(OwnedStream OS) = 0;
 
   /// \brief Create an index which lists reports for the given source files.
-  virtual Error createIndexFile(ArrayRef<StringRef> SourceFiles,
+  virtual Error createIndexFile(ArrayRef<std::string> SourceFiles,
                                 const coverage::CoverageMapping &Coverage) = 0;
 
   /// @}
@@ -196,8 +187,7 @@ protected:
   virtual void renderViewFooter(raw_ostream &OS) = 0;
 
   /// \brief Render the source name for the view.
-  virtual void renderSourceName(raw_ostream &OS, bool WholeFile,
-                                unsigned FirstUncoveredLineNo) = 0;
+  virtual void renderSourceName(raw_ostream &OS, bool WholeFile) = 0;
 
   /// \brief Render the line prefix at the given \p ViewDepth.
   virtual void renderLinePrefix(raw_ostream &OS, unsigned ViewDepth) = 0;
@@ -241,12 +231,13 @@ protected:
   virtual void renderInstantiationView(raw_ostream &OS, InstantiationView &ISV,
                                        unsigned ViewDepth) = 0;
 
-  /// \brief Render the project title, the report title \p CellText and the
-  /// created time for the view.
-  virtual void renderCellInTitle(raw_ostream &OS, StringRef CellText) = 0;
+  /// \brief Render \p Title, a project title if one is available, and the
+  /// created time.
+  virtual void renderTitle(raw_ostream &OS, StringRef CellText) = 0;
 
-  /// \brief Render the table header for a given source file
-  virtual void renderTableHeader(raw_ostream &OS, unsigned IndentLevel = 0) = 0;
+  /// \brief Render the table header for a given source file.
+  virtual void renderTableHeader(raw_ostream &OS, unsigned FirstUncoveredLineNo,
+                                 unsigned IndentLevel) = 0;
 
   /// @}
 
@@ -276,10 +267,6 @@ public:
 
   /// \brief Return the source name formatted for the host OS.
   std::string getSourceName() const;
-
-  /// \brief Return a verbose description of the source name and the binary it
-  /// corresponds to.
-  std::string getVerboseSourceName() const;
 
   const CoverageViewOptions &getOptions() const { return Options; }
 

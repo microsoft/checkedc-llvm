@@ -10,7 +10,7 @@
 ; RUN:    -check-prefixes=R2-R6,GP32,GP32-NOT-MM,NOT-MM
 ; RUN: llc < %s -march=mips -mcpu=mips32r6 | FileCheck %s \
 ; RUN:    -check-prefixes=R2-R6,GP32,GP32-NOT-MM,NOT-MM
-; RUN: llc < %s -march=mips -mcpu=mips32r3 -mattr=+micromips | FileCheck %s \
+; RUN: llc < %s -march=mips -mcpu=mips32r3 -mattr=+micromips -verify-machineinstrs | FileCheck %s \
 ; RUN:    -check-prefixes=GP32-MM,GP32,MM
 ; RUN: llc < %s -march=mips -mcpu=mips32r6 -mattr=+micromips | FileCheck %s \
 ; RUN:    -check-prefixes=GP32-MM,GP32,MM
@@ -36,12 +36,13 @@ entry:
 ; ALL-LABEL: sub_i1:
 
   ; NOT-MM:         subu    $[[T0:[0-9]+]], $4, $5
-  ; NOT-MM:         sll     $[[T0]], $[[T0]], 31
-  ; NOT-MM:         sra     $2, $[[T0]], 31
+  ; NOT-MM:         andi    $[[T0]], $[[T0]], 1
+  ; NOT-MM:         negu    $2, $[[T0]]
 
   ; MM:             subu16  $[[T0:[0-9]+]], $4, $5
-  ; MM:             sll     $[[T1:[0-9]+]], $[[T0]], 31
-  ; MM:             sra     $[[T0]], $[[T1]], 31
+  ; MM:             andi16  $[[T0]], $[[T0]], 1
+  ; MM:             li16    $[[T1:[0-9]+]], 0
+  ; MM:             subu16  $2, $[[T1]], $[[T0]]
 
   %r = sub i1 %a, %b
   ret i1 %r
@@ -99,7 +100,7 @@ define signext i64 @sub_i64(i64 signext %a, i64 signext %b) {
 entry:
 ; ALL-LABEL: sub_i64:
 
-  ; GP32:           subu    $3, $5, $7
+  ; GP32-NOT-MM     subu    $3, $5, $7
   ; GP32:           sltu    $[[T0:[0-9]+]], $5, $7
   ; GP32:           addu    $[[T1:[0-9]+]], $[[T0]], $6
   ; GP32:           subu    $2, $4, $[[T1]]
@@ -137,13 +138,13 @@ entry:
   ; GP32-MM:        lw        $[[T4:[0-9]+]], 24($sp)
   ; GP32-MM:        lw        $[[T5:[0-9]+]], 28($sp)
   ; GP32-MM:        subu      $[[T1]], $7, $[[T5]]
-  ; GP32-MM:        subu      $[[T3]], $[[T6:[0-9]+]], $[[T3]]
+  ; GP32-MM:        subu16    $[[T3]], $[[T6:[0-9]+]], $[[T3]]
   ; GP32-MM:        sltu      $[[T6]], $6, $[[T4]]
-  ; GP32-MM:        addu      $[[T0]], $[[T6]], $[[T0]]
-  ; GP32-MM:        subu      $[[T0]], $5, $[[T0]]
+  ; GP32-MM:        addu16    $[[T0]], $[[T6]], $[[T0]]
+  ; GP32-MM:        subu16    $[[T0]], $5, $[[T0]]
   ; GP32-MM:        sltu      $[[T6]], $7, $[[T5]]
   ; GP32-MM:        addu      $[[T6]], $[[T6]], $[[T4]]
-  ; GP32-MM:        subu      $[[T6]], $6, $[[T6]]
+  ; GP32-MM:        subu16    $[[T6]], $6, $[[T6]]
   ; GP32-MM:        move      $[[T2]], $[[T1]]
 
   ; GP64:           dsubu     $3, $5, $7

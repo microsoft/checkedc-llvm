@@ -20,30 +20,32 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
-#include "llvm/LTO/Config.h"
+#include "llvm/LTO/LTO.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/IPO/FunctionImport.h"
 
 namespace llvm {
 
+class BitcodeModule;
 class Error;
 class Module;
 class Target;
 
 namespace lto {
 
-/// Runs a regular LTO backend.
-Error backend(Config &C, AddOutputFn AddStream,
+/// Runs a regular LTO backend. The regular LTO backend can also act as the
+/// regular LTO phase of ThinLTO, which may need to access the combined index.
+Error backend(Config &C, AddStreamFn AddStream,
               unsigned ParallelCodeGenParallelismLevel,
-              std::unique_ptr<Module> M);
+              std::unique_ptr<Module> M, ModuleSummaryIndex &CombinedIndex);
 
 /// Runs a ThinLTO backend.
-Error thinBackend(Config &C, unsigned Task, AddOutputFn AddStream, Module &M,
-                  ModuleSummaryIndex &CombinedIndex,
+Error thinBackend(Config &C, unsigned Task, AddStreamFn AddStream, Module &M,
+                  const ModuleSummaryIndex &CombinedIndex,
                   const FunctionImporter::ImportMapTy &ImportList,
                   const GVSummaryMapTy &DefinedGlobals,
-                  MapVector<StringRef, MemoryBufferRef> &ModuleMap);
+                  MapVector<StringRef, BitcodeModule> &ModuleMap);
 }
 }
 

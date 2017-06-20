@@ -90,14 +90,35 @@ CostModelAnalysis::runOnFunction(Function &F) {
  return false;
 }
 
-static bool isReverseVectorMask(SmallVectorImpl<int> &Mask) {
+static bool isReverseVectorMask(ArrayRef<int> Mask) {
   for (unsigned i = 0, MaskSize = Mask.size(); i < MaskSize; ++i)
-    if (Mask[i] > 0 && Mask[i] != (int)(MaskSize - 1 - i))
+    if (Mask[i] >= 0 && Mask[i] != (int)(MaskSize - 1 - i))
       return false;
   return true;
 }
 
-static bool isAlternateVectorMask(SmallVectorImpl<int> &Mask) {
+static bool isSingleSourceVectorMask(ArrayRef<int> Mask) {
+  bool Vec0 = false;
+  bool Vec1 = false;
+  for (unsigned i = 0, NumVecElts = Mask.size(); i < NumVecElts; ++i) {
+    if (Mask[i] >= 0) {
+      if ((unsigned)Mask[i] >= NumVecElts)
+        Vec1 = true;
+      else
+        Vec0 = true;
+    }
+  }
+  return !(Vec0 && Vec1);
+}
+
+static bool isZeroEltBroadcastVectorMask(ArrayRef<int> Mask) {
+  for (unsigned i = 0; i < Mask.size(); ++i)
+    if (Mask[i] > 0)
+      return false;
+  return true;
+}
+
+static bool isAlternateVectorMask(ArrayRef<int> Mask) {
   bool isAlternate = true;
   unsigned MaskSize = Mask.size();
 
@@ -417,31 +438,34 @@ unsigned CostModelAnalysis::getInstructionCost(const Instruction *I) const {
       getOperandInfo(I->getOperand(0));
     TargetTransformInfo::OperandValueKind Op2VK =
       getOperandInfo(I->getOperand(1));
+    SmallVector<const Value*, 2> Operands(I->operand_values()); 
     return TTI->getArithmeticInstrCost(I->getOpcode(), I->getType(), Op1VK,
-                                       Op2VK);
+                                       Op2VK, TargetTransformInfo::OP_None, 
+                                       TargetTransformInfo::OP_None, 
+                                       Operands);
   }
   case Instruction::Select: {
     const SelectInst *SI = cast<SelectInst>(I);
     Type *CondTy = SI->getCondition()->getType();
-    return TTI->getCmpSelInstrCost(I->getOpcode(), I->getType(), CondTy);
+    return TTI->getCmpSelInstrCost(I->getOpcode(), I->getType(), CondTy, I);
   }
   case Instruction::ICmp:
   case Instruction::FCmp: {
     Type *ValTy = I->getOperand(0)->getType();
-    return TTI->getCmpSelInstrCost(I->getOpcode(), ValTy);
+    return TTI->getCmpSelInstrCost(I->getOpcode(), ValTy, I->getType(), I);
   }
   case Instruction::Store: {
     const StoreInst *SI = cast<StoreInst>(I);
     Type *ValTy = SI->getValueOperand()->getType();
     return TTI->getMemoryOpCost(I->getOpcode(), ValTy,
-                                 SI->getAlignment(),
-                                 SI->getPointerAddressSpace());
+                                SI->getAlignment(),
+                                SI->getPointerAddressSpace(), I);
   }
   case Instruction::Load: {
     const LoadInst *LI = cast<LoadInst>(I);
     return TTI->getMemoryOpCost(I->getOpcode(), I->getType(),
-                                 LI->getAlignment(),
-                                 LI->getPointerAddressSpace());
+                                LI->getAlignment(),
+                                LI->getPointerAddressSpace(), I);
   }
   case Instruction::ZExt:
   case Instruction::SExt:
@@ -457,7 +481,7 @@ unsigned CostModelAnalysis::getInstructionCost(const Instruction *I) const {
   case Instruction::BitCast:
   case Instruction::AddrSpaceCast: {
     Type *SrcTy = I->getOperand(0)->getType();
-    return TTI->getCastInstrCost(I->getOpcode(), I->getType(), SrcTy);
+    return TTI->getCastInstrCost(I->getOpcode(), I->getType(), SrcTy, I);
   }
   case Instruction::ExtractElement: {
     const ExtractElementInst * EEI = cast<ExtractElementInst>(I);
@@ -501,15 +525,24 @@ unsigned CostModelAnalysis::getInstructionCost(const Instruction *I) const {
       if (isAlternateVectorMask(Mask))
         return TTI->getShuffleCost(TargetTransformInfo::SK_Alternate,
                                    VecTypOp0, 0, nullptr);
+
+      if (isZeroEltBroadcastVectorMask(Mask))
+        return TTI->getShuffleCost(TargetTransformInfo::SK_Broadcast,
+                                   VecTypOp0, 0, nullptr);
+
+      if (isSingleSourceVectorMask(Mask))
+        return TTI->getShuffleCost(TargetTransformInfo::SK_PermuteSingleSrc,
+                                   VecTypOp0, 0, nullptr);
+
+      return TTI->getShuffleCost(TargetTransformInfo::SK_PermuteTwoSrc,
+                                 VecTypOp0, 0, nullptr);
     }
 
     return -1;
   }
   case Instruction::Call:
     if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(I)) {
-      SmallVector<Value *, 4> Args;
-      for (unsigned J = 0, JE = II->getNumArgOperands(); J != JE; ++J)
-        Args.push_back(II->getArgOperand(J));
+      SmallVector<Value *, 4> Args(II->arg_operands());
 
       FastMathFlags FMF;
       if (auto *FPMO = dyn_cast<FPMathOperator>(II))

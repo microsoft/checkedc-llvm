@@ -17,11 +17,16 @@
 ; ELF: }
 
 ; ELF: SHT_NOTE
+; ELF: Flags [ (0x2)
+; ELF: SHF_ALLOC (0x2)
+; ELF: ]
+; ELF: SectionData (
 ; ELF: 0000: 04000000 08000000 01000000 414D4400
 ; ELF: 0010: 02000000 01000000 04000000 1B000000
 ; ELF: 0020: 03000000 414D4400 04000700 07000000
 ; ELF: 0030: 00000000 00000000 414D4400 414D4447
 ; ELF: 0040: 50550000
+; ELF: )
 
 ; ELF: Symbol {
 ; ELF: Name: simple
@@ -29,17 +34,19 @@
 ; ELF: Type: AMDGPU_HSA_KERNEL (0xA)
 ; ELF: }
 
+; HSA-NOT: .AMDGPU.config
+; HSA: .text
 ; HSA: .hsa_code_object_version 2,1
 ; HSA-CI: .hsa_code_object_isa 7,0,0,"AMD","AMDGPU"
 ; HSA-VI: .hsa_code_object_isa 8,0,1,"AMD","AMDGPU"
-
-; HSA: .text
 
 ; HSA: .amdgpu_hsa_kernel simple
 ; HSA: {{^}}simple:
 ; HSA: .amd_kernel_code_t
 ; HSA: enable_sgpr_private_segment_buffer = 1
 ; HSA: enable_sgpr_kernarg_segment_ptr = 1
+; HSA: wavefront_size = 6
+; HSA: call_convention = -1
 ; HSA: .end_amd_kernel_code_t
 ; HSA: s_load_dwordx2 s[{{[0-9]+:[0-9]+}}], s[4:5], 0x0
 

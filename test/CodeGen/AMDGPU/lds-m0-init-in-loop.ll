@@ -9,14 +9,16 @@
 ; GCN: s_mov_b32 m0, -1
 
 ; GCN: BB0_2:
+; GCN-NOT: m0
 ; GCN: ds_read_b32
+; GCN-NOT: m0
 ; GCN: buffer_store_dword
 
-; GCN: s_cbranch_vccz BB0_2
+; GCN: s_cbranch_scc0 BB0_2
 
 ; GCN: BB0_3:
 ; GCN-NEXT: s_endpgm
-define void @copy_local_to_global_loop_m0_init(i32 addrspace(1)* noalias nocapture %out, i32 addrspace(3)* noalias nocapture readonly %in, i32 %n) #0 {
+define amdgpu_kernel void @copy_local_to_global_loop_m0_init(i32 addrspace(1)* noalias nocapture %out, i32 addrspace(3)* noalias nocapture readonly %in, i32 %n) #0 {
 bb:
   %tmp = icmp sgt i32 %n, 0
   br i1 %tmp, label %.lr.ph.preheader, label %._crit_edge

@@ -14,21 +14,19 @@
 
 let AddedComplexity = 100 in {
 def : Pat < (v16i32 (int_hexagon_V6_lo (v32i32 VecDblRegs:$src1))),
-            (v16i32 (EXTRACT_SUBREG (v32i32 VecDblRegs:$src1), subreg_loreg)) >,
+            (v16i32 (EXTRACT_SUBREG (v32i32 VecDblRegs:$src1), vsub_lo)) >,
             Requires<[UseHVXSgl]>;
 
 def : Pat < (v16i32 (int_hexagon_V6_hi (v32i32 VecDblRegs:$src1))),
-            (v16i32 (EXTRACT_SUBREG (v32i32 VecDblRegs:$src1), subreg_hireg)) >,
+            (v16i32 (EXTRACT_SUBREG (v32i32 VecDblRegs:$src1), vsub_hi)) >,
             Requires<[UseHVXSgl]>;
 
 def : Pat < (v32i32 (int_hexagon_V6_lo_128B (v64i32 VecDblRegs128B:$src1))),
-            (v32i32 (EXTRACT_SUBREG (v64i32 VecDblRegs128B:$src1),
-                                     subreg_loreg)) >,
+            (v32i32 (EXTRACT_SUBREG (v64i32 VecDblRegs128B:$src1), vsub_lo)) >,
             Requires<[UseHVXDbl]>;
 
 def : Pat < (v32i32 (int_hexagon_V6_hi_128B (v64i32 VecDblRegs128B:$src1))),
-            (v32i32 (EXTRACT_SUBREG (v64i32 VecDblRegs128B:$src1),
-                                     subreg_hireg)) >,
+            (v32i32 (EXTRACT_SUBREG (v64i32 VecDblRegs128B:$src1), vsub_hi)) >,
             Requires<[UseHVXDbl]>;
 }
 
@@ -792,7 +790,7 @@ def : T_RRI_pat <S6_rol_i_r_xacc, int_hexagon_S6_rol_i_r_xacc>;
 defm : T_VR_pat <V6_extractw, int_hexagon_V6_extractw>;
 defm : T_VR_pat <V6_vinsertwr, int_hexagon_V6_vinsertwr>;
 
-def : T_PPQ_pat <S2_cabacencbin, int_hexagon_S2_cabacencbin>;
+//def : T_PPQ_pat <S2_cabacencbin, int_hexagon_S2_cabacencbin>;
 
 def: Pat<(v64i16 (trunc v64i32:$Vdd)),
          (v64i16 (V6_vpackwh_sat_128B

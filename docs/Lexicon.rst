@@ -180,6 +180,10 @@ O
 P
 -
 
+**PR**
+    Problem report. A bug filed on `the LLVM Bug Tracking System
+    <https://bugs.llvm.org/enter_bug.cgi>`_.
+
 **PRE**
     Partial Redundancy Elimination
 

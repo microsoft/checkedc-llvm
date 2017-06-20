@@ -212,7 +212,12 @@ namespace X86II {
     /// the offset from beginning of section.
     ///
     /// This is the TLS offset for the COFF/Windows TLS mechanism.
-    MO_SECREL
+    MO_SECREL,
+
+    /// MO_ABS8 - On a symbol operand this indicates that the symbol is known
+    /// to be an absolute symbol in range [0,128), so we can use the @ABS8
+    /// symbol modifier.
+    MO_ABS8,
   };
 
   enum : uint64_t {
@@ -766,6 +771,16 @@ namespace X86II {
   inline bool isX86_64NonExtLowByteReg(unsigned reg) {
     return (reg == X86::SPL || reg == X86::BPL ||
             reg == X86::SIL || reg == X86::DIL);
+  }
+
+  /// isKMasked - Is this a masked instruction.
+  inline bool isKMasked(uint64_t TSFlags) {
+    return (TSFlags & X86II::EVEX_K) != 0;
+  }
+
+  /// isKMergedMasked - Is this a merge masked instruction.
+  inline bool isKMergeMasked(uint64_t TSFlags) {
+    return isKMasked(TSFlags) && (TSFlags & X86II::EVEX_Z) == 0;
   }
 }
 

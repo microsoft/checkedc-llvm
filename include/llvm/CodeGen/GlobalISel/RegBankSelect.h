@@ -67,6 +67,7 @@
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/RegisterBankInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineOptimizationRemarkEmitter.h"
 
 namespace llvm {
 // Forward declarations.
@@ -76,6 +77,7 @@ class MachineBlockFrequencyInfo;
 class MachineRegisterInfo;
 class TargetPassConfig;
 class TargetRegisterInfo;
+class raw_ostream;
 
 /// This pass implements the reg bank selector pass used in the GlobalISel
 /// pipeline. At the end of this pass, all register operands have been assigned
@@ -450,6 +452,18 @@ private:
     bool operator>(const MappingCost &Cost) const {
       return *this != Cost && Cost < *this;
     }
+
+    /// Print this on dbgs() stream.
+    void dump() const;
+
+    /// Print this on \p OS;
+    void print(raw_ostream &OS) const;
+
+    /// Overload the stream operator for easy debug printing.
+    friend raw_ostream &operator<<(raw_ostream &OS, const MappingCost &Cost) {
+      Cost.print(OS);
+      return OS;
+    }
   };
 
   /// Interface to the target lowering info related
@@ -470,6 +484,9 @@ private:
   /// Get the frequency of the edges.
   /// This is required for non-fast mode.
   MachineBranchProbabilityInfo *MBPI;
+
+  /// Current optimization remark emitter. Used to report failures.
+  std::unique_ptr<MachineOptimizationRemarkEmitter> MORE;
 
   /// Helper class used for every code morphing.
   MachineIRBuilder MIRBuilder;
@@ -586,9 +603,7 @@ public:
   /// Create a RegBankSelect pass with the specified \p RunningMode.
   RegBankSelect(Mode RunningMode = Fast);
 
-  const char *getPassName() const override {
-    return "RegBankSelect";
-  }
+  StringRef getPassName() const override { return "RegBankSelect"; }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override;
 
@@ -628,6 +643,7 @@ public:
   /// \endcode
   bool runOnMachineFunction(MachineFunction &MF) override;
 };
+
 } // End namespace llvm.
 
 #endif

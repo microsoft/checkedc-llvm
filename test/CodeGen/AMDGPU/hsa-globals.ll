@@ -9,7 +9,7 @@
 @internal_readonly = internal unnamed_addr addrspace(2) constant i32 0
 @external_readonly = unnamed_addr addrspace(2) constant i32 0
 
-define void @test() {
+define amdgpu_kernel void @test() {
   ret void
 }
 
@@ -38,7 +38,7 @@ define void @test() {
 ; ASM: .size external_global_program, 4
 
 ; ASM: .type internal_readonly,@object
-; ASM: .text
+; ASM: .section .rodata.cst4,"aM",@progbits,4
 ; ASM: internal_readonly:
 ; ASM: .long 0
 ; ASM: .size internal_readonly, 4

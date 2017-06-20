@@ -46,9 +46,7 @@ public:
   static char ID; // Pass identification, replacement for typeid
   WebAssemblyStoreResults() : MachineFunctionPass(ID) {}
 
-  const char *getPassName() const override {
-    return "WebAssembly Store Results";
-  }
+  StringRef getPassName() const override { return "WebAssembly Store Results"; }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.setPreservesCFG();
@@ -156,7 +154,7 @@ static bool optimizeCall(MachineBasicBlock &MBB, MachineInstr &MI,
   if (!callReturnsInput)
     return false;
 
-  LibFunc::Func Func;
+  LibFunc Func;
   if (!LibInfo.getLibFunc(Name, Func))
     return false;
 

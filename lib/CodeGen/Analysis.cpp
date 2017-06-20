@@ -272,28 +272,10 @@ static const Value *getNoopInput(const Value *V,
                TLI.allowTruncateForTailCall(Op->getType(), I->getType())) {
       DataBits = std::min(DataBits, I->getType()->getPrimitiveSizeInBits());
       NoopInput = Op;
-    } else if (isa<CallInst>(I)) {
-      // Look through call (skipping callee)
-      for (User::const_op_iterator i = I->op_begin(), e = I->op_end() - 1;
-           i != e; ++i) {
-        unsigned attrInd = i - I->op_begin() + 1;
-        if (cast<CallInst>(I)->paramHasAttr(attrInd, Attribute::Returned) &&
-            isNoopBitcast((*i)->getType(), I->getType(), TLI)) {
-          NoopInput = *i;
-          break;
-        }
-      }
-    } else if (isa<InvokeInst>(I)) {
-      // Look through invoke (skipping BB, BB, Callee)
-      for (User::const_op_iterator i = I->op_begin(), e = I->op_end() - 3;
-           i != e; ++i) {
-        unsigned attrInd = i - I->op_begin() + 1;
-        if (cast<InvokeInst>(I)->paramHasAttr(attrInd, Attribute::Returned) &&
-            isNoopBitcast((*i)->getType(), I->getType(), TLI)) {
-          NoopInput = *i;
-          break;
-        }
-      }
+    } else if (auto CS = ImmutableCallSite(I)) {
+      const Value *ReturnedOp = CS.getReturnedArgOperand();
+      if (ReturnedOp && isNoopBitcast(ReturnedOp->getType(), I->getType(), TLI))
+        NoopInput = ReturnedOp;
     } else if (const InsertValueInst *IVI = dyn_cast<InsertValueInst>(V)) {
       // Value may come from either the aggregate or the scalar
       ArrayRef<unsigned> InsertLoc = IVI->getIndices();
@@ -534,15 +516,14 @@ bool llvm::attributesPermitTailCall(const Function *F, const Instruction *I,
   bool &ADS = AllowDifferingSizes ? *AllowDifferingSizes : DummyADS;
   ADS = true;
 
-  AttrBuilder CallerAttrs(F->getAttributes(),
-                          AttributeSet::ReturnIndex);
+  AttrBuilder CallerAttrs(F->getAttributes(), AttributeList::ReturnIndex);
   AttrBuilder CalleeAttrs(cast<CallInst>(I)->getAttributes(),
-                          AttributeSet::ReturnIndex);
+                          AttributeList::ReturnIndex);
 
   // Noalias is completely benign as far as calling convention goes, it
   // shouldn't affect whether the call is a tail call.
-  CallerAttrs = CallerAttrs.removeAttribute(Attribute::NoAlias);
-  CalleeAttrs = CalleeAttrs.removeAttribute(Attribute::NoAlias);
+  CallerAttrs.removeAttribute(Attribute::NoAlias);
+  CalleeAttrs.removeAttribute(Attribute::NoAlias);
 
   if (CallerAttrs.contains(Attribute::ZExt)) {
     if (!CalleeAttrs.contains(Attribute::ZExt))
@@ -631,25 +612,6 @@ bool llvm::returnTypeIsEligibleForTailCall(const Function *F,
   return true;
 }
 
-bool llvm::canBeOmittedFromSymbolTable(const GlobalValue *GV) {
-  if (!GV->hasLinkOnceODRLinkage())
-    return false;
-
-  // We assume that anyone who sets global unnamed_addr on a non-constant knows
-  // what they're doing.
-  if (GV->hasGlobalUnnamedAddr())
-    return true;
-
-  // If it is a non constant variable, it needs to be uniqued across shared
-  // objects.
-  if (const GlobalVariable *Var = dyn_cast<GlobalVariable>(GV)) {
-    if (!Var->isConstant())
-      return false;
-  }
-
-  return GV->hasAtLeastLocalUnnamedAddr();
-}
-
 static void collectFuncletMembers(
     DenseMap<const MachineBasicBlock *, int> &FuncletMembership, int Funclet,
     const MachineBasicBlock *MBB) {
@@ -684,7 +646,7 @@ llvm::getFuncletMembership(const MachineFunction &MF) {
   DenseMap<const MachineBasicBlock *, int> FuncletMembership;
 
   // We don't have anything to do if there aren't any EH pads.
-  if (!MF.getMMI().hasEHFunclets())
+  if (!MF.hasEHFunclets())
     return FuncletMembership;
 
   int EntryBBNumber = MF.front().getNumber();

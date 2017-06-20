@@ -66,8 +66,7 @@ CompressDebugSections("compress-debug-sections", cl::ValueOptional,
     clEnumValN(DebugCompressionType::DCT_Zlib, "zlib",
       "Use zlib compression"),
     clEnumValN(DebugCompressionType::DCT_ZlibGnu, "zlib-gnu",
-      "Use zlib-gnu compression (depricated)"),
-    clEnumValEnd));
+      "Use zlib-gnu compression (deprecated)")));
 
 static cl::opt<bool>
 ShowInst("show-inst", cl::desc("Show internal instruction representation"));
@@ -105,8 +104,7 @@ FileType("filetype", cl::init(OFT_AssemblyFile),
        clEnumValN(OFT_Null, "null",
                   "Don't emit anything (for timing purposes)"),
        clEnumValN(OFT_ObjectFile, "obj",
-                  "Emit a native object ('.o') file"),
-       clEnumValEnd));
+                  "Emit a native object ('.o') file")));
 
 static cl::list<std::string>
 IncludeDirs("I", cl::desc("Directory of include files"),
@@ -148,8 +146,7 @@ CMModel("code-model",
                    clEnumValN(CodeModel::Medium, "medium",
                               "Medium code model"),
                    clEnumValN(CodeModel::Large, "large",
-                              "Large code model"),
-                   clEnumValEnd));
+                              "Large code model")));
 
 static cl::opt<bool>
 NoInitialTextSection("n", cl::desc("Don't assume assembly file starts "
@@ -190,8 +187,7 @@ Action(cl::desc("Action to perform:"),
                   clEnumValN(AC_Disassemble, "disassemble",
                              "Disassemble strings of hex bytes"),
                   clEnumValN(AC_MDisassemble, "mdis",
-                             "Marked up disassembly of strings of hex bytes"),
-                  clEnumValEnd));
+                             "Marked up disassembly of strings of hex bytes")));
 
 static const Target *GetTarget(const char *ProgName) {
   // Figure out the target triple.
@@ -397,22 +393,22 @@ static int AsLexInput(SourceMgr &SrcMgr, MCAsmInfo &MAI,
   return Error;
 }
 
-static int fillCommandLineSymbols(MCAsmParser &Parser){
-  for(auto &I: DefineSymbol){
+static int fillCommandLineSymbols(MCAsmParser &Parser) {
+  for (auto &I: DefineSymbol) {
     auto Pair = StringRef(I).split('=');
-    if(Pair.second.empty()){
-      errs() << "error: defsym must be of the form: sym=value: " << I;
+    auto Sym = Pair.first;
+    auto Val = Pair.second;
+
+    if (Sym.empty() || Val.empty()) {
+      errs() << "error: defsym must be of the form: sym=value: " << I << "\n";
       return 1;
     }
     int64_t Value;
-    if(Pair.second.getAsInteger(0, Value)){
-      errs() << "error: Value is not an integer: " << Pair.second;
+    if (Val.getAsInteger(0, Value)) {
+      errs() << "error: Value is not an integer: " << Val << "\n";
       return 1;
     }
-    auto &Context = Parser.getContext();
-    auto Symbol = Context.getOrCreateSymbol(Pair.first);
-    Parser.getStreamer().EmitAssignment(Symbol,
-                                        MCConstantExpr::create(Value, Context));
+    Parser.getContext().setSymbolValue(Parser.getStreamer(), Sym, Value);
   }
   return 0;
 }
@@ -520,7 +516,7 @@ int main(int argc, char **argv) {
   Ctx.setGenDwarfForAssembly(GenDwarfForAssembly);
   // Default to 4 for dwarf version.
   unsigned DwarfVersion = MCOptions.DwarfVersion ? MCOptions.DwarfVersion : 4;
-  if (DwarfVersion < 2 || DwarfVersion > 4) {
+  if (DwarfVersion < 2 || DwarfVersion > 5) {
     errs() << ProgName << ": Dwarf version " << DwarfVersion
            << " is not supported." << '\n';
     return 1;
@@ -566,6 +562,14 @@ int main(int argc, char **argv) {
   if (FileType == OFT_AssemblyFile) {
     IP = TheTarget->createMCInstPrinter(Triple(TripleName), OutputAsmVariant,
                                         *MAI, *MCII, *MRI);
+
+    if (!IP) {
+      errs()
+          << "error: unable to create instruction printer for target triple '"
+          << TheTriple.normalize() << "' with assembly variant "
+          << OutputAsmVariant << ".\n";
+      return 1;
+    }
 
     // Set the display preference for hex vs. decimal immediates.
     IP->setPrintImmHex(PrintImmHex);

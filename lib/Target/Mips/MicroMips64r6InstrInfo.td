@@ -81,7 +81,7 @@ class DAUI_MMR6_DESC_BASE<string instr_asm, RegisterOperand GPROpnd,
                           InstrItinClass Itin>
     : MMR6Arch<instr_asm>, MipsR6Inst {
   dag OutOperandList = (outs GPROpnd:$rt);
-  dag InOperandList = (ins GPROpnd:$rs, simm16:$imm);
+  dag InOperandList = (ins GPROpnd:$rs, uimm16:$imm);
   string AsmString = !strconcat(instr_asm, "\t$rt, $rs, $imm");
   list<dag> Pattern = [];
   InstrItinClass Itinerary = Itin;
@@ -92,8 +92,8 @@ class DAHI_DATI_DESC_BASE<string instr_asm, RegisterOperand GPROpnd,
                           InstrItinClass Itin>
     : MMR6Arch<instr_asm>, MipsR6Inst {
   dag OutOperandList = (outs GPROpnd:$rs);
-  dag InOperandList = (ins GPROpnd:$rt, simm16:$imm);
-  string AsmString = !strconcat(instr_asm, "\t$rt, $imm");
+  dag InOperandList = (ins GPROpnd:$rt, uimm16:$imm);
+  string AsmString = !strconcat(instr_asm, "\t$rt, $rs, $imm");
   string Constraints = "$rs = $rt";
   InstrItinClass Itinerary = Itin;
 }
@@ -360,8 +360,10 @@ class LWUPC_MM64R6_DESC {
 
 let DecoderNamespace = "MicroMipsR6" in {
   def DAUI_MM64R6 : StdMMR6Rel, DAUI_MMR6_DESC, DAUI_MMR6_ENC, ISA_MICROMIPS64R6;
-  def DAHI_MM64R6 : StdMMR6Rel, DAHI_MMR6_DESC, DAHI_MMR6_ENC, ISA_MICROMIPS64R6;
-  def DATI_MM64R6 : StdMMR6Rel, DATI_MMR6_DESC, DATI_MMR6_ENC, ISA_MICROMIPS64R6;
+  let DecoderMethod = "DecodeDAHIDATIMMR6" in {
+    def DAHI_MM64R6 : StdMMR6Rel, DAHI_MMR6_DESC, DAHI_MMR6_ENC, ISA_MICROMIPS64R6;
+    def DATI_MM64R6 : StdMMR6Rel, DATI_MMR6_DESC, DATI_MMR6_ENC, ISA_MICROMIPS64R6;
+  }
   def DEXT_MM64R6 : StdMMR6Rel, DEXT_MMR6_DESC, DEXT_MMR6_ENC,
                     ISA_MICROMIPS64R6;
   def DEXTM_MM64R6 : StdMMR6Rel, DEXTM_MMR6_DESC, DEXTM_MMR6_ENC,
@@ -473,29 +475,11 @@ defm : MaterializeImms<i64, ZERO_64, DADDIU_MM64R6, LUi64, ORi64>;
 //
 //===----------------------------------------------------------------------===//
 
-def : MipsPat<(MipsLo tglobaladdr:$in),
-              (DADDIU_MM64R6 ZERO_64, tglobaladdr:$in)>, ISA_MICROMIPS64R6;
-def : MipsPat<(MipsLo tblockaddress:$in),
-              (DADDIU_MM64R6 ZERO_64, tblockaddress:$in)>, ISA_MICROMIPS64R6;
-def : MipsPat<(MipsLo tjumptable:$in),
-              (DADDIU_MM64R6 ZERO_64, tjumptable:$in)>, ISA_MICROMIPS64R6;
-def : MipsPat<(MipsLo tconstpool:$in),
-              (DADDIU_MM64R6 ZERO_64, tconstpool:$in)>, ISA_MICROMIPS64R6;
-def : MipsPat<(MipsLo tglobaltlsaddr:$in),
-              (DADDIU_MM64R6 ZERO_64, tglobaltlsaddr:$in)>, ISA_MICROMIPS64R6;
-def : MipsPat<(MipsLo texternalsym:$in),
-              (DADDIU_MM64R6 ZERO_64, texternalsym:$in)>, ISA_MICROMIPS64R6;
+defm : MipsHiLoRelocs<LUi64, DADDIU_MM64R6, ZERO_64, GPR64Opnd>, SYM_32,
+                      ISA_MICROMIPS64R6;
 
-def : MipsPat<(add GPR64:$hi, (MipsLo tglobaladdr:$lo)),
-              (DADDIU_MM64R6 GPR64:$hi, tglobaladdr:$lo)>, ISA_MICROMIPS64R6;
-def : MipsPat<(add GPR64:$hi, (MipsLo tblockaddress:$lo)),
-              (DADDIU_MM64R6 GPR64:$hi, tblockaddress:$lo)>, ISA_MICROMIPS64R6;
-def : MipsPat<(add GPR64:$hi, (MipsLo tjumptable:$lo)),
-              (DADDIU_MM64R6 GPR64:$hi, tjumptable:$lo)>, ISA_MICROMIPS64R6;
-def : MipsPat<(add GPR64:$hi, (MipsLo tconstpool:$lo)),
-              (DADDIU_MM64R6 GPR64:$hi, tconstpool:$lo)>, ISA_MICROMIPS64R6;
-def : MipsPat<(add GPR64:$hi, (MipsLo tglobaltlsaddr:$lo)),
-              (DADDIU_MM64R6 GPR64:$hi, tglobaltlsaddr:$lo)>, ISA_MICROMIPS64R6;
+defm : MipsHighestHigherHiLoRelocs<LUi64, DADDIU_MM64R6>, SYM_64,
+                                   ISA_MICROMIPS64R6;
 
 def : MipsPat<(addc GPR64:$lhs, GPR64:$rhs),
               (DADDU_MM64R6 GPR64:$lhs, GPR64:$rhs)>, ISA_MICROMIPS64R6;

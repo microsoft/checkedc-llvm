@@ -274,7 +274,7 @@ define <16 x i8> @vsel_i8(<16 x i8> %v1, <16 x i8> %v2) {
 ; SSE41:       # BB#0: # %entry
 ; SSE41-NEXT:    movdqa %xmm0, %xmm2
 ; SSE41-NEXT:    movaps {{.*#+}} xmm0 = [255,0,0,0,255,0,0,0,255,0,0,0,255,0,0,0]
-; SSE41-NEXT:    pblendvb %xmm2, %xmm1
+; SSE41-NEXT:    pblendvb %xmm0, %xmm2, %xmm1
 ; SSE41-NEXT:    movdqa %xmm1, %xmm0
 ; SSE41-NEXT:    retq
 ;
@@ -500,7 +500,7 @@ define <2 x double> @testa(<2 x double> %x, <2 x double> %y) {
 ; SSE41-NEXT:    movapd %xmm0, %xmm2
 ; SSE41-NEXT:    movapd %xmm1, %xmm0
 ; SSE41-NEXT:    cmplepd %xmm2, %xmm0
-; SSE41-NEXT:    blendvpd %xmm2, %xmm1
+; SSE41-NEXT:    blendvpd %xmm0, %xmm2, %xmm1
 ; SSE41-NEXT:    movapd %xmm1, %xmm0
 ; SSE41-NEXT:    retq
 ;
@@ -539,7 +539,7 @@ define <2 x double> @testb(<2 x double> %x, <2 x double> %y) {
 ; SSE41-NEXT:    movapd %xmm0, %xmm2
 ; SSE41-NEXT:    movapd %xmm1, %xmm0
 ; SSE41-NEXT:    cmpnlepd %xmm2, %xmm0
-; SSE41-NEXT:    blendvpd %xmm2, %xmm1
+; SSE41-NEXT:    blendvpd %xmm0, %xmm2, %xmm1
 ; SSE41-NEXT:    movapd %xmm1, %xmm0
 ; SSE41-NEXT:    retq
 ;
@@ -653,8 +653,8 @@ define <32 x i8> @constant_pblendvb_avx2(<32 x i8> %xyzw, <32 x i8> %abcd) {
 ; SSE41:       # BB#0: # %entry
 ; SSE41-NEXT:    movdqa %xmm0, %xmm4
 ; SSE41-NEXT:    movaps {{.*#+}} xmm0 = [0,0,255,0,255,255,255,0,0,0,255,0,255,255,255,0]
-; SSE41-NEXT:    pblendvb %xmm4, %xmm2
-; SSE41-NEXT:    pblendvb %xmm1, %xmm3
+; SSE41-NEXT:    pblendvb %xmm0, %xmm4, %xmm2
+; SSE41-NEXT:    pblendvb %xmm0, %xmm1, %xmm3
 ; SSE41-NEXT:    movdqa %xmm2, %xmm0
 ; SSE41-NEXT:    movdqa %xmm3, %xmm1
 ; SSE41-NEXT:    retq
@@ -729,8 +729,8 @@ define <8 x float> @blend_shufflevector_8xfloat(<8 x float> %a, <8 x float> %b) 
 ;
 ; SSE41-LABEL: blend_shufflevector_8xfloat:
 ; SSE41:       # BB#0: # %entry
-; SSE41-NEXT:    blendps {{.*#+}} xmm0 = xmm0[0],xmm2[1,2,3]
 ; SSE41-NEXT:    blendps {{.*#+}} xmm1 = xmm3[0,1],xmm1[2],xmm3[3]
+; SSE41-NEXT:    blendps {{.*#+}} xmm0 = xmm0[0],xmm2[1,2,3]
 ; SSE41-NEXT:    retq
 ;
 ; AVX-LABEL: blend_shufflevector_8xfloat:
@@ -822,7 +822,7 @@ define <4 x i32> @blend_logic_v4i32(<4 x i32> %b, <4 x i32> %a, <4 x i32> %c) {
 ; SSE41-LABEL: blend_logic_v4i32:
 ; SSE41:       # BB#0: # %entry
 ; SSE41-NEXT:    psrad $31, %xmm0
-; SSE41-NEXT:    pblendvb %xmm1, %xmm2
+; SSE41-NEXT:    pblendvb %xmm0, %xmm1, %xmm2
 ; SSE41-NEXT:    movdqa %xmm2, %xmm0
 ; SSE41-NEXT:    retq
 ;
@@ -870,9 +870,9 @@ define <8 x i32> @blend_logic_v8i32(<8 x i32> %b, <8 x i32> %a, <8 x i32> %c) {
 ; SSE41:       # BB#0: # %entry
 ; SSE41-NEXT:    psrad $31, %xmm1
 ; SSE41-NEXT:    psrad $31, %xmm0
-; SSE41-NEXT:    pblendvb %xmm2, %xmm4
+; SSE41-NEXT:    pblendvb %xmm0, %xmm2, %xmm4
 ; SSE41-NEXT:    movdqa %xmm1, %xmm0
-; SSE41-NEXT:    pblendvb %xmm3, %xmm5
+; SSE41-NEXT:    pblendvb %xmm0, %xmm3, %xmm5
 ; SSE41-NEXT:    movdqa %xmm4, %xmm0
 ; SSE41-NEXT:    movdqa %xmm5, %xmm1
 ; SSE41-NEXT:    retq
@@ -1007,8 +1007,6 @@ entry:
 define <4 x i32> @blend_neg_logic_v4i32_2(<4 x i32> %v, <4 x i32> %c) {
 ; SSE2-LABEL: blend_neg_logic_v4i32_2:
 ; SSE2:       # BB#0: # %entry
-; SSE2-NEXT:    psrld $31, %xmm1
-; SSE2-NEXT:    pslld $31, %xmm1
 ; SSE2-NEXT:    psrad $31, %xmm1
 ; SSE2-NEXT:    pxor %xmm1, %xmm0
 ; SSE2-NEXT:    psubd %xmm0, %xmm1
@@ -1017,8 +1015,6 @@ define <4 x i32> @blend_neg_logic_v4i32_2(<4 x i32> %v, <4 x i32> %c) {
 ;
 ; SSSE3-LABEL: blend_neg_logic_v4i32_2:
 ; SSSE3:       # BB#0: # %entry
-; SSSE3-NEXT:    psrld $31, %xmm1
-; SSSE3-NEXT:    pslld $31, %xmm1
 ; SSSE3-NEXT:    psrad $31, %xmm1
 ; SSSE3-NEXT:    pxor %xmm1, %xmm0
 ; SSSE3-NEXT:    psubd %xmm0, %xmm1
@@ -1028,19 +1024,17 @@ define <4 x i32> @blend_neg_logic_v4i32_2(<4 x i32> %v, <4 x i32> %c) {
 ; SSE41-LABEL: blend_neg_logic_v4i32_2:
 ; SSE41:       # BB#0: # %entry
 ; SSE41-NEXT:    movdqa %xmm0, %xmm2
-; SSE41-NEXT:    psrld $31, %xmm1
-; SSE41-NEXT:    pslld $31, %xmm1
+; SSE41-NEXT:    psrad $31, %xmm1
 ; SSE41-NEXT:    pxor %xmm3, %xmm3
 ; SSE41-NEXT:    psubd %xmm2, %xmm3
 ; SSE41-NEXT:    movdqa %xmm1, %xmm0
-; SSE41-NEXT:    blendvps %xmm2, %xmm3
+; SSE41-NEXT:    blendvps %xmm0, %xmm2, %xmm3
 ; SSE41-NEXT:    movaps %xmm3, %xmm0
 ; SSE41-NEXT:    retq
 ;
 ; AVX-LABEL: blend_neg_logic_v4i32_2:
 ; AVX:       # BB#0: # %entry
-; AVX-NEXT:    vpsrld $31, %xmm1, %xmm1
-; AVX-NEXT:    vpslld $31, %xmm1, %xmm1
+; AVX-NEXT:    vpsrad $31, %xmm1, %xmm1
 ; AVX-NEXT:    vpxor %xmm2, %xmm2, %xmm2
 ; AVX-NEXT:    vpsubd %xmm0, %xmm2, %xmm2
 ; AVX-NEXT:    vblendvps %xmm1, %xmm0, %xmm2, %xmm0

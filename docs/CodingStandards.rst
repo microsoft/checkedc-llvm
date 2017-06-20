@@ -83,7 +83,8 @@ Supported C++11 Language and Library Features
 
 While LLVM, Clang, and LLD use C++11, not all features are available in all of
 the toolchains which we support. The set of features supported for use in LLVM
-is the intersection of those supported in MSVC 2013, GCC 4.7, and Clang 3.1.
+is the intersection of those supported in the minimum requirements described
+in the :doc:`GettingStarted` page, section `Software`.
 The ultimate definition of this set is what build bots with those respective
 toolchains accept. Don't argue with the build bots. However, we have some
 guidance below to help you know what to expect.
@@ -126,17 +127,12 @@ unlikely to be supported by our host compilers.
 * Variadic templates: N2242_
 * Explicit conversion operators: N2437_
 * Defaulted and deleted functions: N2346_
-
-  * But not defaulted move constructors or move assignment operators, MSVC 2013
-    cannot synthesize them.
 * Initializer lists: N2627_
 * Delegating constructors: N1986_
 * Default member initializers (non-static data member initializers): N2756_
 
-  * Only use these for scalar members that would otherwise be left
-    uninitialized. Non-scalar members generally have appropriate default
-    constructors, and MSVC 2013 has problems when braced initializer lists are
-    involved.
+  * Feel free to use these wherever they make sense and where the `=`
+    syntax is allowed. Don't use braced initialization syntax.
 
 .. _N2118: http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2006/n2118.html
 .. _N2439: http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2007/n2439.htm
@@ -188,7 +184,7 @@ you hit a type trait which doesn't work we can then add support to LLVM's
 traits header to emulate it.
 
 .. _the libstdc++ manual:
-  http://gcc.gnu.org/onlinedocs/gcc-4.7.3/libstdc++/manual/manual/status.html#status.iso.2011
+  http://gcc.gnu.org/onlinedocs/gcc-4.8.0/libstdc++/manual/manual/status.html#status.iso.2011
 
 Other Languages
 ---------------
@@ -1169,7 +1165,7 @@ Here are some examples of good and bad names:
                                 // kind of factories.
   };
 
-  Vehicle MakeVehicle(VehicleType Type) {
+  Vehicle makeVehicle(VehicleType Type) {
     VehicleMaker M;                         // Might be OK if having a short life-span.
     Tire Tmp1 = M.makeTire();               // Bad -- 'Tmp1' provides no information.
     Light Headlight = M.makeLight("head");  // Good -- descriptive.
