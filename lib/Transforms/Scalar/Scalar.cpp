@@ -20,12 +20,12 @@
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/ScopedNoAliasAA.h"
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
-#include "llvm/Transforms/Scalar/GVN.h"
-#include "llvm/Transforms/Scalar/SimpleLoopUnswitch.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/InitializePasses.h"
-#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/Transforms/Scalar/SimpleLoopUnswitch.h"
 
 using namespace llvm;
 
@@ -40,6 +40,7 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeCorrelatedValuePropagationPass(Registry);
   initializeDCELegacyPassPass(Registry);
   initializeDeadInstEliminationPass(Registry);
+  initializeDivRemPairsLegacyPassPass(Registry);
   initializeScalarizerPass(Registry);
   initializeDSELegacyPassPass(Registry);
   initializeGuardWideningLegacyPassPass(Registry);
@@ -48,6 +49,7 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeEarlyCSELegacyPassPass(Registry);
   initializeEarlyCSEMemSSALegacyPassPass(Registry);
   initializeGVNHoistLegacyPassPass(Registry);
+  initializeGVNSinkLegacyPassPass(Registry);
   initializeFlattenCFGPassPass(Registry);
   initializeInductiveRangeCheckEliminationPass(Registry);
   initializeIndVarSimplifyLegacyPassPass(Registry);
@@ -72,6 +74,7 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeLowerExpectIntrinsicPass(Registry);
   initializeLowerGuardIntrinsicLegacyPassPass(Registry);
   initializeMemCpyOptLegacyPassPass(Registry);
+  initializeMergeICmpsPass(Registry);
   initializeMergedLoadStoreMotionLegacyPassPass(Registry);
   initializeNaryReassociateLegacyPassPass(Registry);
   initializePartiallyInlineLibCallsLegacyPassPass(Registry);
@@ -82,7 +85,6 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeIPSCCPLegacyPassPass(Registry);
   initializeSROALegacyPassPass(Registry);
   initializeCFGSimplifyPassPass(Registry);
-  initializeLateCFGSimplifyPassPass(Registry);
   initializeStructurizeCFGPass(Registry);
   initializeSimpleLoopUnswitchLegacyPassPass(Registry);
   initializeSinkingLegacyPassPass(Registry);
@@ -90,7 +92,6 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeSeparateConstOffsetFromGEPPass(Registry);
   initializeSpeculativeExecutionLegacyPassPass(Registry);
   initializeStraightLineStrengthReducePass(Registry);
-  initializeLoadCombinePass(Registry);
   initializePlaceBackedgeSafepointsImplPass(Registry);
   initializePlaceSafepointsPass(Registry);
   initializeFloat2IntLegacyPassPass(Registry);
@@ -117,11 +118,7 @@ void LLVMAddAlignmentFromAssumptionsPass(LLVMPassManagerRef PM) {
 }
 
 void LLVMAddCFGSimplificationPass(LLVMPassManagerRef PM) {
-  unwrap(PM)->add(createCFGSimplificationPass());
-}
-
-void LLVMAddLateCFGSimplificationPass(LLVMPassManagerRef PM) {
-  unwrap(PM)->add(createLateCFGSimplificationPass());
+  unwrap(PM)->add(createCFGSimplificationPass(1, false, false, true));
 }
 
 void LLVMAddDeadStoreEliminationPass(LLVMPassManagerRef PM) {

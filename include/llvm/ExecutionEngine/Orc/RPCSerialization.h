@@ -355,22 +355,22 @@ public:
                                             std::move(Deserialize)));
       KeyName = &I->first;
     }
-    
+
     {
       assert(KeyName != nullptr && "No keyname pointer");
       std::lock_guard<std::recursive_mutex> Lock(SerializersMutex);
       // FIXME: Move capture Serialize once we have C++14.
       Serializers[ErrorInfoT::classID()] =
-	[KeyName, Serialize](ChannelT &C, const ErrorInfoBase &EIB) -> Error {
-          assert(EIB.dynamicClassID() == ErrorInfoT::classID() &&
-		 "Serializer called for wrong error type");
-	  if (auto Err = serializeSeq(C, *KeyName))
-	    return Err;
-	  return Serialize(C, static_cast<const ErrorInfoT&>(EIB));
-        };
+          [KeyName, Serialize](ChannelT &C, const ErrorInfoBase &EIB) -> Error {
+        assert(EIB.dynamicClassID() == ErrorInfoT::classID() &&
+               "Serializer called for wrong error type");
+        if (auto Err = serializeSeq(C, *KeyName))
+          return Err;
+        return Serialize(C, static_cast<const ErrorInfoT &>(EIB));
+      };
     }
   }
-  
+
   static Error serialize(ChannelT &C, Error &&Err) {
     std::lock_guard<std::recursive_mutex> Lock(SerializersMutex);
 

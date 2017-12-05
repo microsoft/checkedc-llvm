@@ -6,16 +6,11 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
-//
-// This pass prepares a module containing type metadata for ThinLTO by splitting
-// it into regular and thin LTO parts if possible, and writing both parts to
-// a multi-module bitcode file. Modules that do not contain type metadata are
-// written unmodified as a single module.
-//
-//===----------------------------------------------------------------------===//
 
+#include "llvm/Transforms/IPO/ThinLTOBitcodeWriter.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/ModuleSummaryAnalysis.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TypeMetadataUtils.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Constants.h"
@@ -37,7 +32,8 @@ namespace {
 
 // Promote each local-linkage entity defined by ExportM and used by ImportM by
 // changing visibility and appending the given ModuleId.
-void promoteInternals(Module &ExportM, Module &ImportM, StringRef ModuleId) {
+void promoteInternals(Module &ExportM, Module &ImportM, StringRef ModuleId,
+                      SetVector<GlobalValue *> &PromoteExtra) {
   DenseMap<const Comdat *, Comdat *> RenamedComdats;
   for (auto &ExportGV : ExportM.global_values()) {
     if (!ExportGV.hasLocalLinkage())
@@ -45,7 +41,7 @@ void promoteInternals(Module &ExportM, Module &ImportM, StringRef ModuleId) {
 
     auto Name = ExportGV.getName();
     GlobalValue *ImportGV = ImportM.getNamedValue(Name);
-    if (!ImportGV || ImportGV->use_empty())
+    if ((!ImportGV || ImportGV->use_empty()) && !PromoteExtra.count(&ExportGV))
       continue;
 
     std::string NewName = (Name + ModuleId).str();
@@ -58,8 +54,10 @@ void promoteInternals(Module &ExportM, Module &ImportM, StringRef ModuleId) {
     ExportGV.setLinkage(GlobalValue::ExternalLinkage);
     ExportGV.setVisibility(GlobalValue::HiddenVisibility);
 
-    ImportGV->setName(NewName);
-    ImportGV->setVisibility(GlobalValue::HiddenVisibility);
+    if (ImportGV) {
+      ImportGV->setName(NewName);
+      ImportGV->setVisibility(GlobalValue::HiddenVisibility);
+    }
   }
 
   if (!RenamedComdats.empty())
@@ -143,7 +141,9 @@ void simplifyExternals(Module &M) {
       continue;
     }
 
-    if (!F.isDeclaration() || F.getFunctionType() == EmptyFT)
+    if (!F.isDeclaration() || F.getFunctionType() == EmptyFT ||
+        // Changing the type of an intrinsic may invalidate the IR.
+        F.getName().startswith("llvm."))
       continue;
 
     Function *NewF =
@@ -178,7 +178,7 @@ void filterModule(
     else
       GO = new GlobalVariable(
           *M, GA->getValueType(), false, GlobalValue::ExternalLinkage,
-          (Constant *)nullptr, "", (GlobalVariable *)nullptr,
+          nullptr, "", nullptr,
           GA->getThreadLocalMode(), GA->getType()->getAddressSpace());
     GO->takeName(GA);
     GA->replaceAllUsesWith(GO);
@@ -273,7 +273,8 @@ void splitAndWriteThinLTOBitcode(
           if (!ArgT || ArgT->getBitWidth() > 64)
             return;
         }
-        if (computeFunctionBodyMemoryAccess(*F, AARGetter(*F)) == MAK_ReadNone)
+        if (!F->isDeclaration() &&
+            computeFunctionBodyMemoryAccess(*F, AARGetter(*F)) == MAK_ReadNone)
           EligibleVirtualFns.insert(F);
       });
     }
@@ -301,6 +302,11 @@ void splitAndWriteThinLTOBitcode(
       F.setComdat(nullptr);
     }
 
+  SetVector<GlobalValue *> CfiFunctions;
+  for (auto &F : M)
+    if ((!F.hasLocalLinkage() || F.hasAddressTaken()) && HasTypeMetadata(&F))
+      CfiFunctions.insert(&F);
+
   // Remove all globals with type metadata, globals with comdats that live in
   // MergedM, and aliases pointing to such globals from the thin LTO module.
   filterModule(&M, [&](const GlobalValue *GV) {
@@ -313,14 +319,49 @@ void splitAndWriteThinLTOBitcode(
     return true;
   });
 
-  promoteInternals(*MergedM, M, ModuleId);
-  promoteInternals(M, *MergedM, ModuleId);
+  promoteInternals(*MergedM, M, ModuleId, CfiFunctions);
+  promoteInternals(M, *MergedM, ModuleId, CfiFunctions);
+
+  SmallVector<MDNode *, 8> CfiFunctionMDs;
+  for (auto V : CfiFunctions) {
+    Function &F = *cast<Function>(V);
+    SmallVector<MDNode *, 2> Types;
+    F.getMetadata(LLVMContext::MD_type, Types);
+
+    auto &Ctx = MergedM->getContext();
+    SmallVector<Metadata *, 4> Elts;
+    Elts.push_back(MDString::get(Ctx, F.getName()));
+    CfiFunctionLinkage Linkage;
+    if (!F.isDeclarationForLinker())
+      Linkage = CFL_Definition;
+    else if (F.isWeakForLinker())
+      Linkage = CFL_WeakDeclaration;
+    else
+      Linkage = CFL_Declaration;
+    Elts.push_back(ConstantAsMetadata::get(
+        llvm::ConstantInt::get(Type::getInt8Ty(Ctx), Linkage)));
+    for (auto Type : Types)
+      Elts.push_back(Type);
+    CfiFunctionMDs.push_back(MDTuple::get(Ctx, Elts));
+  }
+
+  if(!CfiFunctionMDs.empty()) {
+    NamedMDNode *NMD = MergedM->getOrInsertNamedMetadata("cfi.functions");
+    for (auto MD : CfiFunctionMDs)
+      NMD->addOperand(MD);
+  }
 
   simplifyExternals(*MergedM);
 
-
   // FIXME: Try to re-use BSI and PFI from the original module here.
-  ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, nullptr);
+  ProfileSummaryInfo PSI(M);
+  ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, &PSI);
+
+  // Mark the merged module as requiring full LTO. We still want an index for
+  // it though, so that it can participate in summary-based dead stripping.
+  MergedM->addModuleFlag(Module::Error, "ThinLTO", uint32_t(0));
+  ModuleSummaryIndex MergedMIndex =
+      buildModuleSummaryIndex(*MergedM, nullptr, &PSI);
 
   SmallVector<char, 0> Buffer;
 
@@ -331,20 +372,23 @@ void splitAndWriteThinLTOBitcode(
   ModuleHash ModHash = {{0}};
   W.writeModule(&M, /*ShouldPreserveUseListOrder=*/false, &Index,
                 /*GenerateHash=*/true, &ModHash);
-  W.writeModule(MergedM.get());
+  W.writeModule(MergedM.get(), /*ShouldPreserveUseListOrder=*/false,
+                &MergedMIndex);
+  W.writeSymtab();
   W.writeStrtab();
   OS << Buffer;
 
-  // If a minimized bitcode module was requested for the thin link,
-  // strip the debug info (the merged module was already stripped above)
-  // and write it to the given OS.
+  // If a minimized bitcode module was requested for the thin link, only
+  // the information that is needed by thin link will be written in the
+  // given OS (the merged module will be written as usual).
   if (ThinLinkOS) {
     Buffer.clear();
     BitcodeWriter W2(Buffer);
     StripDebugInfo(M);
-    W2.writeModule(&M, /*ShouldPreserveUseListOrder=*/false, &Index,
-                   /*GenerateHash=*/false, &ModHash);
-    W2.writeModule(MergedM.get());
+    W2.writeThinLinkBitcode(&M, Index, ModHash);
+    W2.writeModule(MergedM.get(), /*ShouldPreserveUseListOrder=*/false,
+                   &MergedMIndex);
+    W2.writeSymtab();
     W2.writeStrtab();
     *ThinLinkOS << Buffer;
   }
@@ -377,14 +421,11 @@ void writeThinLTOBitcode(raw_ostream &OS, raw_ostream *ThinLinkOS,
   ModuleHash ModHash = {{0}};
   WriteBitcodeToFile(&M, OS, /*ShouldPreserveUseListOrder=*/false, Index,
                      /*GenerateHash=*/true, &ModHash);
-  // If a minimized bitcode module was requested for the thin link,
-  // strip the debug info and write it to the given OS.
-  if (ThinLinkOS) {
-    StripDebugInfo(M);
-    WriteBitcodeToFile(&M, *ThinLinkOS, /*ShouldPreserveUseListOrder=*/false,
-                       Index,
-                       /*GenerateHash=*/false, &ModHash);
-  }
+  // If a minimized bitcode module was requested for the thin link, only
+  // the information that is needed by thin link will be written in the
+  // given OS.
+  if (ThinLinkOS && Index)
+    WriteThinLinkBitcodeToFile(&M, *ThinLinkOS, *Index, ModHash);
 }
 
 class WriteThinLTOBitcode : public ModulePass {
@@ -433,4 +474,16 @@ INITIALIZE_PASS_END(WriteThinLTOBitcode, "write-thinlto-bitcode",
 ModulePass *llvm::createWriteThinLTOBitcodePass(raw_ostream &Str,
                                                 raw_ostream *ThinLinkOS) {
   return new WriteThinLTOBitcode(Str, ThinLinkOS);
+}
+
+PreservedAnalyses
+llvm::ThinLTOBitcodeWriterPass::run(Module &M, ModuleAnalysisManager &AM) {
+  FunctionAnalysisManager &FAM =
+      AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+  writeThinLTOBitcode(OS, ThinLinkOS,
+                      [&FAM](Function &F) -> AAResults & {
+                        return FAM.getResult<AAManager>(F);
+                      },
+                      M, &AM.getResult<ModuleSummaryIndexAnalysis>(M));
+  return PreservedAnalyses::all();
 }

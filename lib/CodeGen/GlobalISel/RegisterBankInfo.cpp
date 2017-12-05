@@ -45,6 +45,10 @@ STATISTIC(NumOperandsMappingsCreated,
           "Number of operands mappings dynamically created");
 STATISTIC(NumOperandsMappingsAccessed,
           "Number of operands mappings dynamically accessed");
+STATISTIC(NumInstructionMappingsCreated,
+          "Number of instruction mappings dynamically created");
+STATISTIC(NumInstructionMappingsAccessed,
+          "Number of instruction mappings dynamically accessed");
 
 const unsigned RegisterBankInfo::DefaultMappingID = UINT_MAX;
 const unsigned RegisterBankInfo::InvalidMappingID = UINT_MAX - 1;
@@ -80,7 +84,7 @@ const RegisterBank *
 RegisterBankInfo::getRegBank(unsigned Reg, const MachineRegisterInfo &MRI,
                              const TargetRegisterInfo &TRI) const {
   if (TargetRegisterInfo::isPhysicalRegister(Reg))
-    return &getRegBankFromRegClass(*TRI.getMinimalPhysRegClass(Reg));
+    return &getRegBankFromRegClass(getMinimalPhysRegClass(Reg, TRI));
 
   assert(Reg && "NoRegister does not have a register bank");
   const RegClassOrRegBank &RegClassOrBank = MRI.getRegClassOrRegBank(Reg);
@@ -89,6 +93,19 @@ RegisterBankInfo::getRegBank(unsigned Reg, const MachineRegisterInfo &MRI,
   if (auto *RC = RegClassOrBank.dyn_cast<const TargetRegisterClass *>())
     return &getRegBankFromRegClass(*RC);
   return nullptr;
+}
+
+const TargetRegisterClass &
+RegisterBankInfo::getMinimalPhysRegClass(unsigned Reg,
+                                         const TargetRegisterInfo &TRI) const {
+  assert(TargetRegisterInfo::isPhysicalRegister(Reg) &&
+         "Reg must be a physreg");
+  const auto &RegRCIt = PhysRegMinimalRCs.find(Reg);
+  if (RegRCIt != PhysRegMinimalRCs.end())
+    return *RegRCIt->second;
+  const TargetRegisterClass *PhysRC = TRI.getMinimalPhysRegClass(Reg);
+  PhysRegMinimalRCs[Reg] = PhysRC;
+  return *PhysRC;
 }
 
 const RegisterBank *RegisterBankInfo::getRegBankFromConstraints(
@@ -137,7 +154,7 @@ static bool isCopyLike(const MachineInstr &MI) {
          MI.getOpcode() == TargetOpcode::REG_SEQUENCE;
 }
 
-RegisterBankInfo::InstructionMapping
+const RegisterBankInfo::InstructionMapping &
 RegisterBankInfo::getInstrMappingImpl(const MachineInstr &MI) const {
   // For copies we want to walk over the operands and try to find one
   // that has a register bank since the instruction itself will not get
@@ -147,10 +164,7 @@ RegisterBankInfo::getInstrMappingImpl(const MachineInstr &MI) const {
   // is important. The rest is not constrained.
   unsigned NumOperandsForMapping = IsCopyLike ? 1 : MI.getNumOperands();
 
-  RegisterBankInfo::InstructionMapping Mapping(DefaultMappingID, /*Cost*/ 1,
-                                               /*OperandsMapping*/ nullptr,
-                                               NumOperandsForMapping);
-  const MachineFunction &MF = *MI.getParent()->getParent();
+  const MachineFunction &MF = *MI.getMF();
   const TargetSubtargetInfo &STI = MF.getSubtarget();
   const TargetRegisterInfo &TRI = *STI.getRegisterInfo();
   const MachineRegisterInfo &MRI = MF.getRegInfo();
@@ -190,7 +204,7 @@ RegisterBankInfo::getInstrMappingImpl(const MachineInstr &MI) const {
 
         if (!IsCopyLike)
           // MI does not carry enough information to guess the mapping.
-          return InstructionMapping();
+          return getInvalidInstructionMapping();
         continue;
       }
     }
@@ -206,11 +220,13 @@ RegisterBankInfo::getInstrMappingImpl(const MachineInstr &MI) const {
 
   if (IsCopyLike && !CompleteMapping)
     // No way to deduce the type from what we have.
-    return InstructionMapping();
+    return getInvalidInstructionMapping();
 
   assert(CompleteMapping && "Setting an uncomplete mapping");
-  Mapping.setOperandsMapping(getOperandsMapping(OperandsMapping));
-  return Mapping;
+  return getInstructionMapping(
+      DefaultMappingID, /*Cost*/ 1,
+      /*OperandsMapping*/ getOperandsMapping(OperandsMapping),
+      NumOperandsForMapping);
 }
 
 /// Hashing function for PartialMapping.
@@ -320,9 +336,44 @@ const RegisterBankInfo::ValueMapping *RegisterBankInfo::getOperandsMapping(
   return getOperandsMapping(OpdsMapping.begin(), OpdsMapping.end());
 }
 
-RegisterBankInfo::InstructionMapping
+static hash_code
+hashInstructionMapping(unsigned ID, unsigned Cost,
+                       const RegisterBankInfo::ValueMapping *OperandsMapping,
+                       unsigned NumOperands) {
+  return hash_combine(ID, Cost, OperandsMapping, NumOperands);
+}
+
+const RegisterBankInfo::InstructionMapping &
+RegisterBankInfo::getInstructionMappingImpl(
+    bool IsInvalid, unsigned ID, unsigned Cost,
+    const RegisterBankInfo::ValueMapping *OperandsMapping,
+    unsigned NumOperands) const {
+  assert(((IsInvalid && ID == InvalidMappingID && Cost == 0 &&
+           OperandsMapping == nullptr && NumOperands == 0) ||
+          !IsInvalid) &&
+         "Mismatch argument for invalid input");
+  ++NumInstructionMappingsAccessed;
+
+  hash_code Hash =
+      hashInstructionMapping(ID, Cost, OperandsMapping, NumOperands);
+  const auto &It = MapOfInstructionMappings.find(Hash);
+  if (It != MapOfInstructionMappings.end())
+    return *It->second;
+
+  ++NumInstructionMappingsCreated;
+
+  auto &InstrMapping = MapOfInstructionMappings[Hash];
+  if (IsInvalid)
+    InstrMapping = llvm::make_unique<InstructionMapping>();
+  else
+    InstrMapping = llvm::make_unique<InstructionMapping>(
+        ID, Cost, OperandsMapping, NumOperands);
+  return *InstrMapping;
+}
+
+const RegisterBankInfo::InstructionMapping &
 RegisterBankInfo::getInstrMapping(const MachineInstr &MI) const {
-  RegisterBankInfo::InstructionMapping Mapping = getInstrMappingImpl(MI);
+  const RegisterBankInfo::InstructionMapping &Mapping = getInstrMappingImpl(MI);
   if (Mapping.isValid())
     return Mapping;
   llvm_unreachable("The target must implement this");
@@ -332,14 +383,14 @@ RegisterBankInfo::InstructionMappings
 RegisterBankInfo::getInstrPossibleMappings(const MachineInstr &MI) const {
   InstructionMappings PossibleMappings;
   // Put the default mapping first.
-  PossibleMappings.push_back(getInstrMapping(MI));
+  PossibleMappings.push_back(&getInstrMapping(MI));
   // Then the alternative mapping, if any.
   InstructionMappings AltMappings = getInstrAlternativeMappings(MI);
-  for (InstructionMapping &AltMapping : AltMappings)
-    PossibleMappings.emplace_back(std::move(AltMapping));
+  for (const InstructionMapping *AltMapping : AltMappings)
+    PossibleMappings.push_back(AltMapping);
 #ifndef NDEBUG
-  for (const InstructionMapping &Mapping : PossibleMappings)
-    assert(Mapping.verify(MI) && "Mapping is invalid");
+  for (const InstructionMapping *Mapping : PossibleMappings)
+    assert(Mapping->verify(MI) && "Mapping is invalid");
 #endif
   return PossibleMappings;
 }
@@ -403,13 +454,13 @@ void RegisterBankInfo::applyDefaultMapping(const OperandsMapper &OpdMapper) {
 
 unsigned RegisterBankInfo::getSizeInBits(unsigned Reg,
                                          const MachineRegisterInfo &MRI,
-                                         const TargetRegisterInfo &TRI) {
+                                         const TargetRegisterInfo &TRI) const {
   const TargetRegisterClass *RC = nullptr;
   if (TargetRegisterInfo::isPhysicalRegister(Reg)) {
     // The size is not directly available for physical registers.
     // Instead, we need to access a register class that contains Reg and
     // get the size of that register class.
-    RC = TRI.getMinimalPhysRegClass(Reg);
+    RC = &getMinimalPhysRegClass(Reg, TRI);
   } else {
     LLT Ty = MRI.getType(Reg);
     unsigned RegSize = Ty.isValid() ? Ty.getSizeInBits() : 0;
@@ -505,10 +556,11 @@ bool RegisterBankInfo::InstructionMapping::verify(
   // For PHI, we only care about mapping the definition.
   assert(NumOperands == (isCopyLike(MI) ? 1 : MI.getNumOperands()) &&
          "NumOperands must match, see constructor");
-  assert(MI.getParent() && MI.getParent()->getParent() &&
+  assert(MI.getParent() && MI.getMF() &&
          "MI must be connected to a MachineFunction");
-  const MachineFunction &MF = *MI.getParent()->getParent();
-  (void)MF;
+  const MachineFunction &MF = *MI.getMF();
+  const RegisterBankInfo *RBI = MF.getSubtarget().getRegBankInfo();
+  (void)RBI;
 
   for (unsigned Idx = 0; Idx < NumOperands; ++Idx) {
     const MachineOperand &MO = MI.getOperand(Idx);
@@ -526,7 +578,7 @@ bool RegisterBankInfo::InstructionMapping::verify(
     (void)MOMapping;
     // Register size in bits.
     // This size must match what the mapping expects.
-    assert(MOMapping.verify(getSizeInBits(
+    assert(MOMapping.verify(RBI->getSizeInBits(
                Reg, MF.getRegInfo(), *MF.getSubtarget().getRegisterInfo())) &&
            "Value mapping is invalid");
   }
@@ -687,8 +739,8 @@ void RegisterBankInfo::OperandsMapper::print(raw_ostream &OS,
   // If we have a function, we can pretty print the name of the registers.
   // Otherwise we will print the raw numbers.
   const TargetRegisterInfo *TRI =
-      getMI().getParent() && getMI().getParent()->getParent()
-          ? getMI().getParent()->getParent()->getSubtarget().getRegisterInfo()
+      getMI().getParent() && getMI().getMF()
+          ? getMI().getMF()->getSubtarget().getRegisterInfo()
           : nullptr;
   bool IsFirst = true;
   for (unsigned Idx = 0; Idx != NumOpds; ++Idx) {

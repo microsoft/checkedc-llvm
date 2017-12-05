@@ -494,6 +494,9 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(declare); KEYWORD(define);
   KEYWORD(global);  KEYWORD(constant);
 
+  KEYWORD(dso_local);
+  KEYWORD(dso_preemptable);
+
   KEYWORD(private);
   KEYWORD(internal);
   KEYWORD(available_externally);
@@ -542,7 +545,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(release);
   KEYWORD(acq_rel);
   KEYWORD(seq_cst);
-  KEYWORD(singlethread);
+  KEYWORD(syncscope);
 
   KEYWORD(nnan);
   KEYWORD(ninf);
@@ -588,7 +591,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(spir_func);
   KEYWORD(intel_ocl_bicc);
   KEYWORD(x86_64_sysvcc);
-  KEYWORD(x86_64_win64cc);
+  KEYWORD(win64cc);
   KEYWORD(x86_regcallcc);
   KEYWORD(webkit_jscc);
   KEYWORD(swiftcc);
@@ -601,6 +604,9 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(hhvm_ccc);
   KEYWORD(cxx_fast_tlscc);
   KEYWORD(amdgpu_vs);
+  KEYWORD(amdgpu_ls);
+  KEYWORD(amdgpu_hs);
+  KEYWORD(amdgpu_es);
   KEYWORD(amdgpu_gs);
   KEYWORD(amdgpu_ps);
   KEYWORD(amdgpu_cs);
@@ -653,6 +659,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(ssp);
   KEYWORD(sspreq);
   KEYWORD(sspstrong);
+  KEYWORD(strictfp);
   KEYWORD(safestack);
   KEYWORD(sanitize_address);
   KEYWORD(sanitize_thread);

@@ -1,4 +1,4 @@
-//===---- DemandedBits.cpp - Determine demanded bits ----------------------===//
+//===- DemandedBits.cpp - Determine demanded bits -------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -20,30 +20,41 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/DemandedBits.h"
-#include "llvm/ADT/DepthFirstIterator.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/BasicBlock.h"
-#include "llvm/IR/CFG.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/InstIterator.h"
-#include "llvm/IR/Instructions.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/Use.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <cstdint>
+
 using namespace llvm;
 
 #define DEBUG_TYPE "demanded-bits"
 
 char DemandedBitsWrapperPass::ID = 0;
+
 INITIALIZE_PASS_BEGIN(DemandedBitsWrapperPass, "demanded-bits",
                       "Demanded bits analysis", false, false)
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
@@ -86,13 +97,11 @@ void DemandedBits::determineLiveOperandBits(
       [&](unsigned BitWidth, const Value *V1, const Value *V2) {
         const DataLayout &DL = I->getModule()->getDataLayout();
         Known = KnownBits(BitWidth);
-        computeKnownBits(const_cast<Value *>(V1), Known, DL, 0,
-                         &AC, UserI, &DT);
+        computeKnownBits(V1, Known, DL, 0, &AC, UserI, &DT);
 
         if (V2) {
           Known2 = KnownBits(BitWidth);
-          computeKnownBits(const_cast<Value *>(V2), Known2, DL,
-                           0, &AC, UserI, &DT);
+          computeKnownBits(V2, Known2, DL, 0, &AC, UserI, &DT);
         }
       };
 
@@ -109,6 +118,8 @@ void DemandedBits::determineLiveOperandBits(
         AB = AOut.byteSwap();
         break;
       case Intrinsic::bitreverse:
+        // The alive bits of the input are the reversed alive bits of
+        // the output.
         AB = AOut.reverseBits();
         break;
       case Intrinsic::ctlz:
@@ -118,7 +129,7 @@ void DemandedBits::determineLiveOperandBits(
           // known to be one.
           ComputeKnownBits(BitWidth, I, nullptr);
           AB = APInt::getHighBitsSet(BitWidth,
-                 std::min(BitWidth, Known.One.countLeadingZeros()+1));
+                 std::min(BitWidth, Known.countMaxLeadingZeros()+1));
         }
         break;
       case Intrinsic::cttz:
@@ -128,7 +139,7 @@ void DemandedBits::determineLiveOperandBits(
           // known to be one.
           ComputeKnownBits(BitWidth, I, nullptr);
           AB = APInt::getLowBitsSet(BitWidth,
-                 std::min(BitWidth, Known.One.countTrailingZeros()+1));
+                 std::min(BitWidth, Known.countMaxTrailingZeros()+1));
         }
         break;
       }
@@ -143,9 +154,8 @@ void DemandedBits::determineLiveOperandBits(
     break;
   case Instruction::Shl:
     if (OperandNo == 0)
-      if (ConstantInt *CI =
-            dyn_cast<ConstantInt>(UserI->getOperand(1))) {
-        uint64_t ShiftAmt = CI->getLimitedValue(BitWidth-1);
+      if (auto *ShiftAmtC = dyn_cast<ConstantInt>(UserI->getOperand(1))) {
+        uint64_t ShiftAmt = ShiftAmtC->getLimitedValue(BitWidth - 1);
         AB = AOut.lshr(ShiftAmt);
 
         // If the shift is nuw/nsw, then the high bits are not dead
@@ -159,9 +169,8 @@ void DemandedBits::determineLiveOperandBits(
     break;
   case Instruction::LShr:
     if (OperandNo == 0)
-      if (ConstantInt *CI =
-            dyn_cast<ConstantInt>(UserI->getOperand(1))) {
-        uint64_t ShiftAmt = CI->getLimitedValue(BitWidth-1);
+      if (auto *ShiftAmtC = dyn_cast<ConstantInt>(UserI->getOperand(1))) {
+        uint64_t ShiftAmt = ShiftAmtC->getLimitedValue(BitWidth - 1);
         AB = AOut.shl(ShiftAmt);
 
         // If the shift is exact, then the low bits are not dead
@@ -172,9 +181,8 @@ void DemandedBits::determineLiveOperandBits(
     break;
   case Instruction::AShr:
     if (OperandNo == 0)
-      if (ConstantInt *CI =
-            dyn_cast<ConstantInt>(UserI->getOperand(1))) {
-        uint64_t ShiftAmt = CI->getLimitedValue(BitWidth-1);
+      if (auto *ShiftAmtC = dyn_cast<ConstantInt>(UserI->getOperand(1))) {
+        uint64_t ShiftAmt = ShiftAmtC->getLimitedValue(BitWidth - 1);
         AB = AOut.shl(ShiftAmt);
         // Because the high input bit is replicated into the
         // high-order bits of the result, if we need any of those
@@ -360,7 +368,7 @@ void DemandedBits::performAnalysis() {
 APInt DemandedBits::getDemandedBits(Instruction *I) {
   performAnalysis();
   
-  const DataLayout &DL = I->getParent()->getModule()->getDataLayout();
+  const DataLayout &DL = I->getModule()->getDataLayout();
   auto Found = AliveBits.find(I);
   if (Found != AliveBits.end())
     return Found->second;

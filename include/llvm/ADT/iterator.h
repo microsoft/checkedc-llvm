@@ -11,9 +11,11 @@
 #define LLVM_ADT_ITERATOR_H
 
 #include "llvm/ADT/iterator_range.h"
+#include <algorithm>
 #include <cstddef>
 #include <iterator>
 #include <type_traits>
+#include <utility>
 
 namespace llvm {
 
@@ -68,10 +70,10 @@ class iterator_facade_base
                            ReferenceT> {
 protected:
   enum {
-    IsRandomAccess =
-        std::is_base_of<std::random_access_iterator_tag, IteratorCategoryT>::value,
-    IsBidirectional =
-        std::is_base_of<std::bidirectional_iterator_tag, IteratorCategoryT>::value,
+    IsRandomAccess = std::is_base_of<std::random_access_iterator_tag,
+                                     IteratorCategoryT>::value,
+    IsBidirectional = std::is_base_of<std::bidirectional_iterator_tag,
+                                      IteratorCategoryT>::value,
   };
 
   /// A proxy object for computing a reference via indirecting a copy of an
@@ -206,7 +208,7 @@ template <
 class iterator_adaptor_base
     : public iterator_facade_base<DerivedT, IteratorCategoryT, T,
                                   DifferenceTypeT, PointerT, ReferenceT> {
-  typedef typename iterator_adaptor_base::iterator_facade_base BaseT;
+  using BaseT = typename iterator_adaptor_base::iterator_facade_base;
 
 protected:
   WrappedIteratorT I;
@@ -221,7 +223,7 @@ protected:
   const WrappedIteratorT &wrapped() const { return I; }
 
 public:
-  typedef DifferenceTypeT difference_type;
+  using difference_type = DifferenceTypeT;
 
   DerivedT &operator+=(difference_type n) {
     static_assert(
@@ -279,7 +281,7 @@ public:
 /// which is implemented with some iterator over T*s:
 ///
 /// \code
-///   typedef pointee_iterator<SmallVectorImpl<T *>::iterator> iterator;
+///   using iterator = pointee_iterator<SmallVectorImpl<T *>::iterator>;
 /// \endcode
 template <typename WrappedIteratorT,
           typename T = typename std::remove_reference<

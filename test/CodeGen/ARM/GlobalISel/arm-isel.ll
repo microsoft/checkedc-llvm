@@ -153,6 +153,87 @@ entry:
   ret i32 %sum
 }
 
+define i8 @test_and_i8(i8 %x, i8 %y) {
+; CHECK-LABEL: test_and_i8:
+; CHECK: and r0, r0, r1
+; CHECK: bx lr
+entry:
+  %sum = and i8 %x, %y
+  ret i8 %sum
+}
+
+define i16 @test_and_i16(i16 %x, i16 %y) {
+; CHECK-LABEL: test_and_i16:
+; CHECK: and r0, r0, r1
+; CHECK: bx lr
+entry:
+  %sum = and i16 %x, %y
+  ret i16 %sum
+}
+
+define i32 @test_and_i32(i32 %x, i32 %y) {
+; CHECK-LABEL: test_and_i32:
+; CHECK: and r0, r0, r1
+; CHECK: bx lr
+entry:
+  %sum = and i32 %x, %y
+  ret i32 %sum
+}
+
+define i8 @test_or_i8(i8 %x, i8 %y) {
+; CHECK-LABEL: test_or_i8:
+; CHECK: orr r0, r0, r1
+; CHECK: bx lr
+entry:
+  %sum = or i8 %x, %y
+  ret i8 %sum
+}
+
+define i16 @test_or_i16(i16 %x, i16 %y) {
+; CHECK-LABEL: test_or_i16:
+; CHECK: orr r0, r0, r1
+; CHECK: bx lr
+entry:
+  %sum = or i16 %x, %y
+  ret i16 %sum
+}
+
+define i32 @test_or_i32(i32 %x, i32 %y) {
+; CHECK-LABEL: test_or_i32:
+; CHECK: orr r0, r0, r1
+; CHECK: bx lr
+entry:
+  %sum = or i32 %x, %y
+  ret i32 %sum
+}
+
+define i8 @test_xor_i8(i8 %x, i8 %y) {
+; CHECK-LABEL: test_xor_i8:
+; CHECK: eor r0, r0, r1
+; CHECK: bx lr
+entry:
+  %sum = xor i8 %x, %y
+  ret i8 %sum
+}
+
+define i16 @test_xor_i16(i16 %x, i16 %y) {
+; CHECK-LABEL: test_xor_i16:
+; CHECK: eor r0, r0, r1
+; CHECK: bx lr
+entry:
+  %sum = xor i16 %x, %y
+  ret i16 %sum
+}
+
+define i32 @test_xor_i32(i32 %x, i32 %y) {
+; CHECK-LABEL: test_xor_i32:
+; CHECK: eor r0, r0, r1
+; CHECK: bx lr
+entry:
+  %sum = xor i32 %x, %y
+  ret i32 %sum
+}
+
 define i32 @test_stack_args_i32(i32 %p0, i32 %p1, i32 %p2, i32 %p3, i32 %p4, i32 %p5) {
 ; CHECK-LABEL: test_stack_args_i32:
 ; CHECK: add [[P5ADDR:r[0-9]+]], sp, #4
@@ -272,10 +353,107 @@ define arm_aapcscc double @test_double_softfp(double %f0, double %f1) {
 ; CHECK-DAG: vmov [[F0:d[0-9]+]], r0, r1
 ; CHECK-DAG: vmov [[F1:d[0-9]+]], r2, r3
 ; CHECK: vadd.f64 [[FV:d[0-9]+]], [[F0]], [[F1]]
-; CHECK: vmov.32 r0, [[FV]][0]
-; CHECK: vmov.32 r1, [[FV]][1]
+; CHECK: vmov r0, r1, [[FV]]
 ; CHECK: bx lr
 entry:
   %v = fadd double %f0, %f1
   ret double %v
+}
+
+define arm_aapcscc i32 @test_cmp_i32_eq(i32 %a, i32 %b) {
+; CHECK-LABEL: test_cmp_i32_eq:
+; CHECK: mov [[V:r[0-9]+]], #0
+; CHECK: cmp r0, r1
+; CHECK: moveq [[V]], #1
+; CHECK: and r0, [[V]], #1
+; CHECK: bx lr
+entry:
+  %v = icmp eq i32 %a, %b
+  %r = zext i1 %v to i32
+  ret i32 %r
+}
+
+define arm_aapcscc i32 @test_cmp_ptr_neq(double *%a, double *%b) {
+; CHECK-LABEL: test_cmp_ptr_neq:
+; CHECK: mov [[V:r[0-9]+]], #0
+; CHECK: cmp r0, r1
+; CHECK: movne [[V]], #1
+; CHECK: and r0, [[V]], #1
+; CHECK: bx lr
+entry:
+  %v = icmp ne double * %a, %b
+  %r = zext i1 %v to i32
+  ret i32 %r
+}
+
+define arm_aapcscc i32 @test_cmp_i16_slt(i16 %a, i16 %b) {
+; CHECK-LABEL: test_cmp_i16_slt:
+; CHECK-DAG: mov [[V:r[0-9]+]], #0
+; CHECK: cmp r0, r1
+; CHECK: movlt [[V]], #1
+; CHECK: and r0, [[V]], #1
+; CHECK: bx lr
+entry:
+  %v = icmp slt i16 %a, %b
+  %r = zext i1 %v to i32
+  ret i32 %r
+}
+
+define arm_aapcscc i32 @test_select_i32(i32 %a, i32 %b, i1 %cond) {
+; CHECK-LABEL: test_select_i32
+; CHECK: cmp r2, #0
+; CHECK: moveq r0, r1
+; CHECK: bx lr
+entry:
+  %r = select i1 %cond, i32 %a, i32 %b
+  ret i32 %r
+}
+
+define arm_aapcscc i32* @test_select_ptr(i32* %a, i32* %b, i1 %cond) {
+; CHECK-LABEL: test_select_ptr
+; CHECK: cmp r2, #0
+; CHECK: moveq r0, r1
+; CHECK: bx lr
+entry:
+  %r = select i1 %cond, i32* %a, i32* %b
+  ret i32* %r
+}
+
+define arm_aapcscc void @test_br() {
+; CHECK-LABEL: test_br
+; CHECK: [[LABEL:.L[[:alnum:]_]+]]:
+; CHECK: b [[LABEL]]
+entry:
+  br label %infinite
+
+infinite:
+  br label %infinite
+}
+
+declare arm_aapcscc void @brcond1()
+declare arm_aapcscc void @brcond2()
+
+define arm_aapcscc void @test_brcond(i32 %n) {
+; CHECK-LABEL: test_brcond
+; CHECK: cmp r0
+; CHECK-NEXT: movgt [[RCMP:r[0-9]+]], #1
+; CHECK: tst [[RCMP]], #1
+; CHECK-NEXT: bne [[FALSE:.L[[:alnum:]_]+]]
+; CHECK: bl brcond1
+; CHECK: [[FALSE]]:
+; CHECK: bl brcond2
+entry:
+  %cmp = icmp sgt i32 %n, 0
+  br i1 %cmp, label %if.true, label %if.false
+
+if.true:
+  call arm_aapcscc void @brcond1()
+  br label %if.end
+
+if.false:
+  call arm_aapcscc void @brcond2()
+  br label %if.end
+
+if.end:
+  ret void
 }

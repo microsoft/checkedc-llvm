@@ -16,8 +16,13 @@
 #ifndef LLVM_OBJECTYAML_WASMYAML_H
 #define LLVM_OBJECTYAML_WASMYAML_H
 
+#include "llvm/ADT/StringRef.h"
+#include "llvm/BinaryFormat/Wasm.h"
 #include "llvm/ObjectYAML/YAML.h"
-#include "llvm/Support/Wasm.h"
+#include "llvm/Support/Casting.h"
+#include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace llvm {
 namespace WasmYAML {
@@ -32,17 +37,6 @@ LLVM_YAML_STRONG_TYPEDEF(uint32_t, RelocType)
 
 struct FileHeader {
   yaml::Hex32 Version;
-};
-
-struct Import {
-  StringRef Module;
-  StringRef Field;
-  ExportKind Kind;
-  union {
-    uint32_t SigIndex;
-    ValueType GlobalType;
-  };
-  bool GlobalMutable;
 };
 
 struct Limits {
@@ -74,6 +68,18 @@ struct Global {
   wasm::WasmInitExpr InitExpr;
 };
 
+struct Import {
+  StringRef Module;
+  StringRef Field;
+  ExportKind Kind;
+  union {
+    uint32_t SigIndex;
+    Global GlobalImport;
+    Table TableImport;
+    Limits Memory;
+  };
+};
+
 struct LocalDecl {
   ValueType Type;
   uint32_t Count;
@@ -92,22 +98,38 @@ struct Relocation {
 };
 
 struct DataSegment {
-  uint32_t Index;
+  uint32_t MemoryIndex;
+  uint32_t SectionOffset;
   wasm::WasmInitExpr Offset;
   yaml::BinaryRef Content;
 };
 
-struct Signature {
-  Signature() : Form(wasm::WASM_TYPE_FUNC) {}
-
+struct NameEntry {
   uint32_t Index;
-  SignatureForm Form;
+  StringRef Name;
+};
+
+struct SegmentInfo {
+  uint32_t Index;
+  StringRef Name;
+  uint32_t Alignment;
+  uint32_t Flags;
+};
+
+struct Signature {
+  uint32_t Index;
+  SignatureForm Form = wasm::WASM_TYPE_FUNC;
   std::vector<ValueType> ParamTypes;
   ValueType ReturnType;
 };
 
+struct SymbolInfo {
+  StringRef Name;
+  uint32_t Flags;
+};
+
 struct Section {
-  Section(SectionType SecType) : Type(SecType) {}
+  explicit Section(SectionType SecType) : Type(SecType) {}
   virtual ~Section();
 
   SectionType Type;
@@ -115,7 +137,9 @@ struct Section {
 };
 
 struct CustomSection : Section {
-  CustomSection() : Section(wasm::WASM_SEC_CUSTOM) {}
+  explicit CustomSection(StringRef Name)
+      : Section(wasm::WASM_SEC_CUSTOM), Name(Name) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_CUSTOM;
   }
@@ -124,8 +148,33 @@ struct CustomSection : Section {
   yaml::BinaryRef Payload;
 };
 
+struct NameSection : CustomSection {
+  NameSection() : CustomSection("name") {}
+
+  static bool classof(const Section *S) {
+    auto C = dyn_cast<CustomSection>(S);
+    return C && C->Name == "name";
+  }
+
+  std::vector<NameEntry> FunctionNames;
+};
+
+struct LinkingSection : CustomSection {
+  LinkingSection() : CustomSection("linking") {}
+
+  static bool classof(const Section *S) {
+    auto C = dyn_cast<CustomSection>(S);
+    return C && C->Name == "linking";
+  }
+
+  uint32_t DataSize;
+  std::vector<SymbolInfo> SymbolInfos;
+  std::vector<SegmentInfo> SegmentInfos;
+};
+
 struct TypeSection : Section {
   TypeSection() : Section(wasm::WASM_SEC_TYPE) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_TYPE;
   }
@@ -135,6 +184,7 @@ struct TypeSection : Section {
 
 struct ImportSection : Section {
   ImportSection() : Section(wasm::WASM_SEC_IMPORT) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_IMPORT;
   }
@@ -144,6 +194,7 @@ struct ImportSection : Section {
 
 struct FunctionSection : Section {
   FunctionSection() : Section(wasm::WASM_SEC_FUNCTION) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_FUNCTION;
   }
@@ -153,6 +204,7 @@ struct FunctionSection : Section {
 
 struct TableSection : Section {
   TableSection() : Section(wasm::WASM_SEC_TABLE) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_TABLE;
   }
@@ -162,6 +214,7 @@ struct TableSection : Section {
 
 struct MemorySection : Section {
   MemorySection() : Section(wasm::WASM_SEC_MEMORY) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_MEMORY;
   }
@@ -171,6 +224,7 @@ struct MemorySection : Section {
 
 struct GlobalSection : Section {
   GlobalSection() : Section(wasm::WASM_SEC_GLOBAL) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_GLOBAL;
   }
@@ -180,6 +234,7 @@ struct GlobalSection : Section {
 
 struct ExportSection : Section {
   ExportSection() : Section(wasm::WASM_SEC_EXPORT) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_EXPORT;
   }
@@ -189,6 +244,7 @@ struct ExportSection : Section {
 
 struct StartSection : Section {
   StartSection() : Section(wasm::WASM_SEC_START) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_START;
   }
@@ -198,6 +254,7 @@ struct StartSection : Section {
 
 struct ElemSection : Section {
   ElemSection() : Section(wasm::WASM_SEC_ELEM) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_ELEM;
   }
@@ -207,6 +264,7 @@ struct ElemSection : Section {
 
 struct CodeSection : Section {
   CodeSection() : Section(wasm::WASM_SEC_CODE) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_CODE;
   }
@@ -216,6 +274,7 @@ struct CodeSection : Section {
 
 struct DataSection : Section {
   DataSection() : Section(wasm::WASM_SEC_DATA) {}
+
   static bool classof(const Section *S) {
     return S->Type == wasm::WASM_SEC_DATA;
   }
@@ -244,7 +303,9 @@ LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::WasmYAML::Global)
 LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::WasmYAML::Function)
 LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::WasmYAML::LocalDecl)
 LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::WasmYAML::Relocation)
-LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(uint32_t)
+LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::WasmYAML::NameEntry)
+LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::WasmYAML::SegmentInfo)
+LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::WasmYAML::SymbolInfo)
 
 namespace llvm {
 namespace yaml {
@@ -297,6 +358,14 @@ template <> struct MappingTraits<WasmYAML::Relocation> {
   static void mapping(IO &IO, WasmYAML::Relocation &Relocation);
 };
 
+template <> struct MappingTraits<WasmYAML::NameEntry> {
+  static void mapping(IO &IO, WasmYAML::NameEntry &NameEntry);
+};
+
+template <> struct MappingTraits<WasmYAML::SegmentInfo> {
+  static void mapping(IO &IO, WasmYAML::SegmentInfo &SegmentInfo);
+};
+
 template <> struct MappingTraits<WasmYAML::LocalDecl> {
   static void mapping(IO &IO, WasmYAML::LocalDecl &LocalDecl);
 };
@@ -311,6 +380,10 @@ template <> struct MappingTraits<WasmYAML::DataSegment> {
 
 template <> struct MappingTraits<WasmYAML::ElemSegment> {
   static void mapping(IO &IO, WasmYAML::ElemSegment &Segment);
+};
+
+template <> struct MappingTraits<WasmYAML::SymbolInfo> {
+  static void mapping(IO &IO, WasmYAML::SymbolInfo &Info);
 };
 
 template <> struct ScalarEnumerationTraits<WasmYAML::ValueType> {
@@ -336,4 +409,4 @@ template <> struct ScalarEnumerationTraits<WasmYAML::RelocType> {
 } // end namespace yaml
 } // end namespace llvm
 
-#endif
+#endif // LLVM_OBJECTYAML_WASMYAML_H

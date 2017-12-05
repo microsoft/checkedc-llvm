@@ -409,7 +409,7 @@ static bool isWordAligned(SDValue Value, SelectionDAG &DAG)
 {
   KnownBits Known;
   DAG.computeKnownBits(Value, Known);
-  return Known.Zero.countTrailingOnes() >= 2;
+  return Known.countMinTrailingZeros() >= 2;
 }
 
 SDValue XCoreTargetLowering::
@@ -1046,7 +1046,7 @@ XCoreTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   switch (CallConv)
   {
     default:
-      llvm_unreachable("Unsupported calling convention");
+      report_fatal_error("Unsupported calling convention");
     case CallingConv::Fast:
     case CallingConv::C:
       return LowerCCCCallTo(Chain, Callee, CallConv, isVarArg, isTailCall,
@@ -1131,8 +1131,7 @@ SDValue XCoreTargetLowering::LowerCCCCallTo(
   unsigned NumBytes = RetCCInfo.getNextStackOffset();
   auto PtrVT = getPointerTy(DAG.getDataLayout());
 
-  Chain = DAG.getCALLSEQ_START(Chain,
-                               DAG.getConstant(NumBytes, dl, PtrVT, true), dl);
+  Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, dl);
 
   SmallVector<std::pair<unsigned, SDValue>, 4> RegsToPass;
   SmallVector<SDValue, 12> MemOpChains;
@@ -1244,7 +1243,7 @@ SDValue XCoreTargetLowering::LowerFormalArguments(
   switch (CallConv)
   {
     default:
-      llvm_unreachable("Unsupported calling convention");
+      report_fatal_error("Unsupported calling convention");
     case CallingConv::C:
     case CallingConv::Fast:
       return LowerCCCArguments(Chain, CallConv, isVarArg,
@@ -1825,7 +1824,7 @@ void XCoreTargetLowering::computeKnownBitsForTargetNode(const SDValue Op,
                                                         const APInt &DemandedElts,
                                                         const SelectionDAG &DAG,
                                                         unsigned Depth) const {
-  Known.Zero.clearAllBits(); Known.One.clearAllBits();
+  Known.resetAll();
   switch (Op.getOpcode()) {
   default: break;
   case XCoreISD::LADD:
@@ -1890,7 +1889,8 @@ static inline bool isImmUs4(int64_t val)
 /// by AM is legal for this target, for a load/store of the specified type.
 bool XCoreTargetLowering::isLegalAddressingMode(const DataLayout &DL,
                                                 const AddrMode &AM, Type *Ty,
-                                                unsigned AS) const {
+                                                unsigned AS,
+                                                Instruction *I) const {
   if (Ty->getTypeID() == Type::VoidTyID)
     return AM.Scale == 0 && isImmUs(AM.BaseOffs) && isImmUs4(AM.BaseOffs);
 

@@ -16,6 +16,7 @@
 #include "SymbolizableObjectFile.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Config/config.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
 #include "llvm/DebugInfo/PDB/PDB.h"
@@ -24,7 +25,6 @@
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Object/MachOUniversal.h"
-#include "llvm/Support/COFF.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Compression.h"
 #include "llvm/Support/DataExtractor.h"
@@ -39,6 +39,8 @@
 
 #if defined(_MSC_VER)
 #include <Windows.h>
+
+// This must be included after windows.h.
 #include <DbgHelp.h>
 #pragma comment(lib, "dbghelp.lib")
 
@@ -51,10 +53,11 @@
 namespace llvm {
 namespace symbolize {
 
-Expected<DILineInfo> LLVMSymbolizer::symbolizeCode(const std::string &ModuleName,
-                                                  uint64_t ModuleOffset) {
+Expected<DILineInfo>
+LLVMSymbolizer::symbolizeCode(const std::string &ModuleName,
+                              uint64_t ModuleOffset, StringRef DWPName) {
   SymbolizableModule *Info;
-  if (auto InfoOrErr = getOrCreateModuleInfo(ModuleName))
+  if (auto InfoOrErr = getOrCreateModuleInfo(ModuleName, DWPName))
     Info = InfoOrErr.get();
   else
     return InfoOrErr.takeError();
@@ -78,9 +81,9 @@ Expected<DILineInfo> LLVMSymbolizer::symbolizeCode(const std::string &ModuleName
 
 Expected<DIInliningInfo>
 LLVMSymbolizer::symbolizeInlinedCode(const std::string &ModuleName,
-                                     uint64_t ModuleOffset) {
+                                     uint64_t ModuleOffset, StringRef DWPName) {
   SymbolizableModule *Info;
-  if (auto InfoOrErr = getOrCreateModuleInfo(ModuleName))
+  if (auto InfoOrErr = getOrCreateModuleInfo(ModuleName, DWPName))
     Info = InfoOrErr.get();
   else
     return InfoOrErr.takeError();
@@ -362,7 +365,8 @@ LLVMSymbolizer::getOrCreateObject(const std::string &Path,
 }
 
 Expected<SymbolizableModule *>
-LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName) {
+LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName,
+                                      StringRef DWPName) {
   const auto &I = Modules.find(ModuleName);
   if (I != Modules.end()) {
     return I->second.get();
@@ -407,7 +411,8 @@ LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName) {
     }
   }
   if (!Context)
-    Context.reset(new DWARFContextInMemory(*Objects.second));
+    Context = DWARFContext::create(*Objects.second, nullptr,
+                                   DWARFContext::defaultErrorHandler, DWPName);
   assert(Context);
   auto InfoOrErr =
       SymbolizableObjectFile::create(Objects.first, std::move(Context));

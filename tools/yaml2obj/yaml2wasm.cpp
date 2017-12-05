@@ -26,7 +26,10 @@ class WasmWriter {
 public:
   WasmWriter(WasmYAML::Object &Obj) : Obj(Obj) {}
   int writeWasm(raw_ostream &OS);
+
+private:
   int writeRelocSection(raw_ostream &OS, WasmYAML::Section &Sec);
+
   int writeSectionContent(raw_ostream &OS, WasmYAML::CustomSection &Section);
   int writeSectionContent(raw_ostream &OS, WasmYAML::TypeSection &Section);
   int writeSectionContent(raw_ostream &OS, WasmYAML::ImportSection &Section);
@@ -40,7 +43,9 @@ public:
   int writeSectionContent(raw_ostream &OS, WasmYAML::CodeSection &Section);
   int writeSectionContent(raw_ostream &OS, WasmYAML::DataSection &Section);
 
-private:
+  // Custom section types
+  int writeSectionContent(raw_ostream &OS, WasmYAML::NameSection &Section);
+  int writeSectionContent(raw_ostream &OS, WasmYAML::LinkingSection &Section);
   WasmYAML::Object &Obj;
 };
 
@@ -65,13 +70,13 @@ static int writeUint8(raw_ostream &OS, uint8_t Value) {
   return 0;
 }
 
-static int writeStringRef(StringRef &Str, raw_ostream &OS) {
+static int writeStringRef(const StringRef &Str, raw_ostream &OS) {
   encodeULEB128(Str.size(), OS);
   OS << Str;
   return 0;
 }
 
-static int writeLimits(WasmYAML::Limits Lim, raw_ostream &OS) {
+static int writeLimits(const WasmYAML::Limits &Lim, raw_ostream &OS) {
   encodeULEB128(Lim.Flags, OS);
   encodeULEB128(Lim.Initial, OS);
   if (Lim.Flags & wasm::WASM_LIMITS_FLAG_HAS_MAX)
@@ -79,7 +84,7 @@ static int writeLimits(WasmYAML::Limits Lim, raw_ostream &OS) {
   return 0;
 }
 
-static int writeInitExpr(wasm::WasmInitExpr InitExpr, raw_ostream &OS) {
+static int writeInitExpr(const wasm::WasmInitExpr &InitExpr, raw_ostream &OS) {
   writeUint8(OS, InitExpr.Opcode);
   switch (InitExpr.Opcode) {
   case wasm::WASM_OPCODE_I32_CONST:
@@ -105,18 +110,100 @@ static int writeInitExpr(wasm::WasmInitExpr InitExpr, raw_ostream &OS) {
   return 0;
 }
 
+class SubSectionWriter {
+  raw_ostream &OS;
+  std::string OutString;
+  raw_string_ostream StringStream;
+
+public:
+  SubSectionWriter(raw_ostream &OS) : OS(OS), StringStream(OutString) {}
+
+  void Done() {
+    StringStream.flush();
+    encodeULEB128(OutString.size(), OS);
+    OS << OutString;
+    OutString.clear();
+  }
+
+  raw_ostream& GetStream() {
+    return StringStream;
+  }
+};
+
+int WasmWriter::writeSectionContent(raw_ostream &OS, WasmYAML::LinkingSection &Section) {
+  writeStringRef(Section.Name, OS);
+
+  SubSectionWriter SubSection(OS);
+
+  // DATA_SIZE subsection
+  encodeULEB128(wasm::WASM_DATA_SIZE, OS);
+  encodeULEB128(Section.DataSize, SubSection.GetStream());
+  SubSection.Done();
+
+  // SYMBOL_INFO subsection
+  if (Section.SymbolInfos.size()) {
+    encodeULEB128(wasm::WASM_SYMBOL_INFO, OS);
+
+    encodeULEB128(Section.SymbolInfos.size(), SubSection.GetStream());
+    for (const WasmYAML::SymbolInfo &Info : Section.SymbolInfos) {
+      writeStringRef(Info.Name, SubSection.GetStream());
+      encodeULEB128(Info.Flags, SubSection.GetStream());
+    }
+
+    SubSection.Done();
+  }
+
+  // SEGMENT_NAMES subsection
+  if (Section.SegmentInfos.size()) {
+    encodeULEB128(wasm::WASM_SEGMENT_INFO, OS);
+    encodeULEB128(Section.SegmentInfos.size(), SubSection.GetStream());
+    for (const WasmYAML::SegmentInfo &SegmentInfo : Section.SegmentInfos) {
+      encodeULEB128(SegmentInfo.Index, SubSection.GetStream());
+      writeStringRef(SegmentInfo.Name, SubSection.GetStream());
+      encodeULEB128(SegmentInfo.Alignment, SubSection.GetStream());
+      encodeULEB128(SegmentInfo.Flags, SubSection.GetStream());
+    }
+    SubSection.Done();
+  }
+  return 0;
+}
+
+int WasmWriter::writeSectionContent(raw_ostream &OS, WasmYAML::NameSection &Section) {
+  writeStringRef(Section.Name, OS);
+  if (Section.FunctionNames.size()) {
+    encodeULEB128(wasm::WASM_NAMES_FUNCTION, OS);
+
+    SubSectionWriter SubSection(OS);
+
+    encodeULEB128(Section.FunctionNames.size(), SubSection.GetStream());
+    for (const WasmYAML::NameEntry &NameEntry : Section.FunctionNames) {
+      encodeULEB128(NameEntry.Index, SubSection.GetStream());
+      writeStringRef(NameEntry.Name, SubSection.GetStream());
+    }
+
+    SubSection.Done();
+  }
+  return 0;
+}
+
 int WasmWriter::writeSectionContent(raw_ostream &OS,
                                     WasmYAML::CustomSection &Section) {
-  // writeStringRef(Section.Name, OS);
-  // encodeULEB128(Section.Payload.binary_size(), OS);
-  Section.Payload.writeAsBinary(OS);
+  if (auto S = dyn_cast<WasmYAML::NameSection>(&Section)) {
+    if (auto Err = writeSectionContent(OS, *S))
+      return Err;
+  } else if (auto S = dyn_cast<WasmYAML::LinkingSection>(&Section)) {
+    if (auto Err = writeSectionContent(OS, *S))
+      return Err;
+  } else {
+    Section.Payload.writeAsBinary(OS);
+  }
   return 0;
 }
 
 int WasmWriter::writeSectionContent(raw_ostream &OS,
                                     WasmYAML::TypeSection &Section) {
   encodeULEB128(Section.Signatures.size(), OS);
-  for (auto &Sig : Section.Signatures) {
+  for (const WasmYAML::Signature &Sig : Section.Signatures) {
     encodeSLEB128(Sig.Form, OS);
     encodeULEB128(Sig.ParamTypes.size(), OS);
     for (auto ParamType : Sig.ParamTypes)
@@ -134,7 +221,7 @@ int WasmWriter::writeSectionContent(raw_ostream &OS,
 int WasmWriter::writeSectionContent(raw_ostream &OS,
                                     WasmYAML::ImportSection &Section) {
   encodeULEB128(Section.Imports.size(), OS);
-  for (auto &Import : Section.Imports) {
+  for (const WasmYAML::Import &Import : Section.Imports) {
     writeStringRef(Import.Module, OS);
     writeStringRef(Import.Field, OS);
     encodeULEB128(Import.Kind, OS);
@@ -143,8 +230,15 @@ int WasmWriter::writeSectionContent(raw_ostream &OS,
       encodeULEB128(Import.SigIndex, OS);
       break;
     case wasm::WASM_EXTERNAL_GLOBAL:
-      encodeSLEB128(Import.GlobalType, OS);
-      writeUint8(OS, Import.GlobalMutable);
+      encodeSLEB128(Import.GlobalImport.Type, OS);
+      writeUint8(OS, Import.GlobalImport.Mutable);
+      break;
+    case wasm::WASM_EXTERNAL_MEMORY:
+      writeLimits(Import.Memory, OS);
+      break;
+    case wasm::WASM_EXTERNAL_TABLE:
+      encodeSLEB128(Import.TableImport.ElemType, OS);
+      writeLimits(Import.TableImport.TableLimits, OS);
       break;
     default:
       errs() << "Unknown import type: " << Import.Kind;
@@ -166,7 +260,7 @@ int WasmWriter::writeSectionContent(raw_ostream &OS,
 int WasmWriter::writeSectionContent(raw_ostream &OS,
                                     WasmYAML::ExportSection &Section) {
   encodeULEB128(Section.Exports.size(), OS);
-  for (auto &Export : Section.Exports) {
+  for (const WasmYAML::Export &Export : Section.Exports) {
     writeStringRef(Export.Name, OS);
     encodeULEB128(Export.Kind, OS);
     encodeULEB128(Export.Index, OS);
@@ -193,7 +287,7 @@ int WasmWriter::writeSectionContent(raw_ostream &OS,
 int WasmWriter::writeSectionContent(raw_ostream &OS,
                                     WasmYAML::MemorySection &Section) {
   encodeULEB128(Section.Memories.size(), OS);
-  for (auto &Mem : Section.Memories) {
+  for (const WasmYAML::Limits &Mem : Section.Memories) {
     writeLimits(Mem, OS);
   }
   return 0;
@@ -252,7 +346,7 @@ int WasmWriter::writeSectionContent(raw_ostream &OS,
                                     WasmYAML::DataSection &Section) {
   encodeULEB128(Section.Segments.size(), OS);
   for (auto &Segment : Section.Segments) {
-    encodeULEB128(Segment.Index, OS);
+    encodeULEB128(Segment.MemoryIndex, OS);
     writeInitExpr(Segment.Offset, OS);
     encodeULEB128(Segment.Content.binary_size(), OS);
     Segment.Content.writeAsBinary(OS);
@@ -284,9 +378,9 @@ int WasmWriter::writeRelocSection(raw_ostream &OS,
     encodeULEB128(Reloc.Offset, OS);
     encodeULEB128(Reloc.Index, OS);
     switch (Reloc.Type) {
-      case wasm::R_WEBASSEMBLY_GLOBAL_ADDR_LEB:
-      case wasm::R_WEBASSEMBLY_GLOBAL_ADDR_SLEB:
-      case wasm::R_WEBASSEMBLY_GLOBAL_ADDR_I32:
+      case wasm::R_WEBASSEMBLY_MEMORY_ADDR_LEB:
+      case wasm::R_WEBASSEMBLY_MEMORY_ADDR_SLEB:
+      case wasm::R_WEBASSEMBLY_MEMORY_ADDR_I32:
         encodeULEB128(Reloc.Addend, OS);
     }
   }

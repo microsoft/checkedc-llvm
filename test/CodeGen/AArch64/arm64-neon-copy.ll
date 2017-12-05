@@ -140,7 +140,7 @@ define <4 x float> @ins2f4(<2 x float> %tmp1, <4 x float> %tmp2) {
 
 define <2 x double> @ins1f2(<1 x double> %tmp1, <2 x double> %tmp2) {
 ; CHECK-LABEL: ins1f2:
-; CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+; CHECK: zip1 {{v[0-9]+}}.2d, {{v[0-9]+}}.2d
   %tmp3 = extractelement <1 x double> %tmp1, i32 0
   %tmp4 = insertelement <2 x double> %tmp2, double %tmp3, i32 1
   ret <2 x double> %tmp4
@@ -188,7 +188,7 @@ define <2 x float> @ins4f2(<4 x float> %tmp1, <2 x float> %tmp2) {
 
 define <1 x double> @ins2f1(<2 x double> %tmp1, <1 x double> %tmp2) {
 ; CHECK-LABEL: ins2f1:
-; CHECK: mov {{d[0-9]+}}, {{v[0-9]+}}.d[1]
+; CHECK: dup {{v[0-9]+}}.2d, {{v[0-9]+}}.d[1]
   %tmp3 = extractelement <2 x double> %tmp1, i32 1
   %tmp4 = insertelement <1 x double> %tmp2, double %tmp3, i32 0
   ret <1 x double> %tmp4
@@ -1378,7 +1378,7 @@ entry:
 
 define <2 x i64> @test_concat_v2i64_v2i64_v1i64(<2 x i64> %x, <1 x i64> %y) #0 {
 ; CHECK-LABEL: test_concat_v2i64_v2i64_v1i64:
-; CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+; CHECK: zip1 {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, {{v[0-9]+}}.2d
 entry:
   %vecext = extractelement <2 x i64> %x, i32 0
   %vecinit = insertelement <2 x i64> undef, i64 %vecext, i32 0

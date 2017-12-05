@@ -49,9 +49,9 @@ entry:
 define void @zero_test() {
 ; X32-LABEL: zero_test:
 ; X32:       # BB#0: # %entry
-; X32-NEXT:    pxor %xmm0, %xmm0
-; X32-NEXT:    pextrd $1, %xmm0, (%eax)
-; X32-NEXT:    movd %xmm0, (%eax)
+; X32-NEXT:    xorps %xmm0, %xmm0
+; X32-NEXT:    extractps $1, %xmm0, (%eax)
+; X32-NEXT:    movss %xmm0, (%eax)
 ; X32-NEXT:    retl
 ;
 ; X64-LABEL: zero_test:
@@ -69,7 +69,6 @@ define void @full_test() {
 ; X32-LABEL: full_test:
 ; X32:       # BB#0: # %entry
 ; X32-NEXT:    subl $60, %esp
-; X32-NEXT:  .Lcfi0:
 ; X32-NEXT:    .cfi_def_cfa_offset 64
 ; X32-NEXT:    movsd {{.*#+}} xmm2 = mem[0],zero
 ; X32-NEXT:    cvttps2dq %xmm2, %xmm0
@@ -83,10 +82,11 @@ define void @full_test() {
 ; X32-NEXT:    cmpeqps %xmm2, %xmm1
 ; X32-NEXT:    movaps %xmm1, %xmm0
 ; X32-NEXT:    blendvps %xmm0, %xmm2, %xmm4
-; X32-NEXT:    extractps $1, %xmm4, {{[0-9]+}}(%esp)
 ; X32-NEXT:    movss %xmm4, {{[0-9]+}}(%esp)
-; X32-NEXT:    movsd {{.*#+}} xmm0 = mem[0],zero
-; X32-NEXT:    movsd %xmm0, {{[0-9]+}}(%esp)
+; X32-NEXT:    movshdup {{.*#+}} xmm0 = xmm4[1,1,3,3]
+; X32-NEXT:    movss %xmm0, {{[0-9]+}}(%esp)
+; X32-NEXT:    movss %xmm4, {{[0-9]+}}(%esp)
+; X32-NEXT:    movss %xmm0, {{[0-9]+}}(%esp)
 ; X32-NEXT:    addl $60, %esp
 ; X32-NEXT:    retl
 ;

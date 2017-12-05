@@ -361,7 +361,7 @@ SDValue AVRTargetLowering::LowerDivRem(SDValue Op, SelectionDAG &DAG) const {
   SDValue Callee = DAG.getExternalSymbol(getLibcallName(LC),
                                          getPointerTy(DAG.getDataLayout()));
 
-  Type *RetTy = (Type *)StructType::get(Ty, Ty, nullptr);
+  Type *RetTy = (Type *)StructType::get(Ty, Ty);
 
   SDLoc dl(Op);
   TargetLowering::CallLoweringInfo CLI(DAG);
@@ -724,7 +724,7 @@ void AVRTargetLowering::ReplaceNodeResults(SDNode *N,
 /// by AM is legal for this target, for a load/store of the specified type.
 bool AVRTargetLowering::isLegalAddressingMode(const DataLayout &DL,
                                               const AddrMode &AM, Type *Ty,
-                                              unsigned AS) const {
+                                              unsigned AS, Instruction *I) const {
   int64_t Offs = AM.BaseOffs;
 
   // Allow absolute addresses.
@@ -1166,8 +1166,7 @@ SDValue AVRTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   // Get a count of how many bytes are to be pushed on the stack.
   unsigned NumBytes = CCInfo.getNextStackOffset();
 
-  Chain = DAG.getCALLSEQ_START(Chain, DAG.getIntPtrConstant(NumBytes, DL, true),
-                               DL);
+  Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, DL);
 
   SmallVector<std::pair<unsigned, SDValue>, 8> RegsToPass;
 
@@ -1470,8 +1469,10 @@ MachineBasicBlock *AVRTargetLowering::insertShift(MachineInstr &MI,
   }
 
   const BasicBlock *LLVM_BB = BB->getBasicBlock();
-  MachineFunction::iterator I = BB->getParent()->begin();
-  ++I;
+
+  MachineFunction::iterator I;
+  for (I = BB->getIterator(); I != F->end() && &(*I) != BB; ++I);
+  if (I != F->end()) ++I;
 
   // Create loop block.
   MachineBasicBlock *LoopBB = F->CreateMachineBasicBlock(LLVM_BB);
@@ -1501,9 +1502,9 @@ MachineBasicBlock *AVRTargetLowering::insertShift(MachineInstr &MI,
   unsigned DstReg = MI.getOperand(0).getReg();
 
   // BB:
-  // cp 0, N
+  // cpi N, 0
   // breq RemBB
-  BuildMI(BB, dl, TII.get(AVR::CPRdRr)).addReg(ShiftAmtSrcReg).addReg(AVR::R0);
+  BuildMI(BB, dl, TII.get(AVR::CPIRdK)).addReg(ShiftAmtSrcReg).addImm(0);
   BuildMI(BB, dl, TII.get(AVR::BREQk)).addMBB(RemBB);
 
   // LoopBB:
@@ -1611,8 +1612,9 @@ AVRTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
   MachineBasicBlock *trueMBB = MF->CreateMachineBasicBlock(LLVM_BB);
   MachineBasicBlock *falseMBB = MF->CreateMachineBasicBlock(LLVM_BB);
 
-  MachineFunction::iterator I = MBB->getParent()->begin();
-  ++I;
+  MachineFunction::iterator I;
+  for (I = MF->begin(); I != MF->end() && &(*I) != MBB; ++I);
+  if (I != MF->end()) ++I;
   MF->insert(I, trueMBB);
   MF->insert(I, falseMBB);
 

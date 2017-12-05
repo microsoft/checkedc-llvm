@@ -226,6 +226,8 @@ storeRegToStack(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     Opc = Mips::SW;
   else if (Mips::HI64RegClass.hasSubClassEq(RC))
     Opc = Mips::SD;
+  else if (Mips::DSPRRegClass.hasSubClassEq(RC))
+    Opc = Mips::SWDSP;
 
   // Hi, Lo are normally caller save but they are callee save
   // for interrupt handling.
@@ -302,6 +304,8 @@ loadRegFromStack(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     Opc = Mips::LW;
   else if (Mips::LO64RegClass.hasSubClassEq(RC))
     Opc = Mips::LD;
+  else if (Mips::DSPRRegClass.hasSubClassEq(RC))
+    Opc = Mips::LWDSP;
 
   assert(Opc && "Register class not handled!");
 
@@ -451,6 +455,10 @@ unsigned MipsSEInstrInfo::getOppositeBranchOpc(unsigned Opc) const {
   case Mips::BGEZC64:  return Mips::BLTZC64;
   case Mips::BLTZC64:  return Mips::BGEZC64;
   case Mips::BLEZC64:  return Mips::BGTZC64;
+  case Mips::BBIT0:  return Mips::BBIT1;
+  case Mips::BBIT1:  return Mips::BBIT0;
+  case Mips::BBIT032:  return Mips::BBIT132;
+  case Mips::BBIT132:  return Mips::BBIT032;
   }
 }
 
@@ -541,7 +549,9 @@ unsigned MipsSEInstrInfo::getAnalyzableBrOpc(unsigned Opc) const {
           Opc == Mips::BGEC64 || Opc == Mips::BGEUC64 || Opc == Mips::BLTC64 ||
           Opc == Mips::BLTUC64 || Opc == Mips::BGTZC64 ||
           Opc == Mips::BGEZC64 || Opc == Mips::BLTZC64 ||
-          Opc == Mips::BLEZC64 || Opc == Mips::BC) ? Opc : 0;
+          Opc == Mips::BLEZC64 || Opc == Mips::BC || Opc == Mips::BBIT0 ||
+          Opc == Mips::BBIT1 || Opc == Mips::BBIT032 ||
+          Opc == Mips::BBIT132) ? Opc : 0;
 }
 
 void MipsSEInstrInfo::expandRetRA(MachineBasicBlock &MBB,

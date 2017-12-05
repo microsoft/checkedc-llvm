@@ -1,4 +1,4 @@
-//===-- MipsSEFrameLowering.cpp - Mips32/64 Frame Information -------------===//
+//===- MipsSEFrameLowering.cpp - Mips32/64 Frame Information --------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -11,10 +11,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "MipsSEFrameLowering.h"
 #include "MCTargetDesc/MipsABIInfo.h"
 #include "MipsMachineFunction.h"
 #include "MipsRegisterInfo.h"
-#include "MipsSEFrameLowering.h"
 #include "MipsSEInstrInfo.h"
 #include "MipsSubtarget.h"
 #include "llvm/ADT/BitVector.h"
@@ -71,7 +71,7 @@ public:
   bool expand();
 
 private:
-  typedef MachineBasicBlock::iterator Iter;
+  using Iter = MachineBasicBlock::iterator;
 
   bool expandInstr(MachineBasicBlock &MBB, Iter I);
   void expandLoadCCond(MachineBasicBlock &MBB, Iter I);
@@ -390,7 +390,7 @@ bool ExpandPseudo::expandExtractElementF64(MachineBasicBlock &MBB,
 }
 
 MipsSEFrameLowering::MipsSEFrameLowering(const MipsSubtarget &STI)
-    : MipsFrameLowering(STI, STI.stackAlignment()) {}
+    : MipsFrameLowering(STI, STI.getStackAlignment()) {}
 
 void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
                                        MachineBasicBlock &MBB) const {
@@ -424,7 +424,6 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
 
   MachineModuleInfo &MMI = MF.getMMI();
   const MCRegisterInfo *MRI = MMI.getContext().getRegisterInfo();
-  MachineLocation DstML, SrcML;
 
   // Adjust stack.
   TII.adjustStackPtr(SP, -StackSize, MBB, MBBI);

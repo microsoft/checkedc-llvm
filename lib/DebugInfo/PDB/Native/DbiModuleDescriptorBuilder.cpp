@@ -10,38 +10,31 @@
 #include "llvm/DebugInfo/PDB/Native/DbiModuleDescriptorBuilder.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/BinaryFormat/COFF.h"
+#include "llvm/DebugInfo/CodeView/DebugSubsectionRecord.h"
 #include "llvm/DebugInfo/MSF/MSFBuilder.h"
 #include "llvm/DebugInfo/MSF/MSFCommon.h"
 #include "llvm/DebugInfo/MSF/MappedBlockStream.h"
 #include "llvm/DebugInfo/PDB/Native/DbiModuleDescriptor.h"
+#include "llvm/DebugInfo/PDB/Native/GSIStreamBuilder.h"
 #include "llvm/DebugInfo/PDB/Native/RawConstants.h"
 #include "llvm/DebugInfo/PDB/Native/RawError.h"
 #include "llvm/Support/BinaryItemStream.h"
 #include "llvm/Support/BinaryStreamWriter.h"
-#include "llvm/Support/COFF.h"
 
 using namespace llvm;
 using namespace llvm::codeview;
 using namespace llvm::msf;
 using namespace llvm::pdb;
 
-namespace llvm {
-template <> struct BinaryItemTraits<CVSymbol> {
-  static size_t length(const CVSymbol &Item) { return Item.RecordData.size(); }
-
-  static ArrayRef<uint8_t> bytes(const CVSymbol &Item) {
-    return Item.RecordData;
-  }
-};
-}
-
-static uint32_t calculateDiSymbolStreamSize(uint32_t SymbolByteSize) {
-  uint32_t Size = sizeof(uint32_t); // Signature
-  Size += SymbolByteSize;           // Symbol Data
-  Size += 0;                        // TODO: Layout.LineBytes
-  Size += 0;                        // TODO: Layout.C13Bytes
-  Size += sizeof(uint32_t);         // GlobalRefs substream size (always 0)
-  Size += 0;                        // GlobalRefs substream bytes
+static uint32_t calculateDiSymbolStreamSize(uint32_t SymbolByteSize,
+                                            uint32_t C13Size) {
+  uint32_t Size = sizeof(uint32_t);   // Signature
+  Size += alignTo(SymbolByteSize, 4); // Symbol Data
+  Size += 0;                          // TODO: Layout.C11Bytes
+  Size += C13Size;                    // C13 Debug Info Size
+  Size += sizeof(uint32_t);           // GlobalRefs substream size (always 0)
+  Size += 0;                          // GlobalRefs substream bytes
   return Size;
 }
 
@@ -49,8 +42,11 @@ DbiModuleDescriptorBuilder::DbiModuleDescriptorBuilder(StringRef ModuleName,
                                                        uint32_t ModIndex,
                                                        msf::MSFBuilder &Msf)
     : MSF(Msf), ModuleName(ModuleName) {
+  ::memset(&Layout, 0, sizeof(Layout));
   Layout.Mod = ModIndex;
 }
+
+DbiModuleDescriptorBuilder::~DbiModuleDescriptorBuilder() {}
 
 uint16_t DbiModuleDescriptorBuilder::getStreamIndex() const {
   return Layout.ModDiStream;
@@ -60,13 +56,30 @@ void DbiModuleDescriptorBuilder::setObjFileName(StringRef Name) {
   ObjFileName = Name;
 }
 
+void DbiModuleDescriptorBuilder::setPdbFilePathNI(uint32_t NI) {
+  PdbFilePathNI = NI;
+}
+
 void DbiModuleDescriptorBuilder::addSymbol(CVSymbol Symbol) {
   Symbols.push_back(Symbol);
-  SymbolByteSize += Symbol.data().size();
+  // Symbols written to a PDB file are required to be 4 byte aligned.  The same
+  // is not true of object files.
+  assert(Symbol.length() % alignOf(CodeViewContainer::Pdb) == 0 &&
+         "Invalid Symbol alignment!");
+  SymbolByteSize += Symbol.length();
 }
 
 void DbiModuleDescriptorBuilder::addSourceFile(StringRef Path) {
   SourceFiles.push_back(Path);
+}
+
+uint32_t DbiModuleDescriptorBuilder::calculateC13DebugInfoSize() const {
+  uint32_t Result = 0;
+  for (const auto &Builder : C13Builders) {
+    assert(Builder && "Empty C13 Fragment Builder!");
+    Result += Builder->calculateSerializedLength();
+  }
+  return Result;
 }
 
 uint32_t DbiModuleDescriptorBuilder::calculateSerializedLength() const {
@@ -77,14 +90,15 @@ uint32_t DbiModuleDescriptorBuilder::calculateSerializedLength() const {
 }
 
 void DbiModuleDescriptorBuilder::finalize() {
+  Layout.SC.ModuleIndex = Layout.Mod;
   Layout.FileNameOffs = 0; // TODO: Fix this
   Layout.Flags = 0;        // TODO: Fix this
   Layout.C11Bytes = 0;
-  Layout.C13Bytes = 0;
+  Layout.C13Bytes = calculateC13DebugInfoSize();
   (void)Layout.Mod;         // Set in constructor
   (void)Layout.ModDiStream; // Set in finalizeMsfLayout
   Layout.NumFiles = SourceFiles.size();
-  Layout.PdbFilePathNI = 0;
+  Layout.PdbFilePathNI = PdbFilePathNI;
   Layout.SrcFileNameNI = 0;
 
   // This value includes both the signature field as well as the record bytes
@@ -94,7 +108,9 @@ void DbiModuleDescriptorBuilder::finalize() {
 
 Error DbiModuleDescriptorBuilder::finalizeMsfLayout() {
   this->Layout.ModDiStream = kInvalidStreamIndex;
-  auto ExpectedSN = MSF.addStream(calculateDiSymbolStreamSize(SymbolByteSize));
+  uint32_t C13Size = calculateC13DebugInfoSize();
+  auto ExpectedSN =
+      MSF.addStream(calculateDiSymbolStreamSize(SymbolByteSize, C13Size));
   if (!ExpectedSN)
     return ExpectedSN.takeError();
   Layout.ModDiStream = *ExpectedSN;
@@ -117,7 +133,7 @@ Error DbiModuleDescriptorBuilder::commit(BinaryStreamWriter &ModiWriter,
 
   if (Layout.ModDiStream != kInvalidStreamIndex) {
     auto NS = WritableMappedBlockStream::createIndexedStream(
-        MsfLayout, MsfBuffer, Layout.ModDiStream);
+        MsfLayout, MsfBuffer, Layout.ModDiStream, MSF.getAllocator());
     WritableBinaryStreamRef Ref(*NS);
     BinaryStreamWriter SymbolWriter(Ref);
     // Write the symbols.
@@ -129,8 +145,17 @@ Error DbiModuleDescriptorBuilder::commit(BinaryStreamWriter &ModiWriter,
     BinaryStreamRef RecordsRef(Records);
     if (auto EC = SymbolWriter.writeStreamRef(RecordsRef))
       return EC;
+    if (auto EC = SymbolWriter.padToAlignment(4))
+      return EC;
     // TODO: Write C11 Line data
-    // TODO: Write C13 Line data
+    assert(SymbolWriter.getOffset() % alignOf(CodeViewContainer::Pdb) == 0 &&
+           "Invalid debug section alignment!");
+    for (const auto &Builder : C13Builders) {
+      assert(Builder && "Empty C13 Fragment Builder!");
+      if (auto EC = Builder->commit(SymbolWriter))
+        return EC;
+    }
+
     // TODO: Figure out what GlobalRefs substream actually is and populate it.
     if (auto EC = SymbolWriter.writeInteger<uint32_t>(0))
       return EC;
@@ -138,4 +163,17 @@ Error DbiModuleDescriptorBuilder::commit(BinaryStreamWriter &ModiWriter,
       return make_error<RawError>(raw_error_code::stream_too_long);
   }
   return Error::success();
+}
+
+void DbiModuleDescriptorBuilder::addDebugSubsection(
+    std::shared_ptr<DebugSubsection> Subsection) {
+  assert(Subsection);
+  C13Builders.push_back(llvm::make_unique<DebugSubsectionRecordBuilder>(
+      std::move(Subsection), CodeViewContainer::Pdb));
+}
+
+void DbiModuleDescriptorBuilder::addDebugSubsection(
+    const DebugSubsectionRecord &SubsectionContents) {
+  C13Builders.push_back(llvm::make_unique<DebugSubsectionRecordBuilder>(
+      SubsectionContents, CodeViewContainer::Pdb));
 }

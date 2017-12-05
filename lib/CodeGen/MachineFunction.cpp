@@ -1,4 +1,4 @@
-//===-- MachineFunction.cpp -----------------------------------------------===//
+//===- MachineFunction.cpp ------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -14,48 +14,76 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/EHPersonalities.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
-#include "llvm/CodeGen/MachineFunctionInitializer.h"
-#include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
+#include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/CodeGen/WinEHFuncInfo.h"
+#include "llvm/IR/Attributes.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constant.h"
 #include "llvm/IR/DataLayout.h"
-#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ModuleSlotTracker.h"
-#include "llvm/MC/MCAsmInfo.h"
+#include "llvm/IR/Value.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/SectionKind.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/DOTGraphTraits.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetFrameLowering.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <string>
+#include <utility>
+#include <vector>
+
 using namespace llvm;
 
 #define DEBUG_TYPE "codegen"
 
 static cl::opt<unsigned>
-    AlignAllFunctions("align-all-functions",
-                      cl::desc("Force the alignment of all functions."),
-                      cl::init(0), cl::Hidden);
-
-void MachineFunctionInitializer::anchor() {}
+AlignAllFunctions("align-all-functions",
+                  cl::desc("Force the alignment of all functions."),
+                  cl::init(0), cl::Hidden);
 
 static const char *getPropertyName(MachineFunctionProperties::Property Prop) {
-  typedef MachineFunctionProperties::Property P;
+  using P = MachineFunctionProperties::Property;
+
   switch(Prop) {
   case P::FailedISel: return "FailedISel";
   case P::IsSSA: return "IsSSA";
@@ -84,7 +112,7 @@ void MachineFunctionProperties::print(raw_ostream &OS) const {
 //===----------------------------------------------------------------------===//
 
 // Out-of-line virtual method.
-MachineFunctionInfo::~MachineFunctionInfo() {}
+MachineFunctionInfo::~MachineFunctionInfo() = default;
 
 void ilist_alloc_traits<MachineBasicBlock>::deleteNode(MachineBasicBlock *MBB) {
   MBB->getParent()->DeleteMachineBasicBlock(MBB);
@@ -150,7 +178,9 @@ void MachineFunction::init() {
          "Can't create a MachineFunction using a Module with a "
          "Target-incompatible DataLayout attached\n");
 
-  PSVManager = llvm::make_unique<PseudoSourceValueManager>();
+  PSVManager =
+    llvm::make_unique<PseudoSourceValueManager>(*(getSubtarget().
+                                                  getInstrInfo()));
 }
 
 MachineFunction::~MachineFunction() {
@@ -169,6 +199,7 @@ void MachineFunction::clear() {
   InstructionRecycler.clear(Allocator);
   OperandRecycler.clear(Allocator);
   BasicBlockRecycler.clear(Allocator);
+  CodeViewAnnotations.clear();
   VariableDbgInfos.clear();
   if (RegInfo) {
     RegInfo->~MachineRegisterInfo();
@@ -273,6 +304,26 @@ MachineFunction::CloneMachineInstr(const MachineInstr *Orig) {
              MachineInstr(*this, *Orig);
 }
 
+MachineInstr &MachineFunction::CloneMachineInstrBundle(MachineBasicBlock &MBB,
+    MachineBasicBlock::iterator InsertBefore, const MachineInstr &Orig) {
+  MachineInstr *FirstClone = nullptr;
+  MachineBasicBlock::const_instr_iterator I = Orig.getIterator();
+  while (true) {
+    MachineInstr *Cloned = CloneMachineInstr(&*I);
+    MBB.insert(InsertBefore, Cloned);
+    if (FirstClone == nullptr) {
+      FirstClone = Cloned;
+    } else {
+      Cloned->bundleWithPred();
+    }
+
+    if (!I->isBundledWithSucc())
+      break;
+    ++I;
+  }
+  return *FirstClone;
+}
+
 /// Delete the given MachineInstr.
 ///
 /// This function also serves as the MachineInstr destructor - the real
@@ -308,11 +359,11 @@ MachineFunction::DeleteMachineBasicBlock(MachineBasicBlock *MBB) {
 MachineMemOperand *MachineFunction::getMachineMemOperand(
     MachinePointerInfo PtrInfo, MachineMemOperand::Flags f, uint64_t s,
     unsigned base_alignment, const AAMDNodes &AAInfo, const MDNode *Ranges,
-    SynchronizationScope SynchScope, AtomicOrdering Ordering,
+    SyncScope::ID SSID, AtomicOrdering Ordering,
     AtomicOrdering FailureOrdering) {
   return new (Allocator)
       MachineMemOperand(PtrInfo, f, s, base_alignment, AAInfo, Ranges,
-                        SynchScope, Ordering, FailureOrdering);
+                        SSID, Ordering, FailureOrdering);
 }
 
 MachineMemOperand *
@@ -323,13 +374,27 @@ MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
                MachineMemOperand(MachinePointerInfo(MMO->getValue(),
                                                     MMO->getOffset()+Offset),
                                  MMO->getFlags(), Size, MMO->getBaseAlignment(),
-                                 AAMDNodes(), nullptr, MMO->getSynchScope(),
+                                 AAMDNodes(), nullptr, MMO->getSyncScopeID(),
                                  MMO->getOrdering(), MMO->getFailureOrdering());
   return new (Allocator)
              MachineMemOperand(MachinePointerInfo(MMO->getPseudoValue(),
                                                   MMO->getOffset()+Offset),
                                MMO->getFlags(), Size, MMO->getBaseAlignment(),
-                               AAMDNodes(), nullptr, MMO->getSynchScope(),
+                               AAMDNodes(), nullptr, MMO->getSyncScopeID(),
+                               MMO->getOrdering(), MMO->getFailureOrdering());
+}
+
+MachineMemOperand *
+MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
+                                      const AAMDNodes &AAInfo) {
+  MachinePointerInfo MPI = MMO->getValue() ?
+             MachinePointerInfo(MMO->getValue(), MMO->getOffset()) :
+             MachinePointerInfo(MMO->getPseudoValue(), MMO->getOffset());
+
+  return new (Allocator)
+             MachineMemOperand(MPI, MMO->getFlags(), MMO->getSize(),
+                               MMO->getBaseAlignment(), AAInfo,
+                               MMO->getRanges(), MMO->getSyncScopeID(),
                                MMO->getOrdering(), MMO->getFailureOrdering());
 }
 
@@ -362,7 +427,7 @@ MachineFunction::extractLoadMemRefs(MachineInstr::mmo_iterator Begin,
                                (*I)->getFlags() & ~MachineMemOperand::MOStore,
                                (*I)->getSize(), (*I)->getBaseAlignment(),
                                (*I)->getAAInfo(), nullptr,
-                               (*I)->getSynchScope(), (*I)->getOrdering(),
+                               (*I)->getSyncScopeID(), (*I)->getOrdering(),
                                (*I)->getFailureOrdering());
         Result[Index] = JustLoad;
       }
@@ -396,7 +461,7 @@ MachineFunction::extractStoreMemRefs(MachineInstr::mmo_iterator Begin,
                                (*I)->getFlags() & ~MachineMemOperand::MOLoad,
                                (*I)->getSize(), (*I)->getBaseAlignment(),
                                (*I)->getAAInfo(), nullptr,
-                               (*I)->getSynchScope(), (*I)->getOrdering(),
+                               (*I)->getSyncScopeID(), (*I)->getOrdering(),
                                (*I)->getFailureOrdering());
         Result[Index] = JustStore;
       }
@@ -465,10 +530,10 @@ void MachineFunction::print(raw_ostream &OS, const SlotIndexes *Indexes) const {
 }
 
 namespace llvm {
+
   template<>
   struct DOTGraphTraits<const MachineFunction*> : public DefaultDOTGraphTraits {
-
-  DOTGraphTraits (bool isSimple=false) : DefaultDOTGraphTraits(isSimple) {}
+    DOTGraphTraits(bool isSimple = false) : DefaultDOTGraphTraits(isSimple) {}
 
     static std::string getGraphName(const MachineFunction *F) {
       return ("CFG for '" + F->getName() + "' function").str();
@@ -499,7 +564,8 @@ namespace llvm {
       return OutStr;
     }
   };
-}
+
+} // end namespace llvm
 
 void MachineFunction::viewCFG() const
 {
@@ -852,12 +918,11 @@ void MachineJumpTableInfo::print(raw_ostream &OS) const {
 LLVM_DUMP_METHOD void MachineJumpTableInfo::dump() const { print(dbgs()); }
 #endif
 
-
 //===----------------------------------------------------------------------===//
 //  MachineConstantPool implementation
 //===----------------------------------------------------------------------===//
 
-void MachineConstantPoolValue::anchor() { }
+void MachineConstantPoolValue::anchor() {}
 
 Type *MachineConstantPoolEntry::getType() const {
   if (isMachineConstantPoolEntry())

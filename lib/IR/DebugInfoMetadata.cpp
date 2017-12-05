@@ -354,6 +354,8 @@ DISubroutineType *DISubroutineType::getImpl(LLVMContext &Context, DIFlags Flags,
   DEFINE_GETIMPL_STORE(DISubroutineType, (Flags, CC), Ops);
 }
 
+// FIXME: Implement this string-enum correspondence with a .def file and macros,
+// so that the association is explicit rather than implied.
 static const char *ChecksumKindName[DIFile::CSK_Last + 1] = {
   "CSK_None",
   "CSK_MD5",
@@ -391,7 +393,7 @@ DICompileUnit *DICompileUnit::getImpl(
     unsigned EmissionKind, Metadata *EnumTypes, Metadata *RetainedTypes,
     Metadata *GlobalVariables, Metadata *ImportedEntities, Metadata *Macros,
     uint64_t DWOId, bool SplitDebugInlining, bool DebugInfoForProfiling,
-    StorageType Storage, bool ShouldCreate) {
+    bool GnuPubnames, StorageType Storage, bool ShouldCreate) {
   assert(Storage != Uniqued && "Cannot unique DICompileUnit");
   assert(isCanonical(Producer) && "Expected canonical MDString");
   assert(isCanonical(Flags) && "Expected canonical MDString");
@@ -401,11 +403,10 @@ DICompileUnit *DICompileUnit::getImpl(
       File,      Producer,      Flags,           SplitDebugFilename,
       EnumTypes, RetainedTypes, GlobalVariables, ImportedEntities,
       Macros};
-  return storeImpl(new (array_lengthof(Ops))
-                       DICompileUnit(Context, Storage, SourceLanguage,
-                                     IsOptimized, RuntimeVersion, EmissionKind,
-                                     DWOId, SplitDebugInlining,
-                                     DebugInfoForProfiling, Ops),
+  return storeImpl(new (array_lengthof(Ops)) DICompileUnit(
+                       Context, Storage, SourceLanguage, IsOptimized,
+                       RuntimeVersion, EmissionKind, DWOId, SplitDebugInlining,
+                       DebugInfoForProfiling, GnuPubnames, Ops),
                    Storage);
 }
 
@@ -598,8 +599,7 @@ unsigned DIExpression::ExprOperand::getSize() const {
   case dwarf::DW_OP_LLVM_fragment:
     return 3;
   case dwarf::DW_OP_constu:
-  case dwarf::DW_OP_plus:
-  case dwarf::DW_OP_minus:
+  case dwarf::DW_OP_plus_uconst:
     return 2;
   default:
     return 1;
@@ -641,8 +641,10 @@ bool DIExpression::isValid() const {
       break;
     }
     case dwarf::DW_OP_constu:
+    case dwarf::DW_OP_plus_uconst:
     case dwarf::DW_OP_plus:
     case dwarf::DW_OP_minus:
+    case dwarf::DW_OP_mul:
     case dwarf::DW_OP_deref:
     case dwarf::DW_OP_xderef:
       break;
@@ -664,12 +666,38 @@ DIExpression::getFragmentInfo(expr_op_iterator Start, expr_op_iterator End) {
 void DIExpression::appendOffset(SmallVectorImpl<uint64_t> &Ops,
                                 int64_t Offset) {
   if (Offset > 0) {
-    Ops.push_back(dwarf::DW_OP_plus);
+    Ops.push_back(dwarf::DW_OP_plus_uconst);
     Ops.push_back(Offset);
   } else if (Offset < 0) {
-    Ops.push_back(dwarf::DW_OP_minus);
+    Ops.push_back(dwarf::DW_OP_constu);
     Ops.push_back(-Offset);
+    Ops.push_back(dwarf::DW_OP_minus);
   }
+}
+
+bool DIExpression::extractIfOffset(int64_t &Offset) const {
+  if (getNumElements() == 0) {
+    Offset = 0;
+    return true;
+  }
+
+  if (getNumElements() == 2 && Elements[0] == dwarf::DW_OP_plus_uconst) {
+    Offset = Elements[1];
+    return true;
+  }
+
+  if (getNumElements() == 3 && Elements[0] == dwarf::DW_OP_constu) {
+    if (Elements[2] == dwarf::DW_OP_plus) {
+      Offset = Elements[1];
+      return true;
+    }
+    if (Elements[2] == dwarf::DW_OP_minus) {
+      Offset = -Elements[1];
+      return true;
+    }
+  }
+
+  return false;
 }
 
 DIExpression *DIExpression::prepend(const DIExpression *Expr, bool Deref,
@@ -695,6 +723,34 @@ DIExpression *DIExpression::prepend(const DIExpression *Expr, bool Deref,
     }
   if (StackValue)
     Ops.push_back(dwarf::DW_OP_stack_value);
+  return DIExpression::get(Expr->getContext(), Ops);
+}
+
+DIExpression *DIExpression::createFragmentExpression(const DIExpression *Expr,
+                                                     unsigned OffsetInBits,
+                                                     unsigned SizeInBits) {
+  SmallVector<uint64_t, 8> Ops;
+  // Copy over the expression, but leave off any trailing DW_OP_LLVM_fragment.
+  if (Expr) {
+    for (auto Op : Expr->expr_ops()) {
+      if (Op.getOp() == dwarf::DW_OP_LLVM_fragment) {
+        // Make the new offset point into the existing fragment.
+        uint64_t FragmentOffsetInBits = Op.getArg(0);
+        // Op.getArg(0) is FragmentOffsetInBits.
+        // Op.getArg(1) is FragmentSizeInBits.
+        assert((OffsetInBits + SizeInBits <= Op.getArg(0) + Op.getArg(1)) &&
+               "new fragment outside of original fragment");
+        OffsetInBits += FragmentOffsetInBits;
+        break;
+      }
+      Ops.push_back(Op.getOp());
+      for (unsigned I = 0; I < Op.getNumArgs(); ++I)
+        Ops.push_back(Op.getArg(I));
+    }
+  }
+  Ops.push_back(dwarf::DW_OP_LLVM_fragment);
+  Ops.push_back(OffsetInBits);
+  Ops.push_back(SizeInBits);
   return DIExpression::get(Expr->getContext(), Ops);
 }
 
@@ -734,12 +790,13 @@ DIObjCProperty *DIObjCProperty::getImpl(
 
 DIImportedEntity *DIImportedEntity::getImpl(LLVMContext &Context, unsigned Tag,
                                             Metadata *Scope, Metadata *Entity,
-                                            unsigned Line, MDString *Name,
-                                            StorageType Storage,
+                                            Metadata *File, unsigned Line,
+                                            MDString *Name, StorageType Storage,
                                             bool ShouldCreate) {
   assert(isCanonical(Name) && "Expected canonical MDString");
-  DEFINE_GETIMPL_LOOKUP(DIImportedEntity, (Tag, Scope, Entity, Line, Name));
-  Metadata *Ops[] = {Scope, Entity, Name};
+  DEFINE_GETIMPL_LOOKUP(DIImportedEntity,
+                        (Tag, Scope, Entity, File, Line, Name));
+  Metadata *Ops[] = {Scope, Entity, Name, File};
   DEFINE_GETIMPL_STORE(DIImportedEntity, (Tag, Line), Ops);
 }
 

@@ -1,4 +1,4 @@
-//===--- RDFRegisters.cpp ---------------------------------------*- C++ -*-===//
+//===- RDFRegisters.cpp ---------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -10,6 +10,17 @@
 #include "RDFRegisters.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/MC/LaneBitmask.h"
+#include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetRegisterInfo.h"
+#include <cassert>
+#include <cstdint>
+#include <set>
+#include <utility>
 
 using namespace llvm;
 using namespace rdf;
@@ -212,6 +223,20 @@ bool PhysicalRegisterInfo::aliasMM(RegisterRef RM, RegisterRef RN) const {
   return false;
 }
 
+RegisterRef PhysicalRegisterInfo::mapTo(RegisterRef RR, unsigned R) const {
+  if (RR.Reg == R)
+    return RR;
+  if (unsigned Idx = TRI.getSubRegIndex(R, RR.Reg))
+    return RegisterRef(R, TRI.composeSubRegIndexLaneMask(Idx, RR.Mask));
+  if (unsigned Idx = TRI.getSubRegIndex(RR.Reg, R)) {
+    const RegInfo &RI = RegInfos[R];
+    LaneBitmask RCM = RI.RegClass ? RI.RegClass->LaneMask
+                                  : LaneBitmask::getAll();
+    LaneBitmask M = TRI.reverseComposeSubRegIndexLaneMask(Idx, RR.Mask);
+    return RegisterRef(R, M & RCM);
+  }
+  llvm_unreachable("Invalid arguments: unrelated registers?");
+}
 
 bool RegisterAggr::hasAliasOf(RegisterRef RR) const {
   if (PhysicalRegisterInfo::isRegMaskId(RR.Reg))
@@ -354,4 +379,3 @@ RegisterAggr::rr_iterator::rr_iterator(const RegisterAggr &RG,
   Pos = End ? Masks.end() : Masks.begin();
   Index = End ? Masks.size() : 0;
 }
-

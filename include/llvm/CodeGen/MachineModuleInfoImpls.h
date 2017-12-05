@@ -1,4 +1,4 @@
-//===-- llvm/CodeGen/MachineModuleInfoImpls.h -------------------*- C++ -*-===//
+//===- llvm/CodeGen/MachineModuleInfoImpls.h --------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -15,11 +15,12 @@
 #ifndef LLVM_CODEGEN_MACHINEMODULEINFOIMPLS_H
 #define LLVM_CODEGEN_MACHINEMODULEINFOIMPLS_H
 
-#include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
-#include "llvm/Support/Wasm.h"
+#include <cassert>
 
 namespace llvm {
+
 class MCSymbol;
 
 /// MachineModuleInfoMachO - This is a MachineModuleInfoImpl implementation
@@ -36,6 +37,7 @@ class MachineModuleInfoMachO : public MachineModuleInfoImpl {
   DenseMap<MCSymbol *, StubValueTy> ThreadLocalGVStubs;
 
   virtual void anchor(); // Out of line virtual method.
+
 public:
   MachineModuleInfoMachO(const MachineModuleInfo &) {}
 
@@ -64,6 +66,7 @@ class MachineModuleInfoELF : public MachineModuleInfoImpl {
   DenseMap<MCSymbol *, StubValueTy> GVStubs;
 
   virtual void anchor(); // Out of line virtual method.
+
 public:
   MachineModuleInfoELF(const MachineModuleInfo &) {}
 
@@ -77,33 +80,6 @@ public:
   SymbolListTy GetGVStubList() { return getSortedStubs(GVStubs); }
 };
 
-/// MachineModuleInfoWasm - This is a MachineModuleInfoImpl implementation
-/// for Wasm targets.
-class MachineModuleInfoWasm : public MachineModuleInfoImpl {
-  /// WebAssembly global variables defined by CodeGen.
-  std::vector<wasm::Global> Globals;
-
-  /// The WebAssembly global variable which is the stack pointer.
-  unsigned StackPointerGlobal;
-
-  virtual void anchor(); // Out of line virtual method.
-public:
-  MachineModuleInfoWasm(const MachineModuleInfo &)
-    : StackPointerGlobal(-1U) {}
-
-  void addGlobal(const wasm::Global &G) { Globals.push_back(G); }
-  const std::vector<wasm::Global> &getGlobals() const { return Globals; }
-
-  bool hasStackPointerGlobal() const {
-    return StackPointerGlobal != -1U;
-  }
-  unsigned getStackPointerGlobal() const {
-    assert(hasStackPointerGlobal() && "Stack ptr global hasn't been set");
-    return StackPointerGlobal;
-  }
-  void setStackPointerGlobal(unsigned Global) { StackPointerGlobal = Global; }
-};
-
 } // end namespace llvm
 
-#endif
+#endif // LLVM_CODEGEN_MACHINEMODULEINFOIMPLS_H

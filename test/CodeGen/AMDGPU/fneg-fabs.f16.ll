@@ -5,7 +5,7 @@
 ; GCN-LABEL: {{^}}fneg_fabs_fadd_f16:
 ; CI: v_cvt_f32_f16_e32
 ; CI: v_cvt_f32_f16_e64 [[CVT_ABS_X:v[0-9]+]], |v{{[0-9]+}}|
-; CI: v_subrev_f32_e32 v{{[0-9]+}}, [[CVT_ABS_X]], v{{[0-9]+}}
+; CI: v_sub_f32_e32 v{{[0-9]+}}, v{{[0-9]+}}, [[CVT_ABS_X]]
 
 ; GFX89-NOT: _and
 ; GFX89: v_sub_f16_e64 {{v[0-9]+}}, {{v[0-9]+}}, |{{v[0-9]+}}|
@@ -20,13 +20,13 @@ define amdgpu_kernel void @fneg_fabs_fadd_f16(half addrspace(1)* %out, half %x, 
 ; GCN-LABEL: {{^}}fneg_fabs_fmul_f16:
 ; CI-DAG: v_cvt_f32_f16_e32
 ; CI-DAG: v_cvt_f32_f16_e64 [[CVT_NEG_ABS_X:v[0-9]+]], -|{{v[0-9]+}}|
-; CI: v_mul_f32_e32 {{v[0-9]+}}, [[CVT_NEG_ABS_X]], {{v[0-9]+}}
+; CI: v_mul_f32_e32 {{v[0-9]+}},  {{v[0-9]+}}, [[CVT_NEG_ABS_X]]
 ; CI: v_cvt_f16_f32_e32
 
 ; GFX89-NOT: _and
 ; GFX89: v_mul_f16_e64 [[MUL:v[0-9]+]], {{v[0-9]+}}, -|{{v[0-9]+}}|
 ; GFX89-NOT: [[MUL]]
-; GFX89: flat_store_short v{{\[[0-9]+:[0-9]+\]}}, [[MUL]]
+; GFX89: {{flat|global}}_store_short v{{\[[0-9]+:[0-9]+\]}}, [[MUL]]
 define amdgpu_kernel void @fneg_fabs_fmul_f16(half addrspace(1)* %out, half %x, half %y) {
   %fabs = call half @llvm.fabs.f16(half %x)
   %fsub = fsub half -0.0, %fabs
@@ -70,9 +70,13 @@ define amdgpu_kernel void @v_fneg_fabs_f16(half addrspace(1)* %out, half addrspa
 
 ; FIXME: single bit op
 ; GCN-LABEL: {{^}}s_fneg_fabs_v2f16:
-; CIVI: s_mov_b32 [[MASK:s[0-9]+]], 0x8000{{$}}
-; CIVI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]],
-; CIVI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]],
+; CI: v_lshlrev_b32_e32 [[SHL:v[0-9]+]], 16, v{{[0-9]+}}
+; CI: v_or_b32_e32 [[OR:v[0-9]+]], v{{[0-9]+}}, [[SHL]]
+; CI: v_or_b32_e32 v{{[0-9]+}}, 0x80008000, [[OR]]
+; VI: s_mov_b32 [[MASK:s[0-9]+]], 0x8000{{$}}
+; VI: v_mov_b32_e32 [[VMASK:v[0-9]+]], [[MASK]]
+; VI: v_or_b32_sdwa v{{[0-9]+}}, v{{[0-9]+}}, [[VMASK]] dst_sel:WORD_1 dst_unused:UNUSED_PAD src0_sel:DWORD src1_sel:DWORD
+; VI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]],
 ; CIVI: flat_store_dword
 
 ; GFX9: s_or_b32 s{{[0-9]+}}, 0x80008000, s{{[0-9]+}}
@@ -84,17 +88,25 @@ define amdgpu_kernel void @s_fneg_fabs_v2f16(<2 x half> addrspace(1)* %out, <2 x
 }
 
 ; GCN-LABEL: {{^}}fneg_fabs_v4f16:
-; CIVI: s_mov_b32 [[MASK:s[0-9]+]], 0x8000{{$}}
-; CIVI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]],
-; CIVI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]],
-; CIVI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]],
-; CIVI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]],
+; CI: s_mov_b32 [[MASK:s[0-9]+]], 0x80008000
+; CI: v_lshlrev_b32_e32 [[SHL0:v[0-9]+]], 16, v{{[0-9]+}}
+; CI: v_or_b32_e32 [[OR0:v[0-9]+]], v{{[0-9]+}}, [[SHL0]]
+; CI: v_lshlrev_b32_e32 [[SHL1:v[0-9]+]], 16, v{{[0-9]+}}
+; CI: v_or_b32_e32 [[OR1:v[0-9]+]], v{{[0-9]+}}, [[SHL1]]
+; CI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]], [[OR0]]
+; CI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]], [[OR1]]
+; VI: s_mov_b32 [[MASK:s[0-9]+]], 0x8000{{$}}
+; VI: v_mov_b32_e32 [[VMASK:v[0-9]+]], [[MASK]]
+; VI: v_or_b32_sdwa v{{[0-9]+}}, v{{[0-9]+}}, [[VMASK]] dst_sel:WORD_1 dst_unused:UNUSED_PAD src0_sel:DWORD src1_sel:DWORD
+; VI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]],
+; VI: v_or_b32_sdwa v{{[0-9]+}}, v{{[0-9]+}}, [[VMASK]] dst_sel:WORD_1 dst_unused:UNUSED_PAD src0_sel:DWORD src1_sel:DWORD
+; VI: v_or_b32_e32 v{{[0-9]+}}, [[MASK]],
 
 ; GFX9: s_mov_b32 [[MASK:s[0-9]+]], 0x80008000
 ; GFX9: s_or_b32 s{{[0-9]+}}, [[MASK]], s{{[0-9]+}}
 ; GFX9: s_or_b32 s{{[0-9]+}}, [[MASK]], s{{[0-9]+}}
 
-; GCN: flat_store_dwordx2
+; GCN: {{flat|global}}_store_dwordx2
 define amdgpu_kernel void @fneg_fabs_v4f16(<4 x half> addrspace(1)* %out, <4 x half> %in) {
   %fabs = call <4 x half> @llvm.fabs.v4f16(<4 x half> %in)
   %fsub = fsub <4 x half> <half -0.0, half -0.0, half -0.0, half -0.0>, %fabs
@@ -109,7 +121,7 @@ define amdgpu_kernel void @fneg_fabs_v4f16(<4 x half> addrspace(1)* %out, <4 x h
 ; CI: v_mul_f32_e32 v{{[0-9]+}}, 4.0, v{{[0-9]+}}
 
 ; VI: v_mul_f16_e64 v{{[0-9]+}}, -|v{{[0-9]+}}|, 4.0
-; VI: v_mul_f16_e64 v{{[0-9]+}}, -|v{{[0-9]+}}|, 4.0
+; VI: v_mul_f16_sdwa v{{[0-9]+}}, -|v{{[0-9]+}}|, v{{[0-9]+}} dst_sel:WORD_1 dst_unused:UNUSED_PAD src0_sel:DWORD src1_sel:DWORD
 
 ; GFX9: s_and_b32 [[ABS:s[0-9]+]], s{{[0-9]+}}, 0x7fff7fff
 ; GFX9: v_pk_mul_f16 v{{[0-9]+}}, [[ABS]], 4.0 neg_lo:[1,0] neg_hi:[1,0]

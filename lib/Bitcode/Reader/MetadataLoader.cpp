@@ -53,8 +53,8 @@
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
@@ -407,6 +407,11 @@ void PlaceholderQueue::flush(BitcodeReaderMetadataList &MetadataList) {
 
 } // anonynous namespace
 
+static Error error(const Twine &Message) {
+  return make_error<StringError>(
+      Message, make_error_code(BitcodeError::CorruptedBitcode));
+}
+
 class MetadataLoader::MetadataLoaderImpl {
   BitcodeReaderMetadataList MetadataList;
   BitcodeReaderValueList &ValueList;
@@ -492,21 +497,21 @@ class MetadataLoader::MetadataLoaderImpl {
           for (unsigned I = 0; I < GVs->getNumOperands(); I++)
             if (auto *GV =
                     dyn_cast_or_null<DIGlobalVariable>(GVs->getOperand(I))) {
-              auto *DGVE =
-                  DIGlobalVariableExpression::getDistinct(Context, GV, nullptr);
+              auto *DGVE = DIGlobalVariableExpression::getDistinct(
+                  Context, GV, DIExpression::get(Context, {}));
               GVs->replaceOperandWith(I, DGVE);
             }
       }
 
     // Upgrade variables attached to globals.
     for (auto &GV : TheModule.globals()) {
-      SmallVector<MDNode *, 1> MDs, NewMDs;
+      SmallVector<MDNode *, 1> MDs;
       GV.getMetadata(LLVMContext::MD_dbg, MDs);
       GV.eraseMetadata(LLVMContext::MD_dbg);
       for (auto *MD : MDs)
         if (auto *DGV = dyn_cast_or_null<DIGlobalVariable>(MD)) {
-          auto *DGVE =
-              DIGlobalVariableExpression::getDistinct(Context, DGV, nullptr);
+          auto *DGVE = DIGlobalVariableExpression::getDistinct(
+              Context, DGV, DIExpression::get(Context, {}));
           GV.addMetadata(LLVMContext::MD_dbg, *DGVE);
         } else
           GV.addMetadata(LLVMContext::MD_dbg, *MD);
@@ -531,6 +536,88 @@ class MetadataLoader::MetadataLoaderImpl {
               auto *E = DIExpression::get(Context, Ops);
               DDI->setOperand(2, MetadataAsValue::get(Context, E));
             }
+  }
+
+  /// Upgrade the expression from previous versions.
+  Error upgradeDIExpression(uint64_t FromVersion,
+                            MutableArrayRef<uint64_t> &Expr,
+                            SmallVectorImpl<uint64_t> &Buffer) {
+    auto N = Expr.size();
+    switch (FromVersion) {
+    default:
+      return error("Invalid record");
+    case 0:
+      if (N >= 3 && Expr[N - 3] == dwarf::DW_OP_bit_piece)
+        Expr[N - 3] = dwarf::DW_OP_LLVM_fragment;
+      LLVM_FALLTHROUGH;
+    case 1:
+      // Move DW_OP_deref to the end.
+      if (N && Expr[0] == dwarf::DW_OP_deref) {
+        auto End = Expr.end();
+        if (Expr.size() >= 3 &&
+            *std::prev(End, 3) == dwarf::DW_OP_LLVM_fragment)
+          End = std::prev(End, 3);
+        std::move(std::next(Expr.begin()), End, Expr.begin());
+        *std::prev(End) = dwarf::DW_OP_deref;
+      }
+      NeedDeclareExpressionUpgrade = true;
+      LLVM_FALLTHROUGH;
+    case 2: {
+      // Change DW_OP_plus to DW_OP_plus_uconst.
+      // Change DW_OP_minus to DW_OP_uconst, DW_OP_minus
+      auto SubExpr = ArrayRef<uint64_t>(Expr);
+      while (!SubExpr.empty()) {
+        // Skip past other operators with their operands
+        // for this version of the IR, obtained from
+        // from historic DIExpression::ExprOperand::getSize().
+        size_t HistoricSize;
+        switch (SubExpr.front()) {
+        default:
+          HistoricSize = 1;
+          break;
+        case dwarf::DW_OP_constu:
+        case dwarf::DW_OP_minus:
+        case dwarf::DW_OP_plus:
+          HistoricSize = 2;
+          break;
+        case dwarf::DW_OP_LLVM_fragment:
+          HistoricSize = 3;
+          break;
+        }
+
+        // If the expression is malformed, make sure we don't
+        // copy more elements than we should.
+        HistoricSize = std::min(SubExpr.size(), HistoricSize);
+        ArrayRef<uint64_t> Args = SubExpr.slice(1, HistoricSize-1);
+
+        switch (SubExpr.front()) {
+        case dwarf::DW_OP_plus:
+          Buffer.push_back(dwarf::DW_OP_plus_uconst);
+          Buffer.append(Args.begin(), Args.end());
+          break;
+        case dwarf::DW_OP_minus:
+          Buffer.push_back(dwarf::DW_OP_constu);
+          Buffer.append(Args.begin(), Args.end());
+          Buffer.push_back(dwarf::DW_OP_minus);
+          break;
+        default:
+          Buffer.push_back(*SubExpr.begin());
+          Buffer.append(Args.begin(), Args.end());
+          break;
+        }
+
+        // Continue with remaining elements.
+        SubExpr = SubExpr.slice(HistoricSize);
+      }
+      Expr = MutableArrayRef<uint64_t>(Buffer);
+      LLVM_FALLTHROUGH;
+    }
+    case 3:
+      // Up-to-date!
+      break;
+    }
+
+    return Error::success();
   }
 
   void upgradeDebugInfo() {
@@ -589,11 +676,6 @@ public:
   void shrinkTo(unsigned N) { MetadataList.shrinkTo(N); }
   void upgradeDebugIntrinsics(Function &F) { upgradeDeclareExpressions(F); }
 };
-
-static Error error(const Twine &Message) {
-  return make_error<StringError>(
-      Message, make_error_code(BitcodeError::CorruptedBitcode));
-}
 
 Expected<bool>
 MetadataLoader::MetadataLoaderImpl::lazyLoadModuleMetadataBlock() {
@@ -1273,7 +1355,7 @@ Error MetadataLoader::MetadataLoaderImpl::parseOneMetadata(
     break;
   }
   case bitc::METADATA_COMPILE_UNIT: {
-    if (Record.size() < 14 || Record.size() > 18)
+    if (Record.size() < 14 || Record.size() > 19)
       return error("Invalid record");
 
     // Ignore Record[0], which indicates whether this compile unit is
@@ -1287,7 +1369,8 @@ Error MetadataLoader::MetadataLoaderImpl::parseOneMetadata(
         Record.size() <= 15 ? nullptr : getMDOrNull(Record[15]),
         Record.size() <= 14 ? 0 : Record[14],
         Record.size() <= 16 ? true : Record[16],
-        Record.size() <= 17 ? false : Record[17]);
+        Record.size() <= 17 ? false : Record[17],
+        Record.size() <= 18 ? false : Record[18]);
 
     MetadataList.assignValue(CU, NextMetadataNo);
     NextMetadataNo++;
@@ -1503,7 +1586,8 @@ Error MetadataLoader::MetadataLoaderImpl::parseOneMetadata(
 
       DIGlobalVariableExpression *DGVE = nullptr;
       if (Attach || Expr)
-        DGVE = DIGlobalVariableExpression::getDistinct(Context, DGV, Expr);
+        DGVE = DIGlobalVariableExpression::getDistinct(
+            Context, DGV, Expr ? Expr : DIExpression::get(Context, {}));
       if (Attach)
         Attach->addDebugInfo(DGVE);
 
@@ -1551,34 +1635,13 @@ Error MetadataLoader::MetadataLoaderImpl::parseOneMetadata(
     IsDistinct = Record[0] & 1;
     uint64_t Version = Record[0] >> 1;
     auto Elts = MutableArrayRef<uint64_t>(Record).slice(1);
-    unsigned N = Elts.size();
-    // Perform various upgrades.
-    switch (Version) {
-    case 0:
-      if (N >= 3 && Elts[N - 3] == dwarf::DW_OP_bit_piece)
-        Elts[N - 3] = dwarf::DW_OP_LLVM_fragment;
-      LLVM_FALLTHROUGH;
-    case 1:
-      // Move DW_OP_deref to the end.
-      if (N && Elts[0] == dwarf::DW_OP_deref) {
-        auto End = Elts.end();
-        if (Elts.size() >= 3 && *std::prev(End, 3) == dwarf::DW_OP_LLVM_fragment)
-          End = std::prev(End, 3);
-        std::move(std::next(Elts.begin()), End, Elts.begin());
-        *std::prev(End) = dwarf::DW_OP_deref;
-      }
-      NeedDeclareExpressionUpgrade = true;
-      LLVM_FALLTHROUGH;
-    case 2:
-      // Up-to-date!
-      break;
-    default:
-      return error("Invalid record");
-    }
+
+    SmallVector<uint64_t, 6> Buffer;
+    if (Error Err = upgradeDIExpression(Version, Elts, Buffer))
+      return Err;
 
     MetadataList.assignValue(
-        GET_OR_DISTINCT(DIExpression, (Context, makeArrayRef(Record).slice(1))),
-        NextMetadataNo);
+        GET_OR_DISTINCT(DIExpression, (Context, Elts)), NextMetadataNo);
     NextMetadataNo++;
     break;
   }
@@ -1587,10 +1650,13 @@ Error MetadataLoader::MetadataLoaderImpl::parseOneMetadata(
       return error("Invalid record");
 
     IsDistinct = Record[0];
-    MetadataList.assignValue(GET_OR_DISTINCT(DIGlobalVariableExpression,
-                                             (Context, getMDOrNull(Record[1]),
-                                              getMDOrNull(Record[2]))),
-                             NextMetadataNo);
+    Metadata *Expr = getMDOrNull(Record[2]);
+    if (!Expr)
+      Expr = DIExpression::get(Context, {});
+    MetadataList.assignValue(
+        GET_OR_DISTINCT(DIGlobalVariableExpression,
+                        (Context, getMDOrNull(Record[1]), Expr)),
+        NextMetadataNo);
     NextMetadataNo++;
     break;
   }
@@ -1610,15 +1676,17 @@ Error MetadataLoader::MetadataLoaderImpl::parseOneMetadata(
     break;
   }
   case bitc::METADATA_IMPORTED_ENTITY: {
-    if (Record.size() != 6)
+    if (Record.size() != 6 && Record.size() != 7)
       return error("Invalid record");
 
     IsDistinct = Record[0];
+    bool HasFile = (Record.size() == 7);
     MetadataList.assignValue(
         GET_OR_DISTINCT(DIImportedEntity,
                         (Context, Record[1], getMDOrNull(Record[2]),
-                         getDITypeRefOrNull(Record[3]), Record[4],
-                         getMDString(Record[5]))),
+                         getDITypeRefOrNull(Record[3]),
+                         HasFile ? getMDOrNull(Record[6]) : nullptr,
+                         HasFile ? Record[4] : 0, getMDString(Record[5]))),
         NextMetadataNo);
     NextMetadataNo++;
     break;

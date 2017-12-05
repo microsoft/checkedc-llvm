@@ -14,13 +14,13 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/None.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/MachO.h"
 #include "llvm/Object/Error.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Object/ObjectFile.h"
@@ -32,10 +32,9 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/LEB128.h"
-#include "llvm/Support/MachO.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/SwapByteOrder.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -59,10 +58,9 @@ namespace {
 
 } // end anonymous namespace
 
-static Error
-malformedError(Twine Msg) {
-  std::string StringMsg = "truncated or malformed object (" + Msg.str() + ")";
-  return make_error<GenericBinaryError>(std::move(StringMsg),
+static Error malformedError(const Twine &Msg) {
+  return make_error<GenericBinaryError>("truncated or malformed object (" +
+                                            Msg + ")",
                                         object_error::parse_failed);
 }
 
@@ -185,6 +183,9 @@ static Expected<MachOObjectFile::LoadCommandInfo>
 getLoadCommandInfo(const MachOObjectFile &Obj, const char *Ptr,
                    uint32_t LoadCommandIndex) {
   if (auto CmdOrErr = getStructOrErr<MachO::load_command>(Obj, Ptr)) {
+    if (CmdOrErr->cmdsize + Ptr > Obj.getData().end())
+      return malformedError("load command " + Twine(LoadCommandIndex) +
+                            " extends past end of file");
     if (CmdOrErr->cmdsize < 8)
       return malformedError("load command " + Twine(LoadCommandIndex) +
                             " with size less than 8 bytes");
@@ -476,8 +477,8 @@ static Error checkDysymtabCommand(const MachOObjectFile &Obj,
                           "the file");
   if (Error Err = checkOverlappingElement(Elements, Dysymtab.tocoff,
                                           Dysymtab.ntoc * sizeof(struct
-					  MachO::dylib_table_of_contents),
-					  "table of contents"))
+                                          MachO::dylib_table_of_contents),
+                                          "table of contents"))
     return Err;
   if (Dysymtab.modtaboff > FileSize)
     return malformedError("modtaboff field of LC_DYSYMTAB command " +
@@ -502,7 +503,7 @@ static Error checkDysymtabCommand(const MachOObjectFile &Obj,
                           "past the end of the file");
   if (Error Err = checkOverlappingElement(Elements, Dysymtab.modtaboff,
                                           Dysymtab.nmodtab * sizeof_modtab,
-					  "module table"))
+                                          "module table"))
     return Err;
   if (Dysymtab.extrefsymoff > FileSize)
     return malformedError("extrefsymoff field of LC_DYSYMTAB command " +
@@ -518,8 +519,8 @@ static Error checkDysymtabCommand(const MachOObjectFile &Obj,
                           "past the end of the file");
   if (Error Err = checkOverlappingElement(Elements, Dysymtab.extrefsymoff,
                                           Dysymtab.nextrefsyms *
-                                          sizeof(MachO::dylib_reference),
-					  "reference table"))
+                                              sizeof(MachO::dylib_reference),
+                                          "reference table"))
     return Err;
   if (Dysymtab.indirectsymoff > FileSize)
     return malformedError("indirectsymoff field of LC_DYSYMTAB command " +
@@ -536,7 +537,7 @@ static Error checkDysymtabCommand(const MachOObjectFile &Obj,
   if (Error Err = checkOverlappingElement(Elements, Dysymtab.indirectsymoff,
                                           Dysymtab.nindirectsyms *
                                           sizeof(uint32_t),
-					  "indirect table"))
+                                          "indirect table"))
     return Err;
   if (Dysymtab.extreloff > FileSize)
     return malformedError("extreloff field of LC_DYSYMTAB command " +
@@ -552,8 +553,8 @@ static Error checkDysymtabCommand(const MachOObjectFile &Obj,
                           "the file");
   if (Error Err = checkOverlappingElement(Elements, Dysymtab.extreloff,
                                           Dysymtab.nextrel *
-                                          sizeof(MachO::relocation_info),
-					  "external relocation table"))
+                                              sizeof(MachO::relocation_info),
+                                          "external relocation table"))
     return Err;
   if (Dysymtab.locreloff > FileSize)
     return malformedError("locreloff field of LC_DYSYMTAB command " +
@@ -569,8 +570,8 @@ static Error checkDysymtabCommand(const MachOObjectFile &Obj,
                           "the file");
   if (Error Err = checkOverlappingElement(Elements, Dysymtab.locreloff,
                                           Dysymtab.nlocrel *
-                                          sizeof(MachO::relocation_info),
-					  "local relocation table"))
+                                              sizeof(MachO::relocation_info),
+                                          "local relocation table"))
     return Err;
   *DysymtabLoadCmd = Load.Ptr;
   return Error::success();
@@ -802,7 +803,7 @@ static Error checkNoteCommand(const MachOObjectFile &Obj,
                               uint32_t LoadCommandIndex,
                               std::list<MachOElement> &Elements) {
   if (Load.C.cmdsize != sizeof(MachO::note_command))
-    return malformedError("load command " + Twine(LoadCommandIndex) + 
+    return malformedError("load command " + Twine(LoadCommandIndex) +
                           " LC_NOTE has incorrect cmdsize");
   MachO::note_command Nt = getStruct<MachO::note_command>(Obj, Load.Ptr);
   uint64_t FileSize = Obj.getData().size();
@@ -1114,7 +1115,7 @@ static Error checkTwoLevelHintsCommand(const MachOObjectFile &Obj,
                           Twine(LoadCommandIndex) + " extends past the end of "
                           "the file");
   uint64_t BigSize = Hints.nhints;
-  BigSize *= Hints.nhints * sizeof(MachO::twolevel_hint);
+  BigSize *= sizeof(MachO::twolevel_hint);
   BigSize += Hints.offset;
   if (BigSize > FileSize)
     return malformedError("offset field plus nhints times sizeof(struct "
@@ -1820,6 +1821,10 @@ uint64_t MachOObjectFile::getSectionAddress(DataRefImpl Sec) const {
   return getSection(Sec).addr;
 }
 
+uint64_t MachOObjectFile::getSectionIndex(DataRefImpl Sec) const {
+  return Sec.d.a;
+}
+
 uint64_t MachOObjectFile::getSectionSize(DataRefImpl Sec) const {
   // In the case if a malformed Mach-O file where the section offset is past
   // the end of the file or some part of the section size is past the end of
@@ -1923,6 +1928,12 @@ bool MachOObjectFile::isSectionBitcode(DataRefImpl Sec) const {
   return false;
 }
 
+bool MachOObjectFile::isSectionStripped(DataRefImpl Sec) const {
+  if (is64Bit())
+    return getSection64(Sec).offset == 0;
+  return getSection(Sec).offset == 0;
+}
+
 relocation_iterator MachOObjectFile::section_rel_begin(DataRefImpl Sec) const {
   DataRefImpl Ret;
   Ret.d.a = Sec.d.a;
@@ -1947,13 +1958,29 @@ MachOObjectFile::section_rel_end(DataRefImpl Sec) const {
   return relocation_iterator(RelocationRef(Ret, this));
 }
 
+relocation_iterator MachOObjectFile::extrel_begin() const {
+  DataRefImpl Ret;
+  Ret.d.a = 0; // Would normally be a section index.
+  Ret.d.b = 0; // Index into the external relocations
+  return relocation_iterator(RelocationRef(Ret, this));
+}
+
+relocation_iterator MachOObjectFile::extrel_end() const {
+  MachO::dysymtab_command DysymtabLoadCmd = getDysymtabLoadCommand();
+  DataRefImpl Ret;
+  Ret.d.a = 0; // Would normally be a section index.
+  Ret.d.b = DysymtabLoadCmd.nextrel; // Index into the external relocations
+  return relocation_iterator(RelocationRef(Ret, this));
+}
+
 void MachOObjectFile::moveRelocationNext(DataRefImpl &Rel) const {
   ++Rel.d.b;
 }
 
 uint64_t MachOObjectFile::getRelocationOffset(DataRefImpl Rel) const {
-  assert(getHeader().filetype == MachO::MH_OBJECT &&
-         "Only implemented for MH_OBJECT");
+  assert((getHeader().filetype == MachO::MH_OBJECT ||
+          getHeader().filetype == MachO::MH_KEXT_BUNDLE) &&
+         "Only implemented for MH_OBJECT && MH_KEXT_BUNDLE");
   MachO::any_relocation_info RE = getRelocation(Rel);
   return getAnyRelocationAddress(RE);
 }
@@ -2587,10 +2614,14 @@ dice_iterator MachOObjectFile::end_dices() const {
   return dice_iterator(DiceRef(DRI, this));
 }
 
-ExportEntry::ExportEntry(ArrayRef<uint8_t> T) : Trie(T) {}
+ExportEntry::ExportEntry(Error *E, const MachOObjectFile *O,
+                         ArrayRef<uint8_t> T) : E(E), O(O), Trie(T) {}
 
 void ExportEntry::moveToFirst() {
+  ErrorAsOutParameter ErrAsOutParam(E);
   pushNode(0);
+  if (*E)
+    return;
   pushDownUntilBottom();
 }
 
@@ -2617,14 +2648,12 @@ bool ExportEntry::operator==(const ExportEntry &Other) const {
   return true;
 }
 
-uint64_t ExportEntry::readULEB128(const uint8_t *&Ptr) {
+uint64_t ExportEntry::readULEB128(const uint8_t *&Ptr, const char **error) {
   unsigned Count;
-  uint64_t Result = decodeULEB128(Ptr, &Count);
+  uint64_t Result = decodeULEB128(Ptr, &Count, Trie.end(), error);
   Ptr += Count;
-  if (Ptr > Trie.end()) {
+  if (Ptr > Trie.end())
     Ptr = Trie.end();
-    Malformed = true;
-  }
   return Result;
 }
 
@@ -2659,24 +2688,134 @@ ExportEntry::NodeState::NodeState(const uint8_t *Ptr)
     : Start(Ptr), Current(Ptr) {}
 
 void ExportEntry::pushNode(uint64_t offset) {
+  ErrorAsOutParameter ErrAsOutParam(E);
   const uint8_t *Ptr = Trie.begin() + offset;
   NodeState State(Ptr);
-  uint64_t ExportInfoSize = readULEB128(State.Current);
+  const char *error;
+  uint64_t ExportInfoSize = readULEB128(State.Current, &error);
+  if (error) {
+    *E = malformedError("export info size " + Twine(error) +
+                        " in export trie data at node: 0x" +
+                        Twine::utohexstr(offset));
+    moveToEnd();
+    return;
+  }
   State.IsExportNode = (ExportInfoSize != 0);
   const uint8_t* Children = State.Current + ExportInfoSize;
+  if (Children > Trie.end()) {
+    *E = malformedError(
+        "export info size: 0x" + Twine::utohexstr(ExportInfoSize) +
+        " in export trie data at node: 0x" + Twine::utohexstr(offset) +
+        " too big and extends past end of trie data");
+    moveToEnd();
+    return;
+  }
   if (State.IsExportNode) {
-    State.Flags = readULEB128(State.Current);
+    const uint8_t *ExportStart = State.Current;
+    State.Flags = readULEB128(State.Current, &error);
+    if (error) {
+      *E = malformedError("flags " + Twine(error) +
+                          " in export trie data at node: 0x" +
+                          Twine::utohexstr(offset));
+      moveToEnd();
+      return;
+    }
+    uint64_t Kind = State.Flags & MachO::EXPORT_SYMBOL_FLAGS_KIND_MASK;
+    if (State.Flags != 0 &&
+        (Kind != MachO::EXPORT_SYMBOL_FLAGS_KIND_REGULAR &&
+         Kind != MachO::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE &&
+         Kind != MachO::EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL)) {
+      *E = malformedError(
+          "unsupported exported symbol kind: " + Twine((int)Kind) +
+          " in flags: 0x" + Twine::utohexstr(State.Flags) +
+          " in export trie data at node: 0x" + Twine::utohexstr(offset));
+      moveToEnd();
+      return;
+    }
     if (State.Flags & MachO::EXPORT_SYMBOL_FLAGS_REEXPORT) {
       State.Address = 0;
-      State.Other = readULEB128(State.Current); // dylib ordinal
+      State.Other = readULEB128(State.Current, &error); // dylib ordinal
+      if (error) {
+        *E = malformedError("dylib ordinal of re-export " + Twine(error) +
+                            " in export trie data at node: 0x" +
+                            Twine::utohexstr(offset));
+        moveToEnd();
+        return;
+      }
+      if (O != nullptr) {
+        if (State.Other > O->getLibraryCount()) {
+          *E = malformedError(
+              "bad library ordinal: " + Twine((int)State.Other) + " (max " +
+              Twine((int)O->getLibraryCount()) +
+              ") in export trie data at node: 0x" + Twine::utohexstr(offset));
+          moveToEnd();
+          return;
+        }
+      }
       State.ImportName = reinterpret_cast<const char*>(State.Current);
+      if (*State.ImportName == '\0') {
+        State.Current++;
+      } else {
+        const uint8_t *End = State.Current + 1;
+        if (End >= Trie.end()) {
+          *E = malformedError("import name of re-export in export trie data at "
+                              "node: 0x" +
+                              Twine::utohexstr(offset) +
+                              " starts past end of trie data");
+          moveToEnd();
+          return;
+        }
+        while(*End != '\0' && End < Trie.end())
+          End++;
+        if (*End != '\0') {
+          *E = malformedError("import name of re-export in export trie data at "
+                              "node: 0x" +
+                              Twine::utohexstr(offset) +
+                              " extends past end of trie data");
+          moveToEnd();
+          return;
+        }
+        State.Current = End + 1;
+      }
     } else {
-      State.Address = readULEB128(State.Current);
-      if (State.Flags & MachO::EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER)
-        State.Other = readULEB128(State.Current);
+      State.Address = readULEB128(State.Current, &error);
+      if (error) {
+        *E = malformedError("address " + Twine(error) +
+                            " in export trie data at node: 0x" +
+                            Twine::utohexstr(offset));
+        moveToEnd();
+        return;
+      }
+      if (State.Flags & MachO::EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) {
+        State.Other = readULEB128(State.Current, &error);
+        if (error) {
+          *E = malformedError("resolver of stub and resolver " + Twine(error) +
+                              " in export trie data at node: 0x" +
+                              Twine::utohexstr(offset));
+          moveToEnd();
+          return;
+        }
+      }
+    }
+    if(ExportStart + ExportInfoSize != State.Current) {
+      *E = malformedError(
+          "inconsistant export info size: 0x" +
+          Twine::utohexstr(ExportInfoSize) + " where actual size was: 0x" +
+          Twine::utohexstr(State.Current - ExportStart) +
+          " in export trie data at node: 0x" + Twine::utohexstr(offset));
+      moveToEnd();
+      return;
     }
   }
   State.ChildCount = *Children;
+  if (State.ChildCount != 0 && Children + 1 >= Trie.end()) {
+    *E = malformedError("byte for count of childern in export trie data at "
+                        "node: 0x" +
+                        Twine::utohexstr(offset) +
+                        " extends past end of trie data");
+    moveToEnd();
+    return;
+  }
   State.Current = Children + 1;
   State.NextChildIndex = 0;
   State.ParentStringLength = CumulativeString.size();
@@ -2684,21 +2823,53 @@ void ExportEntry::pushNode(uint64_t offset) {
 }
 
 void ExportEntry::pushDownUntilBottom() {
+  ErrorAsOutParameter ErrAsOutParam(E);
+  const char *error;
   while (Stack.back().NextChildIndex < Stack.back().ChildCount) {
     NodeState &Top = Stack.back();
     CumulativeString.resize(Top.ParentStringLength);
-    for (;*Top.Current != 0; Top.Current++) {
+    for (;*Top.Current != 0 && Top.Current < Trie.end(); Top.Current++) {
       char C = *Top.Current;
       CumulativeString.push_back(C);
     }
+    if (Top.Current >= Trie.end()) {
+      *E = malformedError("edge sub-string in export trie data at node: 0x" +
+                          Twine::utohexstr(Top.Start - Trie.begin()) +
+                          " for child #" + Twine((int)Top.NextChildIndex) +
+                          " extends past end of trie data");
+      moveToEnd();
+      return;
+    }
     Top.Current += 1;
-    uint64_t childNodeIndex = readULEB128(Top.Current);
+    uint64_t childNodeIndex = readULEB128(Top.Current, &error);
+    if (error) {
+      *E = malformedError("child node offset " + Twine(error) +
+                          " in export trie data at node: 0x" +
+                          Twine::utohexstr(Top.Start - Trie.begin()));
+      moveToEnd();
+      return;
+    }
+    for (const NodeState &node : nodes()) {
+      if (node.Start == Trie.begin() + childNodeIndex){
+        *E = malformedError("loop in childern in export trie data at node: 0x" +
+                            Twine::utohexstr(Top.Start - Trie.begin()) +
+                            " back to node: 0x" +
+                            Twine::utohexstr(childNodeIndex));
+        moveToEnd();
+        return;
+      }
+    }
     Top.NextChildIndex += 1;
     pushNode(childNodeIndex);
+    if (*E)
+      return;
   }
   if (!Stack.back().IsExportNode) {
-    Malformed = true;
+    *E = malformedError("node is not an export node in export trie data at "
+                        "node: 0x" +
+                        Twine::utohexstr(Stack.back().Start - Trie.begin()));
     moveToEnd();
+    return;
   }
 }
 
@@ -2718,8 +2889,11 @@ void ExportEntry::pushDownUntilBottom() {
 // stack ivar.  If there is no more ways down, it pops up one and tries to go
 // down a sibling path until a childless node is reached.
 void ExportEntry::moveNext() {
-  if (Stack.empty() || !Stack.back().IsExportNode) {
-    Malformed = true;
+  assert(!Stack.empty() && "ExportEntry::moveNext() with empty node stack");
+  if (!Stack.back().IsExportNode) {
+    *E = malformedError("node is not an export node in export trie data at "
+                        "node: 0x" +
+                        Twine::utohexstr(Stack.back().Start - Trie.begin()));
     moveToEnd();
     return;
   }
@@ -2744,21 +2918,22 @@ void ExportEntry::moveNext() {
 }
 
 iterator_range<export_iterator>
-MachOObjectFile::exports(ArrayRef<uint8_t> Trie) {
-  ExportEntry Start(Trie);
+MachOObjectFile::exports(Error &E, ArrayRef<uint8_t> Trie,
+                         const MachOObjectFile *O) {
+  ExportEntry Start(&E, O, Trie);
   if (Trie.empty())
     Start.moveToEnd();
   else
     Start.moveToFirst();
 
-  ExportEntry Finish(Trie);
+  ExportEntry Finish(&E, O, Trie);
   Finish.moveToEnd();
 
   return make_range(export_iterator(Start), export_iterator(Finish));
 }
 
-iterator_range<export_iterator> MachOObjectFile::exports() const {
-  return exports(getDyldInfoExportsTrie());
+iterator_range<export_iterator> MachOObjectFile::exports(Error &Err) const {
+  return exports(Err, getDyldInfoExportsTrie(), this);
 }
 
 MachORebaseEntry::MachORebaseEntry(Error *E, const MachOObjectFile *O,
@@ -2811,11 +2986,11 @@ void MachORebaseEntry::moveNext() {
     case MachO::REBASE_OPCODE_SET_TYPE_IMM:
       RebaseType = ImmValue;
       if (RebaseType > MachO::REBASE_TYPE_TEXT_PCREL32) {
-          *E = malformedError("for REBASE_OPCODE_SET_TYPE_IMM bad bind type: " +
-               Twine((int)RebaseType) + " for opcode at: 0x" +
-               utohexstr(OpcodeStart - Opcodes.begin()));
-          moveToEnd();
-          return;
+        *E = malformedError("for REBASE_OPCODE_SET_TYPE_IMM bad bind type: " +
+                            Twine((int)RebaseType) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
+        moveToEnd();
+        return;
       }
       DEBUG_WITH_TYPE(
           "mach-o-rebase",
@@ -2827,8 +3002,8 @@ void MachORebaseEntry::moveNext() {
       SegmentOffset = readULEB128(&error);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -2836,8 +3011,8 @@ void MachORebaseEntry::moveNext() {
                                               true);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -2851,18 +3026,18 @@ void MachORebaseEntry::moveNext() {
     case MachO::REBASE_OPCODE_ADD_ADDR_ULEB:
       SegmentOffset += readULEB128(&error);
       if (error) {
-        *E = malformedError("for REBASE_OPCODE_ADD_ADDR_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError("for REBASE_OPCODE_ADD_ADDR_ULEB " + Twine(error) +
+                            " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       error = O->RebaseEntryCheckSegAndOffset(SegmentIndex, SegmentOffset,
                                               true);
       if (error) {
-        *E = malformedError("for REBASE_OPCODE_ADD_ADDR_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError("for REBASE_OPCODE_ADD_ADDR_ULEB " + Twine(error) +
+                            " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -2876,8 +3051,8 @@ void MachORebaseEntry::moveNext() {
                                               true);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_ADD_ADDR_IMM_SCALED " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -2885,10 +3060,11 @@ void MachORebaseEntry::moveNext() {
       error = O->RebaseEntryCheckSegAndOffset(SegmentIndex, SegmentOffset,
                                               false);
       if (error) {
-        *E = malformedError("for REBASE_OPCODE_ADD_ADDR_IMM_SCALED "
-             " (after adding immediate times the pointer size) " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E =
+            malformedError("for REBASE_OPCODE_ADD_ADDR_IMM_SCALED "
+                           " (after adding immediate times the pointer size) " +
+                           Twine(error) + " for opcode at: 0x" +
+                           Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -2902,8 +3078,8 @@ void MachORebaseEntry::moveNext() {
                                               true);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_DO_REBASE_IMM_TIMES " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -2917,11 +3093,11 @@ void MachORebaseEntry::moveNext() {
       error = O->RebaseEntryCheckCountAndSkip(Count, Skip, PointerSize,
                                               SegmentIndex, SegmentOffset);
       if (error) {
-        *E = malformedError("for REBASE_OPCODE_DO_REBASE_IMM_TIMES "
-             + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError("for REBASE_OPCODE_DO_REBASE_IMM_TIMES " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
-	return;
+        return;
       }
       DEBUG_WITH_TYPE(
           "mach-o-rebase",
@@ -2936,8 +3112,8 @@ void MachORebaseEntry::moveNext() {
                                               true);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_DO_REBASE_ULEB_TIMES " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -2946,8 +3122,8 @@ void MachORebaseEntry::moveNext() {
       Count = readULEB128(&error);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_DO_REBASE_ULEB_TIMES " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -2958,11 +3134,11 @@ void MachORebaseEntry::moveNext() {
       error = O->RebaseEntryCheckCountAndSkip(Count, Skip, PointerSize,
                                               SegmentIndex, SegmentOffset);
       if (error) {
-        *E = malformedError("for REBASE_OPCODE_DO_REBASE_ULEB_TIMES "
-             + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError("for REBASE_OPCODE_DO_REBASE_ULEB_TIMES " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
-	return;
+        return;
       }
       DEBUG_WITH_TYPE(
           "mach-o-rebase",
@@ -2977,16 +3153,16 @@ void MachORebaseEntry::moveNext() {
                                               true);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       Skip = readULEB128(&error);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -2996,11 +3172,11 @@ void MachORebaseEntry::moveNext() {
       error = O->RebaseEntryCheckCountAndSkip(Count, Skip, PointerSize,
                                               SegmentIndex, SegmentOffset);
       if (error) {
-        *E = malformedError("for REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB "
-             + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError("for REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
-	return;
+        return;
       }
       DEBUG_WITH_TYPE(
           "mach-o-rebase",
@@ -3015,16 +3191,18 @@ void MachORebaseEntry::moveNext() {
                                               true);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_"
-             "ULEB " + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "ULEB " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       Count = readULEB128(&error);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_"
-             "ULEB " + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "ULEB " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3035,8 +3213,9 @@ void MachORebaseEntry::moveNext() {
       Skip = readULEB128(&error);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_"
-             "ULEB " + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "ULEB " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3046,10 +3225,11 @@ void MachORebaseEntry::moveNext() {
                                               SegmentIndex, SegmentOffset);
       if (error) {
         *E = malformedError("for REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_"
-             "ULEB " + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "ULEB " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
-	return;
+        return;
       }
       DEBUG_WITH_TYPE(
           "mach-o-rebase",
@@ -3061,8 +3241,8 @@ void MachORebaseEntry::moveNext() {
       return;
     default:
       *E = malformedError("bad rebase info (bad opcode value 0x" +
-           utohexstr(Opcode) + " for opcode at: 0x" +
-           utohexstr(OpcodeStart - Opcodes.begin()));
+                          Twine::utohexstr(Opcode) + " for opcode at: 0x" +
+                          Twine::utohexstr(OpcodeStart - Opcodes.begin()));
       moveToEnd();
       return;
     }
@@ -3204,8 +3384,8 @@ void MachOBindEntry::moveNext() {
     case MachO::BIND_OPCODE_SET_DYLIB_ORDINAL_IMM:
       if (TableKind == Kind::Weak) {
         *E = malformedError("BIND_OPCODE_SET_DYLIB_ORDINAL_IMM not allowed in "
-             "weak bind table for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "weak bind table for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3213,9 +3393,11 @@ void MachOBindEntry::moveNext() {
       LibraryOrdinalSet = true;
       if (ImmValue > O->getLibraryCount()) {
         *E = malformedError("for BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB bad "
-             "library ordinal: " + Twine((int)ImmValue) + " (max " +
-             Twine((int)O->getLibraryCount()) + ") for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "library ordinal: " +
+                            Twine((int)ImmValue) + " (max " +
+                            Twine((int)O->getLibraryCount()) +
+                            ") for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3227,8 +3409,8 @@ void MachOBindEntry::moveNext() {
     case MachO::BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB:
       if (TableKind == Kind::Weak) {
         *E = malformedError("BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB not allowed in "
-             "weak bind table for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "weak bind table for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3236,16 +3418,18 @@ void MachOBindEntry::moveNext() {
       LibraryOrdinalSet = true;
       if (error) {
         *E = malformedError("for BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (Ordinal > (int)O->getLibraryCount()) {
         *E = malformedError("for BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB bad "
-             "library ordinal: " + Twine((int)Ordinal) + " (max " +
-             Twine((int)O->getLibraryCount()) + ") for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "library ordinal: " +
+                            Twine((int)Ordinal) + " (max " +
+                            Twine((int)O->getLibraryCount()) +
+                            ") for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3257,24 +3441,25 @@ void MachOBindEntry::moveNext() {
     case MachO::BIND_OPCODE_SET_DYLIB_SPECIAL_IMM:
       if (TableKind == Kind::Weak) {
         *E = malformedError("BIND_OPCODE_SET_DYLIB_SPECIAL_IMM not allowed in "
-             "weak bind table for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "weak bind table for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (ImmValue) {
         SignExtended = MachO::BIND_OPCODE_MASK | ImmValue;
         Ordinal = SignExtended;
-        LibraryOrdinalSet = true;
         if (Ordinal < MachO::BIND_SPECIAL_DYLIB_FLAT_LOOKUP) {
           *E = malformedError("for BIND_OPCODE_SET_DYLIB_SPECIAL_IMM unknown "
-               "special ordinal: " + Twine((int)Ordinal) + " for opcode at: "
-               "0x" + utohexstr(OpcodeStart - Opcodes.begin()));
+                              "special ordinal: " +
+                              Twine((int)Ordinal) + " for opcode at: 0x" +
+                              Twine::utohexstr(OpcodeStart - Opcodes.begin()));
           moveToEnd();
           return;
         }
       } else
         Ordinal = 0;
+      LibraryOrdinalSet = true;
       DEBUG_WITH_TYPE(
           "mach-o-bind",
           dbgs() << "BIND_OPCODE_SET_DYLIB_SPECIAL_IMM: "
@@ -3287,11 +3472,12 @@ void MachOBindEntry::moveNext() {
         ++Ptr;
       }
       if (Ptr == Opcodes.end()) {
-          *E = malformedError("for BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM "
-               "symbol name extends past opcodes for opcode at: 0x" +
-               utohexstr(OpcodeStart - Opcodes.begin()));
-          moveToEnd();
-          return;
+        *E = malformedError(
+            "for BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM "
+            "symbol name extends past opcodes for opcode at: 0x" +
+            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
+        moveToEnd();
+        return;
       }
       SymbolName = StringRef(reinterpret_cast<const char*>(SymStart),
                              Ptr-SymStart);
@@ -3308,11 +3494,11 @@ void MachOBindEntry::moveNext() {
     case MachO::BIND_OPCODE_SET_TYPE_IMM:
       BindType = ImmValue;
       if (ImmValue > MachO::BIND_TYPE_TEXT_PCREL32) {
-          *E = malformedError("for BIND_OPCODE_SET_TYPE_IMM bad bind type: " +
-               Twine((int)ImmValue) + " for opcode at: 0x" +
-               utohexstr(OpcodeStart - Opcodes.begin()));
-          moveToEnd();
-          return;
+        *E = malformedError("for BIND_OPCODE_SET_TYPE_IMM bad bind type: " +
+                            Twine((int)ImmValue) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
+        moveToEnd();
+        return;
       }
       DEBUG_WITH_TYPE(
           "mach-o-bind",
@@ -3322,9 +3508,9 @@ void MachOBindEntry::moveNext() {
     case MachO::BIND_OPCODE_SET_ADDEND_SLEB:
       Addend = readSLEB128(&error);
       if (error) {
-        *E = malformedError("for BIND_OPCODE_SET_ADDEND_SLEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError("for BIND_OPCODE_SET_ADDEND_SLEB " + Twine(error) +
+                            " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3338,16 +3524,16 @@ void MachOBindEntry::moveNext() {
       SegmentOffset = readULEB128(&error);
       if (error) {
         *E = malformedError("for BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       error = O->BindEntryCheckSegAndOffset(SegmentIndex, SegmentOffset, true);
       if (error) {
         *E = malformedError("for BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3361,17 +3547,17 @@ void MachOBindEntry::moveNext() {
     case MachO::BIND_OPCODE_ADD_ADDR_ULEB:
       SegmentOffset += readULEB128(&error);
       if (error) {
-        *E = malformedError("for BIND_OPCODE_ADD_ADDR_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError("for BIND_OPCODE_ADD_ADDR_ULEB " + Twine(error) +
+                            " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       error = O->BindEntryCheckSegAndOffset(SegmentIndex, SegmentOffset, true);
       if (error) {
-        *E = malformedError("for BIND_OPCODE_ADD_ADDR_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError("for BIND_OPCODE_ADD_ADDR_ULEB " + Twine(error) +
+                            " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3386,21 +3572,24 @@ void MachOBindEntry::moveNext() {
       error = O->BindEntryCheckSegAndOffset(SegmentIndex, SegmentOffset, true);
       if (error) {
         *E = malformedError("for BIND_OPCODE_DO_BIND " + Twine(error) +
-             " for opcode at: 0x" + utohexstr(OpcodeStart - Opcodes.begin()));
+                            " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (SymbolName == StringRef()) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND missing preceding "
-             "BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError(
+            "for BIND_OPCODE_DO_BIND missing preceding "
+            "BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM for opcode at: 0x" +
+            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (!LibraryOrdinalSet && TableKind != Kind::Weak) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND missing preceding "
-             "BIND_OPCODE_SET_DYLIB_ORDINAL_* for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E =
+            malformedError("for BIND_OPCODE_DO_BIND missing preceding "
+                           "BIND_OPCODE_SET_DYLIB_ORDINAL_* for opcode at: 0x" +
+                           Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3412,38 +3601,41 @@ void MachOBindEntry::moveNext() {
      case MachO::BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
       if (TableKind == Kind::Lazy) {
         *E = malformedError("BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB not allowed in "
-             "lazy bind table for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "lazy bind table for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       error = O->BindEntryCheckSegAndOffset(SegmentIndex, SegmentOffset, true);
       if (error) {
         *E = malformedError("for BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (SymbolName == StringRef()) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB missing "
-             "preceding BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM for opcode "
-             "at: 0x" + utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError(
+            "for BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB missing "
+            "preceding BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM for opcode "
+            "at: 0x" +
+            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (!LibraryOrdinalSet && TableKind != Kind::Weak) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB missing "
-             "preceding BIND_OPCODE_SET_DYLIB_ORDINAL_* for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError(
+            "for BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB missing "
+            "preceding BIND_OPCODE_SET_DYLIB_ORDINAL_* for opcode at: 0x" +
+            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       AdvanceAmount = readULEB128(&error) + PointerSize;
       if (error) {
         *E = malformedError("for BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3454,8 +3646,9 @@ void MachOBindEntry::moveNext() {
                                             AdvanceAmount, false);
       if (error) {
         *E = malformedError("for BIND_OPCODE_ADD_ADDR_ULEB (after adding "
-             "ULEB) " + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "ULEB) " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3471,30 +3664,34 @@ void MachOBindEntry::moveNext() {
     case MachO::BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
       if (TableKind == Kind::Lazy) {
         *E = malformedError("BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED not "
-             "allowed in lazy bind table for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "allowed in lazy bind table for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       error = O->BindEntryCheckSegAndOffset(SegmentIndex, SegmentOffset, true);
       if (error) {
         *E = malformedError("for BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (SymbolName == StringRef()) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED "
-             "missing preceding BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM for "
-             "opcode at: 0x" + utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError(
+            "for BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED "
+            "missing preceding BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM for "
+            "opcode at: 0x" +
+            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (!LibraryOrdinalSet && TableKind != Kind::Weak) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED "
-             "missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL_* for opcode "
-             "at: 0x" + utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError(
+            "for BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED "
+            "missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL_* for opcode "
+            "at: 0x" +
+            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3503,10 +3700,11 @@ void MachOBindEntry::moveNext() {
       error = O->BindEntryCheckSegAndOffset(SegmentIndex, SegmentOffset +
                                             AdvanceAmount, false);
       if (error) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED "
-             " (after adding immediate times the pointer size) " +
-             Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E =
+            malformedError("for BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED "
+                           " (after adding immediate times the pointer size) " +
+                           Twine(error) + " for opcode at: 0x" +
+                           Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3518,8 +3716,8 @@ void MachOBindEntry::moveNext() {
     case MachO::BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
       if (TableKind == Kind::Lazy) {
         *E = malformedError("BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB not "
-             "allowed in lazy bind table for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+                            "allowed in lazy bind table for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3530,8 +3728,9 @@ void MachOBindEntry::moveNext() {
         RemainingLoopCount = 0;
       if (error) {
         *E = malformedError("for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB "
-                            " (count value) " + Twine(error) + " for opcode at"
-                            ": 0x" + utohexstr(OpcodeStart - Opcodes.begin()));
+                            " (count value) " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
@@ -3539,41 +3738,48 @@ void MachOBindEntry::moveNext() {
       AdvanceAmount = Skip + PointerSize;
       if (error) {
         *E = malformedError("for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB "
-                            " (skip value) " + Twine(error) + " for opcode at"
-                            ": 0x" + utohexstr(OpcodeStart - Opcodes.begin()));
+                            " (skip value) " +
+                            Twine(error) + " for opcode at: 0x" +
+                            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       error = O->BindEntryCheckSegAndOffset(SegmentIndex, SegmentOffset, true);
       if (error) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB "
-             + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E =
+            malformedError("for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB " +
+                           Twine(error) + " for opcode at: 0x" +
+                           Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (SymbolName == StringRef()) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB "
-             "missing preceding BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM for "
-             "opcode at: 0x" + utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError(
+            "for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB "
+            "missing preceding BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM for "
+            "opcode at: 0x" +
+            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       if (!LibraryOrdinalSet && TableKind != Kind::Weak) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB "
-             "missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL_* for opcode "
-             "at: 0x" + utohexstr(OpcodeStart - Opcodes.begin()));
+        *E = malformedError(
+            "for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB "
+            "missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL_* for opcode "
+            "at: 0x" +
+            Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
         return;
       }
       error = O->BindEntryCheckCountAndSkip(Count, Skip, PointerSize,
                                             SegmentIndex, SegmentOffset);
       if (error) {
-        *E = malformedError("for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB "
-             + Twine(error) + " for opcode at: 0x" +
-             utohexstr(OpcodeStart - Opcodes.begin()));
+        *E =
+            malformedError("for BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB " +
+                           Twine(error) + " for opcode at: 0x" +
+                           Twine::utohexstr(OpcodeStart - Opcodes.begin()));
         moveToEnd();
-	return;
+        return;
       }
       DEBUG_WITH_TYPE(
           "mach-o-bind",
@@ -3585,8 +3791,8 @@ void MachOBindEntry::moveNext() {
       return;
     default:
       *E = malformedError("bad bind info (bad opcode value 0x" +
-           utohexstr(Opcode) + " for opcode at: 0x" +
-           utohexstr(OpcodeStart - Opcodes.begin()));
+                          Twine::utohexstr(Opcode) + " for opcode at: 0x" +
+                          Twine::utohexstr(OpcodeStart - Opcodes.begin()));
       moveToEnd();
       return;
     }
@@ -4082,15 +4288,20 @@ MachOObjectFile::getThreadCommand(const LoadCommandInfo &L) const {
 
 MachO::any_relocation_info
 MachOObjectFile::getRelocation(DataRefImpl Rel) const {
-  DataRefImpl Sec;
-  Sec.d.a = Rel.d.a;
   uint32_t Offset;
-  if (is64Bit()) {
-    MachO::section_64 Sect = getSection64(Sec);
-    Offset = Sect.reloff;
+  if (getHeader().filetype == MachO::MH_OBJECT) {
+    DataRefImpl Sec;
+    Sec.d.a = Rel.d.a;
+    if (is64Bit()) {
+      MachO::section_64 Sect = getSection64(Sec);
+      Offset = Sect.reloff;
+    } else {
+      MachO::section Sect = getSection(Sec);
+      Offset = Sect.reloff;
+    }
   } else {
-    MachO::section Sect = getSection(Sec);
-    Offset = Sect.reloff;
+    MachO::dysymtab_command DysymtabLoadCmd = getDysymtabLoadCommand();
+    Offset = DysymtabLoadCmd.extreloff; // Offset to the external relocations
   }
 
   auto P = reinterpret_cast<const MachO::any_relocation_info *>(
@@ -4309,4 +4520,10 @@ ObjectFile::createMachOObjectFile(MemoryBufferRef Buffer,
                                    UniversalCputype, UniversalIndex);
   return make_error<GenericBinaryError>("Unrecognized MachO magic number",
                                         object_error::invalid_file_type);
+}
+
+StringRef MachOObjectFile::mapDebugSectionName(StringRef Name) const {
+  return StringSwitch<StringRef>(Name)
+      .Case("debug_str_offs", "debug_str_offsets")
+      .Default(Name);
 }

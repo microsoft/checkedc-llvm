@@ -140,8 +140,8 @@ enum lostFraction { // Example of truncated bits:
 // implementation classes. This struct should not define any non-static data
 // members.
 struct APFloatBase {
-  // TODO remove this and use APInt typedef directly.
   typedef APInt::WordType integerPart;
+  static const unsigned integerPartWidth = APInt::APINT_BITS_PER_WORD;
 
   /// A signed type to represent a floating point numbers unbiased exponent.
   typedef signed short ExponentType;
@@ -1117,6 +1117,21 @@ public:
     if (usesLayout<DoubleAPFloat>(getSemantics()))
       return U.Double.bitwiseIsEqual(RHS.U.Double);
     llvm_unreachable("Unexpected semantics");
+  }
+
+  /// We don't rely on operator== working on double values, as
+  /// it returns true for things that are clearly not equal, like -0.0 and 0.0.
+  /// As such, this method can be used to do an exact bit-for-bit comparison of
+  /// two floating point values.
+  ///
+  /// We leave the version with the double argument here because it's just so
+  /// convenient to write "2.0" and the like.  Without this function we'd
+  /// have to duplicate its logic everywhere it's called.
+  bool isExactlyValue(double V) const {
+    bool ignored;
+    APFloat Tmp(V);
+    Tmp.convert(getSemantics(), APFloat::rmNearestTiesToEven, &ignored);
+    return bitwiseIsEqual(Tmp);
   }
 
   unsigned int convertToHexString(char *DST, unsigned int HexDigits,

@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "AMDGPUSubtarget.h"
 #include "GCNHazardRecognizer.h"
+#include "AMDGPUSubtarget.h"
 #include "SIDefines.h"
 #include "SIInstrInfo.h"
 #include "SIRegisterInfo.h"
@@ -218,12 +218,18 @@ void GCNHazardRecognizer::RecedeCycle() {
 
 int GCNHazardRecognizer::getWaitStatesSince(
     function_ref<bool(MachineInstr *)> IsHazard) {
-  int WaitStates = -1;
+  int WaitStates = 0;
   for (MachineInstr *MI : EmittedInstrs) {
+    if (MI) {
+      if (IsHazard(MI))
+        return WaitStates;
+
+      unsigned Opcode = MI->getOpcode();
+      if (Opcode == AMDGPU::DBG_VALUE || Opcode == AMDGPU::IMPLICIT_DEF ||
+          Opcode == AMDGPU::INLINEASM)
+        continue;
+    }
     ++WaitStates;
-    if (!MI || !IsHazard(MI))
-      continue;
-    return WaitStates;
   }
   return std::numeric_limits<int>::max();
 }
@@ -329,6 +335,18 @@ int GCNHazardRecognizer::checkSMRDHazards(MachineInstr *SMRD) {
   // SGPR was written by a VALU instruction.
   int SmrdSgprWaitStates = 4;
   auto IsHazardDefFn = [this] (MachineInstr *MI) { return TII.isVALU(*MI); };
+  auto IsBufferHazardDefFn = [this] (MachineInstr *MI) { return TII.isSALU(*MI); };
+
+  bool IsBufferSMRD = SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORD_IMM ||
+                      SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORDX2_IMM ||
+                      SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORDX4_IMM ||
+                      SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORDX8_IMM ||
+                      SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORDX16_IMM ||
+                      SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORD_SGPR ||
+                      SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORDX2_SGPR ||
+                      SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORDX4_SGPR ||
+                      SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORDX8_SGPR ||
+                      SMRD->getOpcode() == AMDGPU::S_BUFFER_LOAD_DWORDX16_SGPR;
 
   for (const MachineOperand &Use : SMRD->uses()) {
     if (!Use.isReg())
@@ -336,7 +354,22 @@ int GCNHazardRecognizer::checkSMRDHazards(MachineInstr *SMRD) {
     int WaitStatesNeededForUse =
         SmrdSgprWaitStates - getWaitStatesSinceDef(Use.getReg(), IsHazardDefFn);
     WaitStatesNeeded = std::max(WaitStatesNeeded, WaitStatesNeededForUse);
+
+    // This fixes what appears to be undocumented hardware behavior in SI where
+    // s_mov writing a descriptor and s_buffer_load_dword reading the descriptor
+    // needs some number of nops in between. We don't know how many we need, but
+    // let's use 4. This wasn't discovered before probably because the only
+    // case when this happens is when we expand a 64-bit pointer into a full
+    // descriptor and use s_buffer_load_dword instead of s_load_dword, which was
+    // probably never encountered in the closed-source land.
+    if (IsBufferSMRD) {
+      int WaitStatesNeededForUse =
+        SmrdSgprWaitStates - getWaitStatesSinceDef(Use.getReg(),
+                                                   IsBufferHazardDefFn);
+      WaitStatesNeeded = std::max(WaitStatesNeeded, WaitStatesNeededForUse);
+    }
   }
+
   return WaitStatesNeeded;
 }
 
@@ -367,10 +400,13 @@ int GCNHazardRecognizer::checkVMEMHazards(MachineInstr* VMEM) {
 
 int GCNHazardRecognizer::checkDPPHazards(MachineInstr *DPP) {
   const SIRegisterInfo *TRI = ST.getRegisterInfo();
+  const SIInstrInfo *TII = ST.getInstrInfo();
 
-  // Check for DPP VGPR read after VALU VGPR write.
+  // Check for DPP VGPR read after VALU VGPR write and EXEC write.
   int DppVgprWaitStates = 2;
+  int DppExecWaitStates = 5;
   int WaitStatesNeeded = 0;
+  auto IsHazardDefFn = [TII] (MachineInstr *MI) { return TII->isVALU(*MI); };
 
   for (const MachineOperand &Use : DPP->uses()) {
     if (!Use.isReg() || !TRI->isVGPR(MF.getRegInfo(), Use.getReg()))
@@ -379,6 +415,10 @@ int GCNHazardRecognizer::checkDPPHazards(MachineInstr *DPP) {
         DppVgprWaitStates - getWaitStatesSinceDef(Use.getReg());
     WaitStatesNeeded = std::max(WaitStatesNeeded, WaitStatesNeededForUse);
   }
+
+  WaitStatesNeeded = std::max(
+      WaitStatesNeeded,
+      DppExecWaitStates - getWaitStatesSinceDef(AMDGPU::EXEC, IsHazardDefFn));
 
   return WaitStatesNeeded;
 }

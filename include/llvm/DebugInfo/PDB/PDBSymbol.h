@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_DEBUGINFO_PDB_IPDBSYMBOL_H
-#define LLVM_DEBUGINFO_PDB_IPDBSYMBOL_H
+#ifndef LLVM_DEBUGINFO_PDB_PDBSYMBOL_H
+#define LLVM_DEBUGINFO_PDB_PDBSYMBOL_H
 
 #include "ConcreteSymbolEnumerator.h"
 #include "IPDBRawSymbol.h"
@@ -89,6 +89,8 @@ public:
 
   template <typename T> std::unique_ptr<T> findOneChild() const {
     auto Enumerator(findAllChildren<T>());
+    if (!Enumerator)
+      return nullptr;
     return Enumerator->getNext();
   }
 
@@ -97,6 +99,8 @@ public:
   template <typename T>
   std::unique_ptr<ConcreteSymbolEnumerator<T>> findAllChildren() const {
     auto BaseIter = RawSymbol->findChildren(T::Tag);
+    if (!BaseIter)
+      return nullptr;
     return llvm::make_unique<ConcreteSymbolEnumerator<T>>(std::move(BaseIter));
   }
   std::unique_ptr<IPDBEnumSymbols> findAllChildren(PDB_SymType Type) const;

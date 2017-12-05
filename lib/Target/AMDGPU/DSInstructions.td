@@ -145,15 +145,21 @@ class DS_1A2D_Off8_RET<string opName,
   let hasPostISelHook = 1;
 }
 
-class DS_1A_RET<string opName, RegisterClass rc = VGPR_32>
+class DS_1A_RET<string opName, RegisterClass rc = VGPR_32, bit HasTiedOutput = 0, Operand ofs = offset>
 : DS_Pseudo<opName,
   (outs rc:$vdst),
-  (ins VGPR_32:$addr, offset:$offset, gds:$gds),
+  !if(HasTiedOutput,
+    (ins VGPR_32:$addr, ofs:$offset, gds:$gds, rc:$vdst_in),
+    (ins VGPR_32:$addr, ofs:$offset, gds:$gds)),
   "$vdst, $addr$offset$gds"> {
-
+  let Constraints = !if(HasTiedOutput, "$vdst = $vdst_in", "");
+  let DisableEncoding = !if(HasTiedOutput, "$vdst_in", "");
   let has_data0 = 0;
   let has_data1 = 0;
 }
+
+class DS_1A_RET_Tied<string opName, RegisterClass rc = VGPR_32> :
+  DS_1A_RET<opName, rc, 1>;
 
 class DS_1A_Off8_RET <string opName, RegisterClass rc = VGPR_32>
 : DS_Pseudo<opName,
@@ -285,6 +291,16 @@ def DS_WRITE_B16      : DS_1A1D_NORET<"ds_write_b16">;
 def DS_WRITE_B32      : DS_1A1D_NORET<"ds_write_b32">;
 def DS_WRITE2_B32     : DS_1A2D_Off8_NORET<"ds_write2_b32">;
 def DS_WRITE2ST64_B32 : DS_1A2D_Off8_NORET<"ds_write2st64_b32">;
+
+let SubtargetPredicate = HasD16LoadStore in {
+def DS_WRITE_B8_D16_HI  : DS_1A1D_NORET<"ds_write_b8_d16_hi">;
+def DS_WRITE_B16_D16_HI : DS_1A1D_NORET<"ds_write_b16_d16_hi">;
+}
+
+let SubtargetPredicate = HasDSAddTid in {
+def DS_WRITE_ADDTID_B32 : DS_1A1D_NORET<"ds_write_addtid_b32">;
+}
+
 }
 
 def DS_MSKOR_B32      : DS_1A2D_NORET<"ds_mskor_b32">;
@@ -440,7 +456,7 @@ def DS_WRITE_SRC2_B32 : DS_1A<"ds_write_src2_b32">;
 def DS_WRITE_SRC2_B64 : DS_1A<"ds_write_src2_b64">;
 
 let Uses = [EXEC], mayLoad = 0, mayStore = 0, isConvergent = 1 in {
-def DS_SWIZZLE_B32 : DS_1A_RET <"ds_swizzle_b32">;
+def DS_SWIZZLE_B32 : DS_1A_RET <"ds_swizzle_b32", VGPR_32, 0, SwizzleImm>;
 }
 
 let mayStore = 0 in {
@@ -456,6 +472,19 @@ def DS_READ2ST64_B32 : DS_1A_Off8_RET<"ds_read2st64_b32", VReg_64>;
 
 def DS_READ2_B64     : DS_1A_Off8_RET<"ds_read2_b64", VReg_128>;
 def DS_READ2ST64_B64 : DS_1A_Off8_RET<"ds_read2st64_b64", VReg_128>;
+
+let SubtargetPredicate = HasD16LoadStore in {
+def DS_READ_U8_D16     : DS_1A_RET_Tied<"ds_read_u8_d16">;
+def DS_READ_U8_D16_HI  : DS_1A_RET_Tied<"ds_read_u8_d16_hi">;
+def DS_READ_I8_D16     : DS_1A_RET_Tied<"ds_read_i8_d16">;
+def DS_READ_I8_D16_HI  : DS_1A_RET_Tied<"ds_read_i8_d16_hi">;
+def DS_READ_U16_D16    : DS_1A_RET_Tied<"ds_read_u16_d16">;
+def DS_READ_U16_D16_HI : DS_1A_RET_Tied<"ds_read_u16_d16_hi">;
+}
+
+let SubtargetPredicate = HasDSAddTid in {
+def DS_READ_ADDTID_B32 : DS_1A_RET<"ds_read_addtid_b32">;
+}
 }
 
 def DS_CONSUME       : DS_0A_RET<"ds_consume">;
@@ -508,107 +537,129 @@ def DS_BPERMUTE_B32 : DS_1A1D_PERMUTE <"ds_bpermute_b32",
 // DS Patterns
 //===----------------------------------------------------------------------===//
 
-let Predicates = [isGCN] in {
-
-def : Pat <
+def : GCNPat <
   (int_amdgcn_ds_swizzle i32:$src, imm:$offset16),
   (DS_SWIZZLE_B32 $src, (as_i16imm $offset16), (i1 0))
 >;
 
-class DSReadPat <DS_Pseudo inst, ValueType vt, PatFrag frag> : Pat <
+class DSReadPat <DS_Pseudo inst, ValueType vt, PatFrag frag> : GCNPat <
   (vt (frag (DS1Addr1Offset i32:$ptr, i32:$offset))),
   (inst $ptr, (as_i16imm $offset), (i1 0))
 >;
 
-def : DSReadPat <DS_READ_I8,  i32, si_sextload_local_i8>;
-def : DSReadPat <DS_READ_U8,  i32, si_az_extload_local_i8>;
-def : DSReadPat <DS_READ_I8,  i16, si_sextload_local_i8>;
-def : DSReadPat <DS_READ_U8,  i16, si_az_extload_local_i8>;
-def : DSReadPat <DS_READ_I16, i32, si_sextload_local_i16>;
-def : DSReadPat <DS_READ_I16, i32, si_sextload_local_i16>;
-def : DSReadPat <DS_READ_U16, i32, si_az_extload_local_i16>;
-def : DSReadPat <DS_READ_U16, i16, si_load_local>;
-def : DSReadPat <DS_READ_B32, i32, si_load_local>;
+multiclass DSReadPat_Hi16 <DS_Pseudo inst, PatFrag frag, ValueType vt = i16> {
+  def : GCNPat <
+    (build_vector vt:$lo, (vt (frag (DS1Addr1Offset i32:$ptr, i32:$offset)))),
+    (v2i16 (inst $ptr, (as_i16imm $offset), (i1 0), $lo))
+  >;
+
+  def : GCNPat <
+    (build_vector f16:$lo, (f16 (bitconvert (vt (frag (DS1Addr1Offset i32:$ptr, i32:$offset)))))),
+    (v2f16 (inst $ptr, (as_i16imm $offset), (i1 0), $lo))
+  >;
+}
+
+def : DSReadPat <DS_READ_I8,  i32, sextloadi8_local_m0>;
+def : DSReadPat <DS_READ_U8,  i32, az_extloadi8_local_m0>;
+def : DSReadPat <DS_READ_I8,  i16, sextloadi8_local_m0>;
+def : DSReadPat <DS_READ_U8,  i16, az_extloadi8_local_m0>;
+def : DSReadPat <DS_READ_I16, i32, sextloadi16_local_m0>;
+def : DSReadPat <DS_READ_I16, i32, sextloadi16_local_m0>;
+def : DSReadPat <DS_READ_U16, i32, az_extloadi16_local_m0>;
+def : DSReadPat <DS_READ_U16, i16, load_local_m0>;
+def : DSReadPat <DS_READ_B32, i32, load_local_m0>;
 
 let AddedComplexity = 100 in {
 
-def : DSReadPat <DS_READ_B64, v2i32, si_load_local_align8>;
+def : DSReadPat <DS_READ_B64, v2i32, load_align8_local_m0>;
 
 } // End AddedComplexity = 100
 
-def : Pat <
-  (v2i32 (si_load_local (DS64Bit4ByteAligned i32:$ptr, i8:$offset0,
-                                                    i8:$offset1))),
+def : GCNPat <
+  (v2i32 (load_local_m0 (DS64Bit4ByteAligned i32:$ptr, i8:$offset0,
+                                                       i8:$offset1))),
   (DS_READ2_B32 $ptr, $offset0, $offset1, (i1 0))
 >;
 
-class DSWritePat <DS_Pseudo inst, ValueType vt, PatFrag frag> : Pat <
+
+let OtherPredicates = [HasD16LoadStore] in {
+let AddedComplexity = 100 in {
+defm : DSReadPat_Hi16<DS_READ_U16_D16_HI, load_local>;
+defm : DSReadPat_Hi16<DS_READ_U8_D16_HI, az_extloadi8_local>;
+defm : DSReadPat_Hi16<DS_READ_I8_D16_HI, sextloadi8_local>;
+}
+}
+
+class DSWritePat <DS_Pseudo inst, ValueType vt, PatFrag frag> : GCNPat <
   (frag vt:$value, (DS1Addr1Offset i32:$ptr, i32:$offset)),
   (inst $ptr, $value, (as_i16imm $offset), (i1 0))
 >;
 
-def : DSWritePat <DS_WRITE_B8, i32, si_truncstore_local_i8>;
-def : DSWritePat <DS_WRITE_B16, i32, si_truncstore_local_i16>;
-def : DSWritePat <DS_WRITE_B8, i16, si_truncstore_local_i8>;
-def : DSWritePat <DS_WRITE_B16, i16, si_store_local>;
-def : DSWritePat <DS_WRITE_B32, i32, si_store_local>;
+def : DSWritePat <DS_WRITE_B8, i32, truncstorei8_local_m0>;
+def : DSWritePat <DS_WRITE_B16, i32, truncstorei16_local_m0>;
+def : DSWritePat <DS_WRITE_B8, i16, truncstorei8_local_m0>;
+def : DSWritePat <DS_WRITE_B16, i16, store_local_m0>;
+def : DSWritePat <DS_WRITE_B32, i32, store_local_m0>;
+
+let OtherPredicates = [HasD16LoadStore] in {
+def : DSWritePat <DS_WRITE_B16_D16_HI, i32, store_local_hi16>;
+def : DSWritePat <DS_WRITE_B8_D16_HI, i32, truncstorei8_local_hi16>;
+}
 
 let AddedComplexity = 100 in {
 
-def : DSWritePat <DS_WRITE_B64, v2i32, si_store_local_align8>;
+def : DSWritePat <DS_WRITE_B64, v2i32, store_align8_local_m0>;
 } // End AddedComplexity = 100
 
-def : Pat <
-  (si_store_local v2i32:$value, (DS64Bit4ByteAligned i32:$ptr, i8:$offset0,
+def : GCNPat <
+  (store_local_m0 v2i32:$value, (DS64Bit4ByteAligned i32:$ptr, i8:$offset0,
                                                                i8:$offset1)),
   (DS_WRITE2_B32 $ptr, (i32 (EXTRACT_SUBREG $value, sub0)),
                        (i32 (EXTRACT_SUBREG $value, sub1)), $offset0, $offset1,
                        (i1 0))
 >;
 
-class DSAtomicRetPat<DS_Pseudo inst, ValueType vt, PatFrag frag> : Pat <
+class DSAtomicRetPat<DS_Pseudo inst, ValueType vt, PatFrag frag> : GCNPat <
   (frag (DS1Addr1Offset i32:$ptr, i32:$offset), vt:$value),
   (inst $ptr, $value, (as_i16imm $offset), (i1 0))
 >;
 
-class DSAtomicCmpXChg<DS_Pseudo inst, ValueType vt, PatFrag frag> : Pat <
+class DSAtomicCmpXChg<DS_Pseudo inst, ValueType vt, PatFrag frag> : GCNPat <
   (frag (DS1Addr1Offset i32:$ptr, i32:$offset), vt:$cmp, vt:$swap),
   (inst $ptr, $cmp, $swap, (as_i16imm $offset), (i1 0))
 >;
 
 
 // 32-bit atomics.
-def : DSAtomicRetPat<DS_WRXCHG_RTN_B32, i32, si_atomic_swap_local>;
-def : DSAtomicRetPat<DS_ADD_RTN_U32, i32, si_atomic_load_add_local>;
-def : DSAtomicRetPat<DS_SUB_RTN_U32, i32, si_atomic_load_sub_local>;
-def : DSAtomicRetPat<DS_INC_RTN_U32, i32, si_atomic_inc_local>;
-def : DSAtomicRetPat<DS_DEC_RTN_U32, i32, si_atomic_dec_local>;
-def : DSAtomicRetPat<DS_AND_RTN_B32, i32, si_atomic_load_and_local>;
-def : DSAtomicRetPat<DS_OR_RTN_B32, i32, si_atomic_load_or_local>;
-def : DSAtomicRetPat<DS_XOR_RTN_B32, i32, si_atomic_load_xor_local>;
-def : DSAtomicRetPat<DS_MIN_RTN_I32, i32, si_atomic_load_min_local>;
-def : DSAtomicRetPat<DS_MAX_RTN_I32, i32, si_atomic_load_max_local>;
-def : DSAtomicRetPat<DS_MIN_RTN_U32, i32, si_atomic_load_umin_local>;
-def : DSAtomicRetPat<DS_MAX_RTN_U32, i32, si_atomic_load_umax_local>;
-def : DSAtomicCmpXChg<DS_CMPST_RTN_B32, i32, si_atomic_cmp_swap_32_local>;
+def : DSAtomicRetPat<DS_WRXCHG_RTN_B32, i32, atomic_swap_local_m0>;
+def : DSAtomicRetPat<DS_ADD_RTN_U32, i32, atomic_load_add_local_m0>;
+def : DSAtomicRetPat<DS_SUB_RTN_U32, i32, atomic_load_sub_local_m0>;
+def : DSAtomicRetPat<DS_INC_RTN_U32, i32, atomic_inc_local_m0>;
+def : DSAtomicRetPat<DS_DEC_RTN_U32, i32, atomic_dec_local_m0>;
+def : DSAtomicRetPat<DS_AND_RTN_B32, i32, atomic_load_and_local_m0>;
+def : DSAtomicRetPat<DS_OR_RTN_B32, i32, atomic_load_or_local_m0>;
+def : DSAtomicRetPat<DS_XOR_RTN_B32, i32, atomic_load_xor_local_m0>;
+def : DSAtomicRetPat<DS_MIN_RTN_I32, i32, atomic_load_min_local_m0>;
+def : DSAtomicRetPat<DS_MAX_RTN_I32, i32, atomic_load_max_local_m0>;
+def : DSAtomicRetPat<DS_MIN_RTN_U32, i32, atomic_load_umin_local_m0>;
+def : DSAtomicRetPat<DS_MAX_RTN_U32, i32, atomic_load_umax_local_m0>;
+def : DSAtomicCmpXChg<DS_CMPST_RTN_B32, i32, atomic_cmp_swap_local_m0>;
 
 // 64-bit atomics.
-def : DSAtomicRetPat<DS_WRXCHG_RTN_B64, i64, si_atomic_swap_local>;
-def : DSAtomicRetPat<DS_ADD_RTN_U64, i64, si_atomic_load_add_local>;
-def : DSAtomicRetPat<DS_SUB_RTN_U64, i64, si_atomic_load_sub_local>;
-def : DSAtomicRetPat<DS_INC_RTN_U64, i64, si_atomic_inc_local>;
-def : DSAtomicRetPat<DS_DEC_RTN_U64, i64, si_atomic_dec_local>;
-def : DSAtomicRetPat<DS_AND_RTN_B64, i64, si_atomic_load_and_local>;
-def : DSAtomicRetPat<DS_OR_RTN_B64, i64, si_atomic_load_or_local>;
-def : DSAtomicRetPat<DS_XOR_RTN_B64, i64, si_atomic_load_xor_local>;
-def : DSAtomicRetPat<DS_MIN_RTN_I64, i64, si_atomic_load_min_local>;
-def : DSAtomicRetPat<DS_MAX_RTN_I64, i64, si_atomic_load_max_local>;
-def : DSAtomicRetPat<DS_MIN_RTN_U64, i64, si_atomic_load_umin_local>;
-def : DSAtomicRetPat<DS_MAX_RTN_U64, i64, si_atomic_load_umax_local>;
+def : DSAtomicRetPat<DS_WRXCHG_RTN_B64, i64, atomic_swap_local_m0>;
+def : DSAtomicRetPat<DS_ADD_RTN_U64, i64, atomic_load_add_local_m0>;
+def : DSAtomicRetPat<DS_SUB_RTN_U64, i64, atomic_load_sub_local_m0>;
+def : DSAtomicRetPat<DS_INC_RTN_U64, i64, atomic_inc_local_m0>;
+def : DSAtomicRetPat<DS_DEC_RTN_U64, i64, atomic_dec_local_m0>;
+def : DSAtomicRetPat<DS_AND_RTN_B64, i64, atomic_load_and_local_m0>;
+def : DSAtomicRetPat<DS_OR_RTN_B64, i64, atomic_load_or_local_m0>;
+def : DSAtomicRetPat<DS_XOR_RTN_B64, i64, atomic_load_xor_local_m0>;
+def : DSAtomicRetPat<DS_MIN_RTN_I64, i64, atomic_load_min_local_m0>;
+def : DSAtomicRetPat<DS_MAX_RTN_I64, i64, atomic_load_max_local_m0>;
+def : DSAtomicRetPat<DS_MIN_RTN_U64, i64, atomic_load_umin_local_m0>;
+def : DSAtomicRetPat<DS_MAX_RTN_U64, i64, atomic_load_umax_local_m0>;
 
-def : DSAtomicCmpXChg<DS_CMPST_RTN_B64, i64, si_atomic_cmp_swap_64_local>;
-
-} // let Predicates = [isGCN]
+def : DSAtomicCmpXChg<DS_CMPST_RTN_B64, i64, atomic_cmp_swap_local_m0>;
 
 //===----------------------------------------------------------------------===//
 // Real instructions
@@ -834,6 +885,7 @@ def DS_GWS_SEMA_V_vi      : DS_Real_vi<0x9a, DS_GWS_SEMA_V>;
 def DS_GWS_SEMA_BR_vi     : DS_Real_vi<0x9b, DS_GWS_SEMA_BR>;
 def DS_GWS_SEMA_P_vi      : DS_Real_vi<0x9c, DS_GWS_SEMA_P>;
 def DS_GWS_BARRIER_vi     : DS_Real_vi<0x9d, DS_GWS_BARRIER>;
+def DS_WRITE_ADDTID_B32_vi : DS_Real_vi<0x1d, DS_WRITE_ADDTID_B32>;
 def DS_WRITE_B8_vi        : DS_Real_vi<0x1e, DS_WRITE_B8>;
 def DS_WRITE_B16_vi       : DS_Real_vi<0x1f, DS_WRITE_B16>;
 def DS_ADD_RTN_U32_vi     : DS_Real_vi<0x20, DS_ADD_RTN_U32>;
@@ -865,6 +917,7 @@ def DS_READ_I8_vi         : DS_Real_vi<0x39, DS_READ_I8>;
 def DS_READ_U8_vi         : DS_Real_vi<0x3a, DS_READ_U8>;
 def DS_READ_I16_vi        : DS_Real_vi<0x3b, DS_READ_I16>;
 def DS_READ_U16_vi        : DS_Real_vi<0x3c, DS_READ_U16>;
+def DS_READ_ADDTID_B32_vi : DS_Real_vi<0xb6, DS_READ_ADDTID_B32>;
 def DS_CONSUME_vi         : DS_Real_vi<0xbd, DS_CONSUME>;
 def DS_APPEND_vi          : DS_Real_vi<0xbe, DS_APPEND>;
 def DS_ORDERED_COUNT_vi   : DS_Real_vi<0xbf, DS_ORDERED_COUNT>;
@@ -892,6 +945,16 @@ def DS_CMPST_B64_vi       : DS_Real_vi<0x50, DS_CMPST_B64>;
 def DS_CMPST_F64_vi       : DS_Real_vi<0x51, DS_CMPST_F64>;
 def DS_MIN_F64_vi         : DS_Real_vi<0x52, DS_MIN_F64>;
 def DS_MAX_F64_vi         : DS_Real_vi<0x53, DS_MAX_F64>;
+
+def DS_WRITE_B8_D16_HI_vi  : DS_Real_vi<0x54, DS_WRITE_B8_D16_HI>;
+def DS_WRITE_B16_D16_HI_vi : DS_Real_vi<0x55, DS_WRITE_B16_D16_HI>;
+
+def DS_READ_U8_D16_vi     : DS_Real_vi<0x56, DS_READ_U8_D16>;
+def DS_READ_U8_D16_HI_vi  : DS_Real_vi<0x57, DS_READ_U8_D16_HI>;
+def DS_READ_I8_D16_vi     : DS_Real_vi<0x58, DS_READ_I8_D16>;
+def DS_READ_I8_D16_HI_vi  : DS_Real_vi<0x59, DS_READ_I8_D16_HI>;
+def DS_READ_U16_D16_vi    : DS_Real_vi<0x5a, DS_READ_U16_D16>;
+def DS_READ_U16_D16_HI_vi : DS_Real_vi<0x5b, DS_READ_U16_D16_HI>;
 
 def DS_ADD_RTN_U64_vi     : DS_Real_vi<0x60, DS_ADD_RTN_U64>;
 def DS_SUB_RTN_U64_vi     : DS_Real_vi<0x61, DS_SUB_RTN_U64>;

@@ -26,25 +26,28 @@
 #ifndef LLVM_IR_CALLSITE_H
 #define LLVM_IR_CALLSITE_H
 
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/Intrinsics.h"
-#include "llvm/Support/Casting.h"
 #include "llvm/IR/Use.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
+#include "llvm/Support/Casting.h"
 #include <cassert>
 #include <cstdint>
 #include <iterator>
 
 namespace llvm {
+
+namespace Intrinsic {
+enum ID : unsigned;
+}
 
 template <typename FunTy = const Function,
           typename BBTy = const BasicBlock,
@@ -59,7 +62,7 @@ class CallSiteBase {
 protected:
   PointerIntPair<InstrTy*, 1, bool> I;
 
-  CallSiteBase() : I(nullptr, false) {}
+  CallSiteBase() = default;
   CallSiteBase(CallTy *CI) : I(CI, true) { assert(CI); }
   CallSiteBase(InvokeTy *II) : I(II, false) { assert(II); }
   explicit CallSiteBase(ValTy *II) { *this = get(II); }
@@ -107,12 +110,12 @@ public:
 
   /// Return true if the callsite is an indirect call.
   bool isIndirectCall() const {
-    Value *V = getCalledValue();
+    const Value *V = getCalledValue();
     if (!V)
       return false;
     if (isa<FunTy>(V) || isa<Constant>(V))
       return false;
-    if (CallInst *CI = dyn_cast<CallInst>(getInstruction())) {
+    if (const CallInst *CI = dyn_cast<CallInst>(getInstruction())) {
       if (CI->isInlineAsm())
         return false;
     }
@@ -207,7 +210,7 @@ public:
 
   /// The type of iterator to use when looping over actual arguments at this
   /// call site.
-  typedef IterTy arg_iterator;
+  using arg_iterator = IterTy;
 
   iterator_range<IterTy> args() const {
     return make_range(arg_begin(), arg_end());
@@ -231,7 +234,7 @@ public:
 
   /// Type of iterator to use when looping over data operands at this call site
   /// (see below).
-  typedef IterTy data_operand_iterator;
+  using data_operand_iterator = IterTy;
 
   /// data_operands_begin/data_operands_end - Return iterators iterating over
   /// the call / invoke argument list and bundle operands.  For invokes, this is
@@ -339,12 +342,20 @@ public:
     CALLSITE_DELEGATE_SETTER(addAttribute(i, Attr));
   }
 
+  void addParamAttr(unsigned ArgNo, Attribute::AttrKind Kind) {
+    CALLSITE_DELEGATE_SETTER(addParamAttr(ArgNo, Kind));
+  }
+
   void removeAttribute(unsigned i, Attribute::AttrKind Kind) {
     CALLSITE_DELEGATE_SETTER(removeAttribute(i, Kind));
   }
 
   void removeAttribute(unsigned i, StringRef Kind) {
     CALLSITE_DELEGATE_SETTER(removeAttribute(i, Kind));
+  }
+
+  void removeParamAttr(unsigned ArgNo, Attribute::AttrKind Kind) {
+    CALLSITE_DELEGATE_SETTER(removeParamAttr(ArgNo, Kind));
   }
 
   /// Return true if this function has the given attribute.
@@ -408,16 +419,19 @@ public:
     CALLSITE_DELEGATE_GETTER(getDereferenceableOrNullBytes(i));
   }
 
-  /// Determine if the parameter or return value is marked with NoAlias
-  /// attribute.
-  /// @param n The parameter to check. 1 is the first parameter, 0 is the return
-  bool doesNotAlias(unsigned n) const {
-    CALLSITE_DELEGATE_GETTER(doesNotAlias(n));
+  /// Determine if the return value is marked with NoAlias attribute.
+  bool returnDoesNotAlias() const {
+    CALLSITE_DELEGATE_GETTER(returnDoesNotAlias());
   }
 
   /// Return true if the call should not be treated as a call to a builtin.
   bool isNoBuiltin() const {
     CALLSITE_DELEGATE_GETTER(isNoBuiltin());
+  }
+
+  /// Return true if the call requires strict floating point semantics.
+  bool isStrictFP() const {
+    CALLSITE_DELEGATE_GETTER(isStrictFP());
   }
 
   /// Return true if the call should not be inlined.
@@ -482,7 +496,7 @@ public:
     CALLSITE_DELEGATE_GETTER(cannotDuplicate());
   }
   void setCannotDuplicate() {
-    CALLSITE_DELEGATE_GETTER(setCannotDuplicate());
+    CALLSITE_DELEGATE_SETTER(setCannotDuplicate());
   }
 
   /// Determine if the call is convergent.

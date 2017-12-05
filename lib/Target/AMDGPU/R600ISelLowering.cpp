@@ -584,23 +584,23 @@ SDValue R600TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const 
       return LowerImplicitParameter(DAG, VT, DL, 8);
 
     case Intrinsic::r600_read_tgid_x:
-      return CreateLiveInRegister(DAG, &AMDGPU::R600_TReg32RegClass,
-                                  AMDGPU::T1_X, VT);
+      return CreateLiveInRegisterRaw(DAG, &AMDGPU::R600_TReg32RegClass,
+                                     AMDGPU::T1_X, VT);
     case Intrinsic::r600_read_tgid_y:
-      return CreateLiveInRegister(DAG, &AMDGPU::R600_TReg32RegClass,
-                                  AMDGPU::T1_Y, VT);
+      return CreateLiveInRegisterRaw(DAG, &AMDGPU::R600_TReg32RegClass,
+                                     AMDGPU::T1_Y, VT);
     case Intrinsic::r600_read_tgid_z:
-      return CreateLiveInRegister(DAG, &AMDGPU::R600_TReg32RegClass,
-                                  AMDGPU::T1_Z, VT);
+      return CreateLiveInRegisterRaw(DAG, &AMDGPU::R600_TReg32RegClass,
+                                     AMDGPU::T1_Z, VT);
     case Intrinsic::r600_read_tidig_x:
-      return CreateLiveInRegister(DAG, &AMDGPU::R600_TReg32RegClass,
-                                  AMDGPU::T0_X, VT);
+      return CreateLiveInRegisterRaw(DAG, &AMDGPU::R600_TReg32RegClass,
+                                     AMDGPU::T0_X, VT);
     case Intrinsic::r600_read_tidig_y:
-      return CreateLiveInRegister(DAG, &AMDGPU::R600_TReg32RegClass,
-                                  AMDGPU::T0_Y, VT);
+      return CreateLiveInRegisterRaw(DAG, &AMDGPU::R600_TReg32RegClass,
+                                     AMDGPU::T0_Y, VT);
     case Intrinsic::r600_read_tidig_z:
-      return CreateLiveInRegister(DAG, &AMDGPU::R600_TReg32RegClass,
-                                  AMDGPU::T0_Z, VT);
+      return CreateLiveInRegisterRaw(DAG, &AMDGPU::R600_TReg32RegClass,
+                                     AMDGPU::T0_Z, VT);
 
     case Intrinsic::r600_recipsqrt_ieee:
       return DAG.getNode(AMDGPUISD::RSQ, DL, VT, Op.getOperand(1));
@@ -1120,7 +1120,7 @@ SDValue R600TargetLowering::lowerPrivateTruncStore(StoreSDNode *Store,
     Mask = DAG.getConstant(0xff, DL, MVT::i32);
   } else if (Store->getMemoryVT() == MVT::i16) {
     assert(Store->getAlignment() >= 2);
-    Mask = DAG.getConstant(0xffff, DL, MVT::i32);;
+    Mask = DAG.getConstant(0xffff, DL, MVT::i32);
   } else {
     llvm_unreachable("Unsupported private trunc store");
   }
@@ -1308,39 +1308,39 @@ SDValue R600TargetLowering::LowerSTORE(SDValue Op, SelectionDAG &DAG) const {
 
 // return (512 + (kc_bank << 12)
 static int
-ConstantAddressBlock(unsigned AddressSpace, AMDGPUAS AMDGPUASI) {
+ConstantAddressBlock(unsigned AddressSpace) {
   switch (AddressSpace) {
-  case AMDGPUASI.CONSTANT_BUFFER_0:
+  case AMDGPUAS::CONSTANT_BUFFER_0:
     return 512;
-  case AMDGPUASI.CONSTANT_BUFFER_1:
+  case AMDGPUAS::CONSTANT_BUFFER_1:
     return 512 + 4096;
-  case AMDGPUASI.CONSTANT_BUFFER_2:
+  case AMDGPUAS::CONSTANT_BUFFER_2:
     return 512 + 4096 * 2;
-  case AMDGPUASI.CONSTANT_BUFFER_3:
+  case AMDGPUAS::CONSTANT_BUFFER_3:
     return 512 + 4096 * 3;
-  case AMDGPUASI.CONSTANT_BUFFER_4:
+  case AMDGPUAS::CONSTANT_BUFFER_4:
     return 512 + 4096 * 4;
-  case AMDGPUASI.CONSTANT_BUFFER_5:
+  case AMDGPUAS::CONSTANT_BUFFER_5:
     return 512 + 4096 * 5;
-  case AMDGPUASI.CONSTANT_BUFFER_6:
+  case AMDGPUAS::CONSTANT_BUFFER_6:
     return 512 + 4096 * 6;
-  case AMDGPUASI.CONSTANT_BUFFER_7:
+  case AMDGPUAS::CONSTANT_BUFFER_7:
     return 512 + 4096 * 7;
-  case AMDGPUASI.CONSTANT_BUFFER_8:
+  case AMDGPUAS::CONSTANT_BUFFER_8:
     return 512 + 4096 * 8;
-  case AMDGPUASI.CONSTANT_BUFFER_9:
+  case AMDGPUAS::CONSTANT_BUFFER_9:
     return 512 + 4096 * 9;
-  case AMDGPUASI.CONSTANT_BUFFER_10:
+  case AMDGPUAS::CONSTANT_BUFFER_10:
     return 512 + 4096 * 10;
-  case AMDGPUASI.CONSTANT_BUFFER_11:
+  case AMDGPUAS::CONSTANT_BUFFER_11:
     return 512 + 4096 * 11;
-  case AMDGPUASI.CONSTANT_BUFFER_12:
+  case AMDGPUAS::CONSTANT_BUFFER_12:
     return 512 + 4096 * 12;
-  case AMDGPUASI.CONSTANT_BUFFER_13:
+  case AMDGPUAS::CONSTANT_BUFFER_13:
     return 512 + 4096 * 13;
-  case AMDGPUASI.CONSTANT_BUFFER_14:
+  case AMDGPUAS::CONSTANT_BUFFER_14:
     return 512 + 4096 * 14;
-  case AMDGPUASI.CONSTANT_BUFFER_15:
+  case AMDGPUAS::CONSTANT_BUFFER_15:
     return 512 + 4096 * 15;
   default:
     return -1;
@@ -1424,8 +1424,7 @@ SDValue R600TargetLowering::LowerLOAD(SDValue Op, SelectionDAG &DAG) const {
       return scalarizeVectorLoad(LoadNode, DAG);
   }
 
-  int ConstantBlock = ConstantAddressBlock(LoadNode->getAddressSpace(),
-      AMDGPUASI);
+  int ConstantBlock = ConstantAddressBlock(LoadNode->getAddressSpace());
   if (ConstantBlock > -1 &&
       ((LoadNode->getExtensionType() == ISD::NON_EXTLOAD) ||
        (LoadNode->getExtensionType() == ISD::ZEXTLOAD))) {
@@ -1616,6 +1615,15 @@ EVT R600TargetLowering::getSetCCResultType(const DataLayout &DL, LLVMContext &,
    if (!VT.isVector())
      return MVT::i32;
    return VT.changeVectorElementTypeToInteger();
+}
+
+bool R600TargetLowering::canMergeStoresTo(unsigned AS, EVT MemVT,
+                                          const SelectionDAG &DAG) const {
+  // Local and Private addresses do not handle vectors. Limit to i32
+  if ((AS == AMDGPUASI.LOCAL_ADDRESS || AS == AMDGPUASI.PRIVATE_ADDRESS)) {
+    return (MemVT.getSizeInBits() <= 32);
+  }
+  return true;
 }
 
 bool R600TargetLowering::allowsMisalignedMemoryAccesses(EVT VT,

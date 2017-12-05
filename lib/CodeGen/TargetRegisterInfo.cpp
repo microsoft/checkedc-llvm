@@ -1,4 +1,4 @@
-//===- TargetRegisterInfo.cpp - Target Register Information Implementation ===//
+//==- TargetRegisterInfo.cpp - Target Register Information Implementation --==//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -11,17 +11,27 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/MachineValueType.h"
 #include "llvm/CodeGen/VirtRegMap.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/Format.h"
+#include "llvm/Support/MathExtras.h"
+#include "llvm/Support/Printable.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetFrameLowering.h"
 #include "llvm/Target/TargetRegisterInfo.h"
+#include "llvm/Target/TargetSubtargetInfo.h"
+#include <cassert>
+#include <utility>
 
 #define DEBUG_TYPE "target-reg-info"
 
@@ -31,14 +41,17 @@ TargetRegisterInfo::TargetRegisterInfo(const TargetRegisterInfoDesc *ID,
                              regclass_iterator RCB, regclass_iterator RCE,
                              const char *const *SRINames,
                              const LaneBitmask *SRILaneMasks,
-                             LaneBitmask SRICoveringLanes)
+                             LaneBitmask SRICoveringLanes,
+                             const RegClassInfo *const RCIs,
+                             unsigned Mode)
   : InfoDesc(ID), SubRegIndexNames(SRINames),
     SubRegIndexLaneMasks(SRILaneMasks),
     RegClassBegin(RCB), RegClassEnd(RCE),
-    CoveringLanes(SRICoveringLanes) {
+    CoveringLanes(SRICoveringLanes),
+    RCInfos(RCIs), HwMode(Mode) {
 }
 
-TargetRegisterInfo::~TargetRegisterInfo() {}
+TargetRegisterInfo::~TargetRegisterInfo() = default;
 
 void TargetRegisterInfo::markSuperRegs(BitVector &RegisterSet, unsigned Reg)
     const {
@@ -50,8 +63,7 @@ bool TargetRegisterInfo::checkAllSuperRegsMarked(const BitVector &RegisterSet,
     ArrayRef<MCPhysReg> Exceptions) const {
   // Check that all super registers of reserved regs are reserved as well.
   BitVector Checked(getNumRegs());
-  for (int Reg = RegisterSet.find_first(); Reg>=0;
-       Reg = RegisterSet.find_next(Reg)) {
+  for (unsigned Reg : RegisterSet.set_bits()) {
     if (Checked[Reg])
       continue;
     for (MCSuperRegIterator SR(Reg, this); SR.isValid(); ++SR) {
@@ -127,7 +139,7 @@ Printable PrintVRegOrUnit(unsigned Unit, const TargetRegisterInfo *TRI) {
   });
 }
 
-} // End of llvm namespace
+} // end namespace llvm
 
 /// getAllocatableClass - Return the maximal subclass of the given register
 /// class that is alloctable, or NULL.

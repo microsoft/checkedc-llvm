@@ -37,11 +37,11 @@
  * compile-time configuration.
  */
 
+#include "llvm/Support/MD5.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Format.h"
-#include "llvm/Support/MD5.h"
 #include "llvm/Support/raw_ostream.h"
 #include <array>
 #include <cstdint>
@@ -230,7 +230,7 @@ void MD5::update(StringRef Str) {
 }
 
 /// \brief Finish the hash and place the resulting hash into \p result.
-/// \param result is assumed to be a minimum of 16-bytes in size.
+/// \param Result is assumed to be a minimum of 16-bytes in size.
 void MD5::final(MD5Result &Result) {
   unsigned long used, free;
 

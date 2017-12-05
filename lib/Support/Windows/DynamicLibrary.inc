@@ -23,11 +23,13 @@
 
 
 DynamicLibrary::HandleSet::~HandleSet() {
-  for (void *Handle : Handles)
+  for (void *Handle : llvm::reverse(Handles))
     FreeLibrary(HMODULE(Handle));
 
   // 'Process' should not be released on Windows.
   assert((!Process || Process==this) && "Bad Handle");
+  // llvm_shutdown called, Return to default
+  DynamicLibrary::SearchOrder = DynamicLibrary::SO_Linker;
 }
 
 void *DynamicLibrary::HandleSet::DLOpen(const char *File, std::string *Err) {

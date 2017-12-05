@@ -15,15 +15,16 @@
 #define LLVM_OBJECT_COFF_H
 
 #include "llvm/ADT/iterator_range.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/DebugInfo/CodeView/CVDebugRecord.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/Error.h"
 #include "llvm/Object/ObjectFile.h"
-#include "llvm/Support/COFF.h"
+#include "llvm/Support/BinaryByteStream.h"
+#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/ErrorOr.h"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +41,7 @@ class DelayImportDirectoryEntryRef;
 class ExportDirectoryEntryRef;
 class ImportDirectoryEntryRef;
 class ImportedSymbolRef;
+class ResourceSectionRef;
 
 using import_directory_iterator = content_iterator<ImportDirectoryEntryRef>;
 using delay_import_directory_iterator =
@@ -559,8 +561,26 @@ struct coff_tls_directory {
 using coff_tls_directory32 = coff_tls_directory<support::little32_t>;
 using coff_tls_directory64 = coff_tls_directory<support::little64_t>;
 
+/// Bits in control flow guard flags as we understand them.
+enum class coff_guard_flags : uint32_t {
+  CFInstrumented = 0x00000100,
+  HasFidTable = 0x00000400,
+  ProtectDelayLoadIAT = 0x00001000,
+  DelayLoadIATSection = 0x00002000, // Delay load in separate section
+  HasLongJmpTable = 0x00010000,
+  FidTableHasFlags = 0x10000000, // Indicates that fid tables are 5 bytes
+};
+
+struct coff_load_config_code_integrity {
+  support::ulittle16_t Flags;
+  support::ulittle16_t Catalog;
+  support::ulittle32_t CatalogOffset;
+  support::ulittle32_t Reserved;
+};
+
+/// 32-bit load config (IMAGE_LOAD_CONFIG_DIRECTORY32)
 struct coff_load_configuration32 {
-  support::ulittle32_t Characteristics;
+  support::ulittle32_t Size;
   support::ulittle32_t TimeDateStamp;
   support::ulittle16_t MajorVersion;
   support::ulittle16_t MinorVersion;
@@ -575,34 +595,81 @@ struct coff_load_configuration32 {
   support::ulittle32_t ProcessAffinityMask;
   support::ulittle32_t ProcessHeapFlags;
   support::ulittle16_t CSDVersion;
-  support::ulittle16_t Reserved;
+  support::ulittle16_t DependentLoadFlags;
   support::ulittle32_t EditList;
   support::ulittle32_t SecurityCookie;
   support::ulittle32_t SEHandlerTable;
   support::ulittle32_t SEHandlerCount;
+
+  // Added in MSVC 2015 for /guard:cf.
+  support::ulittle32_t GuardCFCheckFunction;
+  support::ulittle32_t GuardCFCheckDispatch;
+  support::ulittle32_t GuardCFFunctionTable;
+  support::ulittle32_t GuardCFFunctionCount;
+  support::ulittle32_t GuardFlags; // coff_guard_flags
+
+  // Added in MSVC 2017
+  coff_load_config_code_integrity CodeIntegrity;
+  support::ulittle32_t GuardAddressTakenIatEntryTable;
+  support::ulittle32_t GuardAddressTakenIatEntryCount;
+  support::ulittle32_t GuardLongJumpTargetTable;
+  support::ulittle32_t GuardLongJumpTargetCount;
+  support::ulittle32_t DynamicValueRelocTable;
+  support::ulittle32_t CHPEMetadataPointer;
+  support::ulittle32_t GuardRFFailureRoutine;
+  support::ulittle32_t GuardRFFailureRoutineFunctionPointer;
+  support::ulittle32_t DynamicValueRelocTableOffset;
+  support::ulittle16_t DynamicValueRelocTableSection;
+  support::ulittle16_t Reserved2;
+  support::ulittle32_t GuardRFVerifyStackPointerFunctionPointer;
+  support::ulittle32_t HotPatchTableOffset;
 };
 
+/// 64-bit load config (IMAGE_LOAD_CONFIG_DIRECTORY64)
 struct coff_load_configuration64 {
-  support::ulittle32_t Characteristics;
+  support::ulittle32_t Size;
   support::ulittle32_t TimeDateStamp;
   support::ulittle16_t MajorVersion;
   support::ulittle16_t MinorVersion;
   support::ulittle32_t GlobalFlagsClear;
   support::ulittle32_t GlobalFlagsSet;
   support::ulittle32_t CriticalSectionDefaultTimeout;
-  support::ulittle32_t DeCommitFreeBlockThreshold;
-  support::ulittle32_t DeCommitTotalFreeThreshold;
-  support::ulittle32_t LockPrefixTable;
-  support::ulittle32_t MaximumAllocationSize;
-  support::ulittle32_t VirtualMemoryThreshold;
-  support::ulittle32_t ProcessAffinityMask;
+  support::ulittle64_t DeCommitFreeBlockThreshold;
+  support::ulittle64_t DeCommitTotalFreeThreshold;
+  support::ulittle64_t LockPrefixTable;
+  support::ulittle64_t MaximumAllocationSize;
+  support::ulittle64_t VirtualMemoryThreshold;
+  support::ulittle64_t ProcessAffinityMask;
   support::ulittle32_t ProcessHeapFlags;
   support::ulittle16_t CSDVersion;
-  support::ulittle16_t Reserved;
-  support::ulittle32_t EditList;
+  support::ulittle16_t DependentLoadFlags;
+  support::ulittle64_t EditList;
   support::ulittle64_t SecurityCookie;
   support::ulittle64_t SEHandlerTable;
   support::ulittle64_t SEHandlerCount;
+
+  // Added in MSVC 2015 for /guard:cf.
+  support::ulittle64_t GuardCFCheckFunction;
+  support::ulittle64_t GuardCFCheckDispatch;
+  support::ulittle64_t GuardCFFunctionTable;
+  support::ulittle64_t GuardCFFunctionCount;
+  support::ulittle32_t GuardFlags;
+
+  // Added in MSVC 2017
+  coff_load_config_code_integrity CodeIntegrity;
+  support::ulittle64_t GuardAddressTakenIatEntryTable;
+  support::ulittle64_t GuardAddressTakenIatEntryCount;
+  support::ulittle64_t GuardLongJumpTargetTable;
+  support::ulittle64_t GuardLongJumpTargetCount;
+  support::ulittle64_t DynamicValueRelocTable;
+  support::ulittle64_t CHPEMetadataPointer;
+  support::ulittle64_t GuardRFFailureRoutine;
+  support::ulittle64_t GuardRFFailureRoutineFunctionPointer;
+  support::ulittle32_t DynamicValueRelocTableOffset;
+  support::ulittle16_t DynamicValueRelocTableSection;
+  support::ulittle16_t Reserved2;
+  support::ulittle64_t GuardRFVerifyStackPointerFunctionPointer;
+  support::ulittle32_t HotPatchTableOffset;
 };
 
 struct coff_runtime_function_x64 {
@@ -621,6 +688,36 @@ struct coff_base_reloc_block_entry {
 
   int getType() const { return Data >> 12; }
   int getOffset() const { return Data & ((1 << 12) - 1); }
+};
+
+struct coff_resource_dir_entry {
+  union {
+    support::ulittle32_t NameOffset;
+    support::ulittle32_t ID;
+    uint32_t getNameOffset() const {
+      return maskTrailingOnes<uint32_t>(31) & NameOffset;
+    }
+    // Even though the PE/COFF spec doesn't mention this, the high bit of a name
+    // offset is set.
+    void setNameOffset(uint32_t Offset) { NameOffset = Offset | (1 << 31); }
+  } Identifier;
+  union {
+    support::ulittle32_t DataEntryOffset;
+    support::ulittle32_t SubdirOffset;
+
+    bool isSubDir() const { return SubdirOffset >> 31; }
+    uint32_t value() const {
+      return maskTrailingOnes<uint32_t>(31) & SubdirOffset;
+    }
+
+  } Offset;
+};
+
+struct coff_resource_data_entry {
+  support::ulittle32_t DataRVA;
+  support::ulittle32_t DataSize;
+  support::ulittle32_t Codepage;
+  support::ulittle32_t Reserved;
 };
 
 struct coff_resource_dir_table {
@@ -654,6 +751,8 @@ private:
   const coff_base_reloc_block_header *BaseRelocEnd;
   const debug_directory *DebugDirectoryBegin;
   const debug_directory *DebugDirectoryEnd;
+  // Either coff_load_configuration32 or coff_load_configuration64.
+  const void *LoadConfig = nullptr;
 
   std::error_code getString(uint32_t offset, StringRef &Res) const;
 
@@ -668,6 +767,7 @@ private:
   std::error_code initExportTablePtr();
   std::error_code initBaseRelocPtr();
   std::error_code initDebugDirectoryPtr();
+  std::error_code initLoadConfigPtr();
 
 public:
   uintptr_t getSymbolTable() const {
@@ -745,6 +845,16 @@ public:
     return getRawNumberOfSymbols();
   }
 
+  const coff_load_configuration32 *getLoadConfig32() const {
+    assert(!is64());
+    return reinterpret_cast<const coff_load_configuration32 *>(LoadConfig);
+  }
+
+  const coff_load_configuration64 *getLoadConfig64() const {
+    assert(is64());
+    return reinterpret_cast<const coff_load_configuration64 *>(LoadConfig);
+  }
+
 protected:
   void moveSymbolNext(DataRefImpl &Symb) const override;
   Expected<StringRef> getSymbolName(DataRefImpl Symb) const override;
@@ -759,6 +869,7 @@ protected:
   std::error_code getSectionName(DataRefImpl Sec,
                                  StringRef &Res) const override;
   uint64_t getSectionAddress(DataRefImpl Sec) const override;
+  uint64_t getSectionIndex(DataRefImpl Sec) const override;
   uint64_t getSectionSize(DataRefImpl Sec) const override;
   std::error_code getSectionContents(DataRefImpl Sec,
                                      StringRef &Res) const override;
@@ -842,28 +953,28 @@ public:
     Res = reinterpret_cast<coff_symbol_type *>(getSymbolTable()) + Index;
     return std::error_code();
   }
-  ErrorOr<COFFSymbolRef> getSymbol(uint32_t index) const {
+  Expected<COFFSymbolRef> getSymbol(uint32_t index) const {
     if (SymbolTable16) {
       const coff_symbol16 *Symb = nullptr;
       if (std::error_code EC = getSymbol(index, Symb))
-        return EC;
+        return errorCodeToError(EC);
       return COFFSymbolRef(Symb);
     }
     if (SymbolTable32) {
       const coff_symbol32 *Symb = nullptr;
       if (std::error_code EC = getSymbol(index, Symb))
-        return EC;
+        return errorCodeToError(EC);
       return COFFSymbolRef(Symb);
     }
-    return object_error::parse_failed;
+    return errorCodeToError(object_error::parse_failed);
   }
 
   template <typename T>
   std::error_code getAuxSymbol(uint32_t index, const T *&Res) const {
-    ErrorOr<COFFSymbolRef> s = getSymbol(index);
-    if (std::error_code EC = s.getError())
-      return EC;
-    Res = reinterpret_cast<const T *>(s->getRawPtr());
+    Expected<COFFSymbolRef> S = getSymbol(index);
+    if (Error E = S.takeError())
+      return errorToErrorCode(std::move(E));
+    Res = reinterpret_cast<const T *>(S->getRawPtr());
     return std::error_code();
   }
 
@@ -917,7 +1028,7 @@ public:
   bool isRelocatableObject() const override;
   bool is64() const { return PE32PlusHeader; }
 
-  static inline bool classof(const Binary *v) { return v->isCOFF(); }
+  static bool classof(const Binary *v) { return v->isCOFF(); }
 };
 
 // The iterator for the import directory table.
@@ -1033,7 +1144,7 @@ public:
   BaseRelocRef() = default;
   BaseRelocRef(const coff_base_reloc_block_header *Header,
                const COFFObjectFile *Owner)
-      : Header(Header), Index(0), OwningObject(Owner) {}
+      : Header(Header), Index(0) {}
 
   bool operator==(const BaseRelocRef &Other) const;
   void moveNext();
@@ -1044,7 +1155,24 @@ public:
 private:
   const coff_base_reloc_block_header *Header;
   uint32_t Index;
-  const COFFObjectFile *OwningObject = nullptr;
+};
+
+class ResourceSectionRef {
+public:
+  ResourceSectionRef() = default;
+  explicit ResourceSectionRef(StringRef Ref) : BBS(Ref, support::little) {}
+
+  Expected<ArrayRef<UTF16>>
+  getEntryNameString(const coff_resource_dir_entry &Entry);
+  Expected<const coff_resource_dir_table &>
+  getEntrySubDir(const coff_resource_dir_entry &Entry);
+  Expected<const coff_resource_dir_table &> getBaseTable();
+
+private:
+  BinaryByteStream BBS;
+
+  Expected<const coff_resource_dir_table &> getTableAtOffset(uint32_t Offset);
+  Expected<ArrayRef<UTF16>> getDirStringAtOffset(uint32_t Offset);
 };
 
 // Corresponds to `_FPO_DATA` structure in the PE/COFF spec.

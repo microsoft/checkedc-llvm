@@ -12,12 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "R600InstrInfo.h"
 #include "AMDGPU.h"
 #include "AMDGPUInstrInfo.h"
 #include "AMDGPUSubtarget.h"
 #include "R600Defines.h"
 #include "R600FrameLowering.h"
-#include "R600InstrInfo.h"
 #include "R600RegisterInfo.h"
 #include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/ADT/BitVector.h"
@@ -35,8 +35,8 @@
 #include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
 #include <cassert>
-#include <cstring>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <utility>
 #include <vector>
@@ -1186,10 +1186,8 @@ int R600InstrInfo::getIndirectIndexBegin(const MachineFunction &MF) const {
   }
 
   const TargetRegisterClass *IndirectRC = getIndirectAddrRegClass();
-  for (MachineRegisterInfo::livein_iterator LI = MRI.livein_begin(),
-                                            LE = MRI.livein_end();
-                                            LI != LE; ++LI) {
-    unsigned Reg = LI->first;
+  for (std::pair<unsigned, unsigned> LI : MRI.liveins()) {
+    unsigned Reg = LI.first;
     if (TargetRegisterInfo::isVirtualRegister(Reg) ||
         !IndirectRC->contains(Reg))
       continue;

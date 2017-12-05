@@ -1,5 +1,4 @@
-
-//===-- AsmWriter.cpp - Printing LLVM as an assembly file -----------------===//
+//===- AsmWriter.cpp - Printing LLVM as an assembly file ------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -15,63 +14,105 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/None.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/iterator_range.h"
+#include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/IR/Argument.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/Attributes.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/IR/CallingConv.h"
+#include "llvm/IR/Comdat.h"
+#include "llvm/IR/Constant.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalAlias.h"
+#include "llvm/IR/GlobalIFunc.h"
+#include "llvm/IR/GlobalIndirectSymbol.h"
+#include "llvm/IR/GlobalObject.h"
+#include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/InlineAsm.h"
-#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ModuleSlotTracker.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Statepoint.h"
+#include "llvm/IR/Type.h"
 #include "llvm/IR/TypeFinder.h"
+#include "llvm/IR/Use.h"
 #include "llvm/IR/UseListOrder.h"
-#include "llvm/IR/ValueSymbolTable.h"
+#include "llvm/IR/User.h"
+#include "llvm/IR/Value.h"
+#include "llvm/Support/AtomicOrdering.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/Dwarf.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormattedStream.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <cassert>
 #include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
 using namespace llvm;
 
 // Make virtual table appear in this compilation unit.
-AssemblyAnnotationWriter::~AssemblyAnnotationWriter() {}
+AssemblyAnnotationWriter::~AssemblyAnnotationWriter() = default;
 
 //===----------------------------------------------------------------------===//
 // Helper Functions
 //===----------------------------------------------------------------------===//
 
 namespace {
+
 struct OrderMap {
   DenseMap<const Value *, std::pair<unsigned, bool>> IDs;
 
   unsigned size() const { return IDs.size(); }
   std::pair<unsigned, bool> &operator[](const Value *V) { return IDs[V]; }
+
   std::pair<unsigned, bool> lookup(const Value *V) const {
     return IDs.lookup(V);
   }
+
   void index(const Value *V) {
     // Explicitly sequence get-size and insert-value operations to avoid UB.
     unsigned ID = IDs.size() + 1;
     IDs[V].first = ID;
   }
 };
-}
+
+} // end anonymous namespace
 
 static void orderValue(const Value *V, OrderMap &OM) {
   if (OM.lookup(V).first)
@@ -139,7 +180,7 @@ static void predictValueUseListOrderImpl(const Value *V, const Function *F,
                                          unsigned ID, const OrderMap &OM,
                                          UseListOrderStack &Stack) {
   // Predict use-list order for this one.
-  typedef std::pair<const Use *, unsigned> Entry;
+  using Entry = std::pair<const Use *, unsigned>;
   SmallVector<Entry, 64> List;
   for (const Use &U : V->uses())
     // Check if this user will be serialized.
@@ -324,7 +365,7 @@ static void PrintCallingConv(unsigned cc, raw_ostream &Out) {
   case CallingConv::PTX_Kernel:    Out << "ptx_kernel"; break;
   case CallingConv::PTX_Device:    Out << "ptx_device"; break;
   case CallingConv::X86_64_SysV:   Out << "x86_64_sysvcc"; break;
-  case CallingConv::X86_64_Win64:  Out << "x86_64_win64cc"; break;
+  case CallingConv::Win64:         Out << "win64cc"; break;
   case CallingConv::SPIR_FUNC:     Out << "spir_func"; break;
   case CallingConv::SPIR_KERNEL:   Out << "spir_kernel"; break;
   case CallingConv::Swift:         Out << "swiftcc"; break;
@@ -332,6 +373,9 @@ static void PrintCallingConv(unsigned cc, raw_ostream &Out) {
   case CallingConv::HHVM:          Out << "hhvmcc"; break;
   case CallingConv::HHVM_C:        Out << "hhvm_ccc"; break;
   case CallingConv::AMDGPU_VS:     Out << "amdgpu_vs"; break;
+  case CallingConv::AMDGPU_LS:     Out << "amdgpu_ls"; break;
+  case CallingConv::AMDGPU_HS:     Out << "amdgpu_hs"; break;
+  case CallingConv::AMDGPU_ES:     Out << "amdgpu_es"; break;
   case CallingConv::AMDGPU_GS:     Out << "amdgpu_gs"; break;
   case CallingConv::AMDGPU_PS:     Out << "amdgpu_ps"; break;
   case CallingConv::AMDGPU_CS:     Out << "amdgpu_cs"; break;
@@ -420,13 +464,10 @@ static void PrintLLVMName(raw_ostream &OS, const Value *V) {
                 isa<GlobalValue>(V) ? GlobalPrefix : LocalPrefix);
 }
 
-
 namespace {
-class TypePrinting {
-  TypePrinting(const TypePrinting &) = delete;
-  void operator=(const TypePrinting&) = delete;
-public:
 
+class TypePrinting {
+public:
   /// NamedTypes - The named types that are used by the current module.
   TypeFinder NamedTypes;
 
@@ -434,6 +475,8 @@ public:
   DenseMap<StructType*, unsigned> NumberedTypes;
 
   TypePrinting() = default;
+  TypePrinting(const TypePrinting &) = delete;
+  TypePrinting &operator=(const TypePrinting &) = delete;
 
   void incorporateTypes(const Module &M);
 
@@ -441,7 +484,8 @@ public:
 
   void printStructBody(StructType *Ty, raw_ostream &OS);
 };
-} // namespace
+
+} // end anonymous namespace
 
 void TypePrinting::incorporateTypes(const Module &M) {
   NamedTypes.run(M, false);
@@ -573,6 +617,7 @@ void TypePrinting::printStructBody(StructType *STy, raw_ostream &OS) {
 }
 
 namespace llvm {
+
 //===----------------------------------------------------------------------===//
 // SlotTracker Class: Enumerate slot numbers for unnamed values
 //===----------------------------------------------------------------------===//
@@ -581,32 +626,33 @@ namespace llvm {
 class SlotTracker {
 public:
   /// ValueMap - A mapping of Values to slot numbers.
-  typedef DenseMap<const Value*, unsigned> ValueMap;
+  using ValueMap = DenseMap<const Value *, unsigned>;
 
 private:
   /// TheModule - The module for which we are holding slot numbers.
   const Module* TheModule;
 
   /// TheFunction - The function for which we are holding slot numbers.
-  const Function* TheFunction;
-  bool FunctionProcessed;
+  const Function* TheFunction = nullptr;
+  bool FunctionProcessed = false;
   bool ShouldInitializeAllMetadata;
 
   /// mMap - The slot map for the module level data.
   ValueMap mMap;
-  unsigned mNext;
+  unsigned mNext = 0;
 
   /// fMap - The slot map for the function level data.
   ValueMap fMap;
-  unsigned fNext;
+  unsigned fNext = 0;
 
   /// mdnMap - Map for MDNodes.
   DenseMap<const MDNode*, unsigned> mdnMap;
-  unsigned mdnNext;
+  unsigned mdnNext = 0;
 
   /// asMap - The slot map for attribute sets.
   DenseMap<AttributeSet, unsigned> asMap;
-  unsigned asNext;
+  unsigned asNext = 0;
+
 public:
   /// Construct from a module.
   ///
@@ -615,6 +661,7 @@ public:
   /// within a function (even if no functions have been initialized).
   explicit SlotTracker(const Module *M,
                        bool ShouldInitializeAllMetadata = false);
+
   /// Construct from a function, starting out in incorp state.
   ///
   /// If \c ShouldInitializeAllMetadata, initializes all metadata in all
@@ -622,6 +669,9 @@ public:
   /// within a function (even if no functions have been initialized).
   explicit SlotTracker(const Function *F,
                        bool ShouldInitializeAllMetadata = false);
+
+  SlotTracker(const SlotTracker &) = delete;
+  SlotTracker &operator=(const SlotTracker &) = delete;
 
   /// Return the slot number of the specified value in it's type
   /// plane.  If something is not in the SlotTracker, return -1.
@@ -645,14 +695,16 @@ public:
   void purgeFunction();
 
   /// MDNode map iterators.
-  typedef DenseMap<const MDNode*, unsigned>::iterator mdn_iterator;
+  using mdn_iterator = DenseMap<const MDNode*, unsigned>::iterator;
+
   mdn_iterator mdn_begin() { return mdnMap.begin(); }
   mdn_iterator mdn_end() { return mdnMap.end(); }
   unsigned mdn_size() const { return mdnMap.size(); }
   bool mdn_empty() const { return mdnMap.empty(); }
 
   /// AttributeSet map iterators.
-  typedef DenseMap<AttributeSet, unsigned>::iterator as_iterator;
+  using as_iterator = DenseMap<AttributeSet, unsigned>::iterator;
+
   as_iterator as_begin()   { return asMap.begin(); }
   as_iterator as_end()     { return asMap.end(); }
   unsigned as_size() const { return asMap.size(); }
@@ -690,11 +742,9 @@ private:
 
   /// Add all of the metadata from an instruction.
   void processInstructionMetadata(const Instruction &I);
-
-  SlotTracker(const SlotTracker &) = delete;
-  void operator=(const SlotTracker &) = delete;
 };
-} // namespace llvm
+
+} // end namespace llvm
 
 ModuleSlotTracker::ModuleSlotTracker(SlotTracker &Machine, const Module *M,
                                      const Function *F)
@@ -705,7 +755,7 @@ ModuleSlotTracker::ModuleSlotTracker(const Module *M,
     : ShouldCreateStorage(M),
       ShouldInitializeAllMetadata(ShouldInitializeAllMetadata), M(M) {}
 
-ModuleSlotTracker::~ModuleSlotTracker() {}
+ModuleSlotTracker::~ModuleSlotTracker() = default;
 
 SlotTracker *ModuleSlotTracker::getMachine() {
   if (!ShouldCreateStorage)
@@ -772,17 +822,13 @@ static SlotTracker *createSlotTracker(const Value *V) {
 // Module level constructor. Causes the contents of the Module (sans functions)
 // to be added to the slot table.
 SlotTracker::SlotTracker(const Module *M, bool ShouldInitializeAllMetadata)
-    : TheModule(M), TheFunction(nullptr), FunctionProcessed(false),
-      ShouldInitializeAllMetadata(ShouldInitializeAllMetadata), mNext(0),
-      fNext(0), mdnNext(0), asNext(0) {}
+    : TheModule(M), ShouldInitializeAllMetadata(ShouldInitializeAllMetadata) {}
 
 // Function level constructor. Causes the contents of the Module and the one
 // function provided to be added to the slot table.
 SlotTracker::SlotTracker(const Function *F, bool ShouldInitializeAllMetadata)
     : TheModule(F ? F->getParent() : nullptr), TheFunction(F),
-      FunctionProcessed(false),
-      ShouldInitializeAllMetadata(ShouldInitializeAllMetadata), mNext(0),
-      fNext(0), mdnNext(0), asNext(0) {}
+      ShouldInitializeAllMetadata(ShouldInitializeAllMetadata) {}
 
 inline void SlotTracker::initialize() {
   if (TheModule) {
@@ -804,6 +850,9 @@ void SlotTracker::processModule() {
     if (!Var.hasName())
       CreateModuleSlot(&Var);
     processGlobalObjectMetadata(Var);
+    auto Attrs = Var.getAttributes();
+    if (Attrs.hasAttributes())
+      CreateAttributeSetSlot(Attrs);
   }
 
   for (const GlobalAlias &A : TheModule->aliases()) {
@@ -945,7 +994,6 @@ int SlotTracker::getMetadataSlot(const MDNode *N) {
   return MI == mdnMap.end() ? -1 : (int)MI->second;
 }
 
-
 /// getLocalSlot - Get the slot number for a value that is local to a function.
 int SlotTracker::getLocalSlot(const Value *V) {
   assert(!isa<Constant>(V) && "Can't get a constant or global slot with this!");
@@ -999,6 +1047,10 @@ void SlotTracker::CreateFunctionSlot(const Value *V) {
 /// CreateModuleSlot - Insert the specified MDNode* into the slot table.
 void SlotTracker::CreateMetadataSlot(const MDNode *N) {
   assert(N && "Can't insert a null Value into SlotTracker!");
+
+  // Don't make slots for DIExpressions. We just print them inline everywhere.
+  if (isa<DIExpression>(N))
+    return;
 
   unsigned DestSlot = mdnNext;
   if (!mdnMap.insert(std::make_pair(N, DestSlot)).second)
@@ -1244,7 +1296,6 @@ static void WriteConstantInternal(raw_ostream &Out, const Constant *CV,
     return;
   }
 
-
   if (const ConstantStruct *CS = dyn_cast<ConstantStruct>(CV)) {
     if (CS->getType()->isPacked())
       Out << '<';
@@ -1377,11 +1428,14 @@ static void writeMDTuple(raw_ostream &Out, const MDTuple *Node,
 }
 
 namespace {
+
 struct FieldSeparator {
-  bool Skip;
+  bool Skip = true;
   const char *Sep;
-  FieldSeparator(const char *Sep = ", ") : Skip(true), Sep(Sep) {}
+
+  FieldSeparator(const char *Sep = ", ") : Sep(Sep) {}
 };
+
 raw_ostream &operator<<(raw_ostream &OS, FieldSeparator &FS) {
   if (FS.Skip) {
     FS.Skip = false;
@@ -1389,19 +1443,20 @@ raw_ostream &operator<<(raw_ostream &OS, FieldSeparator &FS) {
   }
   return OS << FS.Sep;
 }
+
 struct MDFieldPrinter {
   raw_ostream &Out;
   FieldSeparator FS;
-  TypePrinting *TypePrinter;
-  SlotTracker *Machine;
-  const Module *Context;
+  TypePrinting *TypePrinter = nullptr;
+  SlotTracker *Machine = nullptr;
+  const Module *Context = nullptr;
 
-  explicit MDFieldPrinter(raw_ostream &Out)
-      : Out(Out), TypePrinter(nullptr), Machine(nullptr), Context(nullptr) {}
+  explicit MDFieldPrinter(raw_ostream &Out) : Out(Out) {}
   MDFieldPrinter(raw_ostream &Out, TypePrinting *TypePrinter,
                  SlotTracker *Machine, const Module *Context)
       : Out(Out), TypePrinter(TypePrinter), Machine(Machine), Context(Context) {
   }
+
   void printTag(const DINode *N);
   void printMacinfoType(const DIMacroNode *N);
   void printChecksumKind(const DIFile *N);
@@ -1418,7 +1473,8 @@ struct MDFieldPrinter {
                       bool ShouldSkipZero = true);
   void printEmissionKind(StringRef Name, DICompileUnit::DebugEmissionKind EK);
 };
-} // end namespace
+
+} // end anonymous namespace
 
 void MDFieldPrinter::printTag(const DINode *N) {
   Out << FS << "tag: ";
@@ -1513,7 +1569,6 @@ void MDFieldPrinter::printEmissionKind(StringRef Name,
                                        DICompileUnit::DebugEmissionKind EK) {
   Out << FS << Name << ": " << DICompileUnit::EmissionKindString(EK);
 }
-
 
 template <class IntTy, class Stringifier>
 void MDFieldPrinter::printDwarfEnum(StringRef Name, IntTy Value,
@@ -1689,6 +1744,7 @@ static void writeDICompileUnit(raw_ostream &Out, const DICompileUnit *N,
   Printer.printBool("splitDebugInlining", N->getSplitDebugInlining(), true);
   Printer.printBool("debugInfoForProfiling", N->getDebugInfoForProfiling(),
                     false);
+  Printer.printBool("gnuPubnames", N->getGnuPubnames(), false);
   Out << ")";
 }
 
@@ -1915,10 +1971,10 @@ static void writeDIImportedEntity(raw_ostream &Out, const DIImportedEntity *N,
   Printer.printString("name", N->getName());
   Printer.printMetadata("scope", N->getRawScope(), /* ShouldSkipNull */ false);
   Printer.printMetadata("entity", N->getRawEntity());
+  Printer.printMetadata("file", N->getRawFile());
   Printer.printInt("line", N->getLine());
   Out << ")";
 }
-
 
 static void WriteMDNodeBodyInternal(raw_ostream &Out, const MDNode *Node,
                                     TypePrinting *TypePrinter,
@@ -2024,6 +2080,13 @@ static void WriteAsOperandInternal(raw_ostream &Out, const Metadata *MD,
                                    TypePrinting *TypePrinter,
                                    SlotTracker *Machine, const Module *Context,
                                    bool FromValue) {
+  // Write DIExpressions inline when used as a value. Improves readability of
+  // debug info intrinsics.
+  if (const DIExpression *Expr = dyn_cast<DIExpression>(MD)) {
+    writeDIExpression(Out, Expr, TypePrinter, Machine, Context);
+    return;
+  }
+
   if (const MDNode *N = dyn_cast<MDNode>(MD)) {
     std::unique_ptr<SlotTracker> MachineStorage;
     if (!Machine) {
@@ -2058,6 +2121,7 @@ static void WriteAsOperandInternal(raw_ostream &Out, const Metadata *MD,
 }
 
 namespace {
+
 class AssemblyWriter {
   formatted_raw_ostream &Out;
   const Module *TheModule;
@@ -2070,6 +2134,8 @@ class AssemblyWriter {
   bool ShouldPreserveUseListOrder;
   UseListOrderStack UseListOrders;
   SmallVector<StringRef, 8> MDNames;
+  /// Synchronization scope names registered with LLVMContext.
+  SmallVector<StringRef, 8> SSNs;
 
 public:
   /// Construct an AssemblyWriter with an external SlotTracker
@@ -2085,10 +2151,15 @@ public:
   void writeOperand(const Value *Op, bool PrintType);
   void writeParamOperand(const Value *Operand, AttributeSet Attrs);
   void writeOperandBundles(ImmutableCallSite CS);
-  void writeAtomic(AtomicOrdering Ordering, SynchronizationScope SynchScope);
-  void writeAtomicCmpXchg(AtomicOrdering SuccessOrdering,
+  void writeSyncScope(const LLVMContext &Context,
+                      SyncScope::ID SSID);
+  void writeAtomic(const LLVMContext &Context,
+                   AtomicOrdering Ordering,
+                   SyncScope::ID SSID);
+  void writeAtomicCmpXchg(const LLVMContext &Context,
+                          AtomicOrdering SuccessOrdering,
                           AtomicOrdering FailureOrdering,
-                          SynchronizationScope SynchScope);
+                          SyncScope::ID SSID);
 
   void writeAllMDNodes();
   void writeMDNode(unsigned Slot, const MDNode *Node);
@@ -2121,7 +2192,8 @@ private:
   // intrinsic indicating base and derived pointer names.
   void printGCRelocateComment(const GCRelocateInst &Relocate);
 };
-} // namespace
+
+} // end anonymous namespace
 
 AssemblyWriter::AssemblyWriter(formatted_raw_ostream &o, SlotTracker &Mac,
                                const Module *M, AssemblyAnnotationWriter *AAW,
@@ -2149,30 +2221,42 @@ void AssemblyWriter::writeOperand(const Value *Operand, bool PrintType) {
   WriteAsOperandInternal(Out, Operand, &TypePrinter, &Machine, TheModule);
 }
 
-void AssemblyWriter::writeAtomic(AtomicOrdering Ordering,
-                                 SynchronizationScope SynchScope) {
+void AssemblyWriter::writeSyncScope(const LLVMContext &Context,
+                                    SyncScope::ID SSID) {
+  switch (SSID) {
+  case SyncScope::System: {
+    break;
+  }
+  default: {
+    if (SSNs.empty())
+      Context.getSyncScopeNames(SSNs);
+
+    Out << " syncscope(\"";
+    PrintEscapedString(SSNs[SSID], Out);
+    Out << "\")";
+    break;
+  }
+  }
+}
+
+void AssemblyWriter::writeAtomic(const LLVMContext &Context,
+                                 AtomicOrdering Ordering,
+                                 SyncScope::ID SSID) {
   if (Ordering == AtomicOrdering::NotAtomic)
     return;
 
-  switch (SynchScope) {
-  case SingleThread: Out << " singlethread"; break;
-  case CrossThread: break;
-  }
-
+  writeSyncScope(Context, SSID);
   Out << " " << toIRString(Ordering);
 }
 
-void AssemblyWriter::writeAtomicCmpXchg(AtomicOrdering SuccessOrdering,
+void AssemblyWriter::writeAtomicCmpXchg(const LLVMContext &Context,
+                                        AtomicOrdering SuccessOrdering,
                                         AtomicOrdering FailureOrdering,
-                                        SynchronizationScope SynchScope) {
+                                        SyncScope::ID SSID) {
   assert(SuccessOrdering != AtomicOrdering::NotAtomic &&
          FailureOrdering != AtomicOrdering::NotAtomic);
 
-  switch (SynchScope) {
-  case SingleThread: Out << " singlethread"; break;
-  case CrossThread: break;
-  }
-
+  writeSyncScope(Context, SSID);
   Out << " " << toIRString(SuccessOrdering);
   Out << " " << toIRString(FailureOrdering);
 }
@@ -2354,7 +2438,16 @@ void AssemblyWriter::printNamedMDNode(const NamedMDNode *NMD) {
   for (unsigned i = 0, e = NMD->getNumOperands(); i != e; ++i) {
     if (i)
       Out << ", ";
-    int Slot = Machine.getMetadataSlot(NMD->getOperand(i));
+
+    // Write DIExpressions inline.
+    // FIXME: Ban DIExpressions in NamedMDNodes, they will serve no purpose.
+    MDNode *Op = NMD->getOperand(i);
+    if (auto *Expr = dyn_cast<DIExpression>(Op)) {
+      writeDIExpression(Out, Expr, nullptr, nullptr, nullptr);
+      continue;
+    }
+
+    int Slot = Machine.getMetadataSlot(Op);
     if (Slot == -1)
       Out << "<badref>";
     else
@@ -2398,6 +2491,11 @@ static void PrintVisibility(GlobalValue::VisibilityTypes Vis,
   case GlobalValue::HiddenVisibility:    Out << "hidden "; break;
   case GlobalValue::ProtectedVisibility: Out << "protected "; break;
   }
+}
+
+static void PrintDSOLocation(bool IsDSOLocal, formatted_raw_ostream &Out){
+  if (IsDSOLocal)
+    Out << "dso_local ";
 }
 
 static void PrintDLLStorageClass(GlobalValue::DLLStorageClassTypes SCT,
@@ -2470,6 +2568,7 @@ void AssemblyWriter::printGlobal(const GlobalVariable *GV) {
     Out << "external ";
 
   Out << getLinkagePrintName(GV->getLinkage());
+  PrintDSOLocation(GV->isDSOLocal(), Out);
   PrintVisibility(GV->getVisibility(), Out);
   PrintDLLStorageClass(GV->getDLLStorageClass(), Out);
   PrintThreadLocalModel(GV->getThreadLocalMode(), Out);
@@ -2501,6 +2600,10 @@ void AssemblyWriter::printGlobal(const GlobalVariable *GV) {
   GV->getAllMetadata(MDs);
   printMetadataAttachments(MDs, ", ");
 
+  auto Attrs = GV->getAttributes();
+  if (Attrs.hasAttributes())
+    Out << " #" << Machine.getAttributeGroupSlot(Attrs);
+
   printInfoComment(*GV);
 }
 
@@ -2512,6 +2615,7 @@ void AssemblyWriter::printIndirectSymbol(const GlobalIndirectSymbol *GIS) {
   Out << " = ";
 
   Out << getLinkagePrintName(GIS->getLinkage());
+  PrintDSOLocation(GIS->isDSOLocal(), Out);
   PrintVisibility(GIS->getVisibility(), Out);
   PrintDLLStorageClass(GIS->getDLLStorageClass(), Out);
   PrintThreadLocalModel(GIS->getThreadLocalMode(), Out);
@@ -2586,7 +2690,6 @@ void AssemblyWriter::printTypeIdentities() {
 }
 
 /// printFunction - Print all aspects of a function.
-///
 void AssemblyWriter::printFunction(const Function *F) {
   // Print out the return type and name.
   Out << '\n';
@@ -2624,6 +2727,7 @@ void AssemblyWriter::printFunction(const Function *F) {
     Out << "define ";
 
   Out << getLinkagePrintName(F->getLinkage());
+  PrintDSOLocation(F->isDSOLocal(), Out);
   PrintVisibility(F->getVisibility(), Out);
   PrintDLLStorageClass(F->getDLLStorageClass(), Out);
 
@@ -2722,7 +2826,6 @@ void AssemblyWriter::printFunction(const Function *F) {
 
 /// printArgument - This member is called for every argument that is passed into
 /// the function.  Simply print it out
-///
 void AssemblyWriter::printArgument(const Argument *Arg, AttributeSet Attrs) {
   // Output type...
   TypePrinter.print(Arg->getType(), Out);
@@ -2739,7 +2842,6 @@ void AssemblyWriter::printArgument(const Argument *Arg, AttributeSet Attrs) {
 }
 
 /// printBasicBlock - This member is called for each basic block in a method.
-///
 void AssemblyWriter::printBasicBlock(const BasicBlock *BB) {
   if (BB->hasName()) {              // Print out the label if it exists...
     Out << "\n";
@@ -2805,7 +2907,6 @@ void AssemblyWriter::printGCRelocateComment(const GCRelocateInst &Relocate) {
 
 /// printInfoComment - Print a little comment after the instruction indicating
 /// which slot it occupies.
-///
 void AssemblyWriter::printInfoComment(const Value &V) {
   if (const auto *Relocate = dyn_cast<GCRelocateInst>(&V))
     printGCRelocateComment(*Relocate);
@@ -3038,7 +3139,6 @@ void AssemblyWriter::printInstruction(const Instruction &I) {
       Out << " #" << Machine.getAttributeGroupSlot(PAL.getFnAttributes());
 
     writeOperandBundles(CI);
-
   } else if (const InvokeInst *II = dyn_cast<InvokeInst>(&I)) {
     Operand = II->getCalledValue();
     FunctionType *FTy = II->getFunctionType();
@@ -3079,7 +3179,6 @@ void AssemblyWriter::printInstruction(const Instruction &I) {
     writeOperand(II->getNormalDest(), true);
     Out << " unwind ";
     writeOperand(II->getUnwindDest(), true);
-
   } else if (const AllocaInst *AI = dyn_cast<AllocaInst>(&I)) {
     Out << ' ';
     if (AI->isUsedWithInAlloca())
@@ -3105,7 +3204,6 @@ void AssemblyWriter::printInstruction(const Instruction &I) {
     if (AddrSpace != 0) {
       Out << ", addrspace(" << AddrSpace << ')';
     }
-
   } else if (isa<CastInst>(I)) {
     if (Operand) {
       Out << ' ';
@@ -3168,21 +3266,22 @@ void AssemblyWriter::printInstruction(const Instruction &I) {
   // Print atomic ordering/alignment for memory operations
   if (const LoadInst *LI = dyn_cast<LoadInst>(&I)) {
     if (LI->isAtomic())
-      writeAtomic(LI->getOrdering(), LI->getSynchScope());
+      writeAtomic(LI->getContext(), LI->getOrdering(), LI->getSyncScopeID());
     if (LI->getAlignment())
       Out << ", align " << LI->getAlignment();
   } else if (const StoreInst *SI = dyn_cast<StoreInst>(&I)) {
     if (SI->isAtomic())
-      writeAtomic(SI->getOrdering(), SI->getSynchScope());
+      writeAtomic(SI->getContext(), SI->getOrdering(), SI->getSyncScopeID());
     if (SI->getAlignment())
       Out << ", align " << SI->getAlignment();
   } else if (const AtomicCmpXchgInst *CXI = dyn_cast<AtomicCmpXchgInst>(&I)) {
-    writeAtomicCmpXchg(CXI->getSuccessOrdering(), CXI->getFailureOrdering(),
-                       CXI->getSynchScope());
+    writeAtomicCmpXchg(CXI->getContext(), CXI->getSuccessOrdering(),
+                       CXI->getFailureOrdering(), CXI->getSyncScopeID());
   } else if (const AtomicRMWInst *RMWI = dyn_cast<AtomicRMWInst>(&I)) {
-    writeAtomic(RMWI->getOrdering(), RMWI->getSynchScope());
+    writeAtomic(RMWI->getContext(), RMWI->getOrdering(),
+                RMWI->getSyncScopeID());
   } else if (const FenceInst *FI = dyn_cast<FenceInst>(&I)) {
-    writeAtomic(FI->getOrdering(), FI->getSynchScope());
+    writeAtomic(FI->getContext(), FI->getOrdering(), FI->getSyncScopeID());
   }
 
   // Print Metadata info.
@@ -3504,7 +3603,7 @@ static void printMetadataImpl(raw_ostream &ROS, const Metadata &MD,
                          /* FromValue */ true);
 
   auto *N = dyn_cast<MDNode>(&MD);
-  if (OnlyAsOperand || !N)
+  if (OnlyAsOperand || !N || isa<DIExpression>(MD))
     return;
 
   OS << " = ";

@@ -42,11 +42,6 @@
 using namespace llvm;
 using namespace lto;
 
-static cl::opt<bool>
-    LTOUseNewPM("lto-use-new-pm",
-                cl::desc("Run LTO passes using the new pass manager"),
-                cl::init(false), cl::Hidden);
-
 LLVM_ATTRIBUTE_NORETURN static void reportOpenError(StringRef Path, Twine Msg) {
   errs() << "failed to open " << Path << ": " << Msg << '\n';
   errs().flush();
@@ -117,29 +112,42 @@ Error Config::addSaveTemps(std::string OutputFileName,
 namespace {
 
 std::unique_ptr<TargetMachine>
-createTargetMachine(Config &Conf, StringRef TheTriple,
-                    const Target *TheTarget) {
+createTargetMachine(Config &Conf, const Target *TheTarget, Module &M) {
+  StringRef TheTriple = M.getTargetTriple();
   SubtargetFeatures Features;
   Features.getDefaultSubtargetFeatures(Triple(TheTriple));
   for (const std::string &A : Conf.MAttrs)
     Features.AddFeature(A);
 
+  Reloc::Model RelocModel;
+  if (Conf.RelocModel)
+    RelocModel = *Conf.RelocModel;
+  else
+    RelocModel =
+        M.getPICLevel() == PICLevel::NotPIC ? Reloc::Static : Reloc::PIC_;
+
   return std::unique_ptr<TargetMachine>(TheTarget->createTargetMachine(
-      TheTriple, Conf.CPU, Features.getString(), Conf.Options, Conf.RelocModel,
+      TheTriple, Conf.CPU, Features.getString(), Conf.Options, RelocModel,
       Conf.CodeModel, Conf.CGOptLevel));
 }
 
-static void runNewPMPasses(Module &Mod, TargetMachine *TM, unsigned OptLevel) {
-  PassBuilder PB(TM);
+static void runNewPMPasses(Config &Conf, Module &Mod, TargetMachine *TM,
+                           unsigned OptLevel, bool IsThinLTO) {
+  Optional<PGOOptions> PGOOpt;
+  if (!Conf.SampleProfile.empty())
+    PGOOpt = PGOOptions("", "", Conf.SampleProfile, false, true);
+
+  PassBuilder PB(TM, PGOOpt);
   AAManager AA;
 
   // Parse a custom AA pipeline if asked to.
-  assert(PB.parseAAPipeline(AA, "default"));
+  if (!PB.parseAAPipeline(AA, "default"))
+    report_fatal_error("Error parsing default AA pipeline");
 
-  LoopAnalysisManager LAM;
-  FunctionAnalysisManager FAM;
-  CGSCCAnalysisManager CGAM;
-  ModuleAnalysisManager MAM;
+  LoopAnalysisManager LAM(Conf.DebugPassManager);
+  FunctionAnalysisManager FAM(Conf.DebugPassManager);
+  CGSCCAnalysisManager CGAM(Conf.DebugPassManager);
+  ModuleAnalysisManager MAM(Conf.DebugPassManager);
 
   // Register the AA manager first so that our version is the one used.
   FAM.registerPass([&] { return std::move(AA); });
@@ -151,7 +159,7 @@ static void runNewPMPasses(Module &Mod, TargetMachine *TM, unsigned OptLevel) {
   PB.registerLoopAnalyses(LAM);
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
-  ModulePassManager MPM;
+  ModulePassManager MPM(Conf.DebugPassManager);
   // FIXME (davide): verify the input.
 
   PassBuilder::OptimizationLevel OL;
@@ -173,7 +181,10 @@ static void runNewPMPasses(Module &Mod, TargetMachine *TM, unsigned OptLevel) {
     break;
   }
 
-  MPM = PB.buildLTODefaultPipeline(OL, false /* DebugLogging */);
+  if (IsThinLTO)
+    MPM = PB.buildThinLTODefaultPipeline(OL, Conf.DebugPassManager);
+  else
+    MPM = PB.buildLTODefaultPipeline(OL, Conf.DebugPassManager);
   MPM.run(Mod, MAM);
 
   // FIXME (davide): verify the output.
@@ -251,17 +262,12 @@ static void runOldPMPasses(Config &Conf, Module &Mod, TargetMachine *TM,
 bool opt(Config &Conf, TargetMachine *TM, unsigned Task, Module &Mod,
          bool IsThinLTO, ModuleSummaryIndex *ExportSummary,
          const ModuleSummaryIndex *ImportSummary) {
-  // There's still no ThinLTO pipeline hooked up in the new pass manager,
-  // once there is one, we can just remove this.
-  if (LTOUseNewPM && IsThinLTO)
-    report_fatal_error("ThinLTO not supported with the new PM yet!");
-
   // FIXME: Plumb the combined index into the new pass manager.
   if (!Conf.OptPipeline.empty())
     runNewPMCustomPasses(Mod, TM, Conf.OptPipeline, Conf.AAPipeline,
                          Conf.DisableVerify);
-  else if (LTOUseNewPM)
-    runNewPMPasses(Mod, TM, Conf.OptLevel);
+  else if (Conf.UseNewPM)
+    runNewPMPasses(Conf, Mod, TM, Conf.OptLevel, IsThinLTO);
   else
     runOldPMPasses(Conf, Mod, TM, IsThinLTO, ExportSummary, ImportSummary);
   return !Conf.PostOptModuleHook || Conf.PostOptModuleHook(Task, Mod);
@@ -311,7 +317,7 @@ void splitCodeGen(Config &C, TargetMachine *TM, AddStreamFn AddStream,
               std::unique_ptr<Module> MPartInCtx = std::move(MOrErr.get());
 
               std::unique_ptr<TargetMachine> TM =
-                  createTargetMachine(C, MPartInCtx->getTargetTriple(), T);
+                  createTargetMachine(C, T, *MPartInCtx);
 
               codegen(C, TM.get(), AddStream, ThreadId, *MPartInCtx);
             },
@@ -343,7 +349,7 @@ Expected<const Target *> initAndLookupTarget(Config &C, Module &Mod) {
 }
 
 static void
-finalizeOptimizationRemarks(std::unique_ptr<tool_output_file> DiagOutputFile) {
+finalizeOptimizationRemarks(std::unique_ptr<ToolOutputFile> DiagOutputFile) {
   // Make sure we flush the diagnostic remarks file in case the linker doesn't
   // call the global destructors before exiting.
   if (!DiagOutputFile)
@@ -360,8 +366,7 @@ Error lto::backend(Config &C, AddStreamFn AddStream,
   if (!TOrErr)
     return TOrErr.takeError();
 
-  std::unique_ptr<TargetMachine> TM =
-      createTargetMachine(C, Mod->getTargetTriple(), *TOrErr);
+  std::unique_ptr<TargetMachine> TM = createTargetMachine(C, *TOrErr, *Mod);
 
   // Setup optimization remarks.
   auto DiagFileOrErr = lto::setupOptimizationRemarks(
@@ -397,8 +402,7 @@ Error lto::thinBackend(Config &Conf, unsigned Task, AddStreamFn AddStream,
   if (!TOrErr)
     return TOrErr.takeError();
 
-  std::unique_ptr<TargetMachine> TM =
-      createTargetMachine(Conf, Mod.getTargetTriple(), *TOrErr);
+  std::unique_ptr<TargetMachine> TM = createTargetMachine(Conf, *TOrErr, Mod);
 
   if (Conf.CodeGenOnly) {
     codegen(Conf, TM.get(), AddStream, Task, Mod);

@@ -21,9 +21,11 @@
 #ifndef LLVM_CODEGEN_GLOBALISEL_MACHINELEGALIZEHELPER_H
 #define LLVM_CODEGEN_GLOBALISEL_MACHINELEGALIZEHELPER_H
 
+#include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
-#include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/LowLevelType.h"
+#include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/RuntimeLibcalls.h"
 
 namespace llvm {
 // Forward declarations.
@@ -87,6 +89,9 @@ public:
   /// functions
   MachineIRBuilder MIRBuilder;
 
+  /// Expose LegalizerInfo so the clients can re-use.
+  const LegalizerInfo &getLegalizerInfo() const { return LI; }
+
 private:
 
   /// Helper function to split a wide generic register into bitwise blocks with
@@ -98,6 +103,12 @@ private:
   MachineRegisterInfo &MRI;
   const LegalizerInfo &LI;
 };
+
+/// Helper function that creates the given libcall.
+LegalizerHelper::LegalizeResult
+createLibcall(MachineIRBuilder &MIRBuilder, RTLIB::Libcall Libcall,
+              const CallLowering::ArgInfo &Result,
+              ArrayRef<CallLowering::ArgInfo> Args);
 
 } // End namespace llvm.
 

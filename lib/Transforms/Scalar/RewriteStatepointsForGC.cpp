@@ -7,41 +7,72 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Rewrite an existing set of gc.statepoints such that they make potential
-// relocations performed by the garbage collector explicit in the IR.
+// Rewrite call/invoke instructions so as to make potential relocations
+// performed by the garbage collector explicit in the IR.
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Pass.h"
-#include "llvm/Analysis/CFG.h"
-#include "llvm/Analysis/TargetTransformInfo.h"
-#include "llvm/ADT/SetOperations.h"
-#include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/None.h"
+#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/iterator_range.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/IR/Argument.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CallSite.h"
+#include "llvm/IR/CallingConv.h"
+#include "llvm/IR/Constant.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicInst.h"
-#include "llvm/IR/Module.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Metadata.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/Statepoint.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
-#include "llvm/IR/Verifier.h"
-#include "llvm/Support/Debug.h"
+#include "llvm/IR/ValueHandle.h"
+#include "llvm/Pass.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 #define DEBUG_TYPE "rewrite-statepoints-for-gc"
 
@@ -52,6 +83,7 @@ static cl::opt<bool> PrintLiveSet("spp-print-liveset", cl::Hidden,
                                   cl::init(false));
 static cl::opt<bool> PrintLiveSetSize("spp-print-liveset-size", cl::Hidden,
                                       cl::init(false));
+
 // Print out the base pointers for debugging
 static cl::opt<bool> PrintBasePointers("spp-print-base-pointers", cl::Hidden,
                                        cl::init(false));
@@ -67,6 +99,7 @@ static bool ClobberNonLive = true;
 #else
 static bool ClobberNonLive = false;
 #endif
+
 static cl::opt<bool, true> ClobberNonLiveOverride("rs4gc-clobber-non-live",
                                                   cl::location(ClobberNonLive),
                                                   cl::Hidden);
@@ -76,23 +109,26 @@ static cl::opt<bool>
                                    cl::Hidden, cl::init(true));
 
 namespace {
+
 struct RewriteStatepointsForGC : public ModulePass {
   static char ID; // Pass identification, replacement for typeid
 
   RewriteStatepointsForGC() : ModulePass(ID) {
     initializeRewriteStatepointsForGCPass(*PassRegistry::getPassRegistry());
   }
+
   bool runOnFunction(Function &F);
+
   bool runOnModule(Module &M) override {
     bool Changed = false;
     for (Function &F : M)
       Changed |= runOnFunction(F);
 
     if (Changed) {
-      // stripNonValidAttributes asserts that shouldRewriteStatepointsIn
+      // stripNonValidAttributesAndMetadata asserts that shouldRewriteStatepointsIn
       // returns true for at least one function in the module.  Since at least
       // one function changed, we know that the precondition is satisfied.
-      stripNonValidAttributes(M);
+      stripNonValidAttributesAndMetadata(M);
     }
 
     return Changed;
@@ -103,24 +139,31 @@ struct RewriteStatepointsForGC : public ModulePass {
     // else.  We could in theory preserve a lot more analyses here.
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<TargetTransformInfoWrapperPass>();
+    AU.addRequired<TargetLibraryInfoWrapperPass>();
   }
 
-  /// The IR fed into RewriteStatepointsForGC may have had attributes implying
-  /// dereferenceability that are no longer valid/correct after
-  /// RewriteStatepointsForGC has run.  This is because semantically, after
+  /// The IR fed into RewriteStatepointsForGC may have had attributes and
+  /// metadata implying dereferenceability that are no longer valid/correct after
+  /// RewriteStatepointsForGC has run. This is because semantically, after
   /// RewriteStatepointsForGC runs, all calls to gc.statepoint "free" the entire
-  /// heap.  stripNonValidAttributes (conservatively) restores correctness
-  /// by erasing all attributes in the module that externally imply
-  /// dereferenceability.
-  /// Similar reasoning also applies to the noalias attributes. gc.statepoint
-  /// can touch the entire heap including noalias objects.
-  void stripNonValidAttributes(Module &M);
+  /// heap. stripNonValidAttributesAndMetadata (conservatively) restores
+  /// correctness by erasing all attributes in the module that externally imply
+  /// dereferenceability. Similar reasoning also applies to the noalias
+  /// attributes and metadata. gc.statepoint can touch the entire heap including
+  /// noalias objects.
+  void stripNonValidAttributesAndMetadata(Module &M);
 
-  // Helpers for stripNonValidAttributes
-  void stripNonValidAttributesFromBody(Function &F);
+  // Helpers for stripNonValidAttributesAndMetadata
+  void stripNonValidAttributesAndMetadataFromBody(Function &F);
   void stripNonValidAttributesFromPrototype(Function &F);
+
+  // Certain metadata on instructions are invalid after running RS4GC.
+  // Optimizations that run after RS4GC can incorrectly use this metadata to
+  // optimize functions. We drop such metadata on the instruction.
+  void stripInvalidMetadataFromInstruction(Instruction &I);
 };
-} // namespace
+
+} // end anonymous namespace
 
 char RewriteStatepointsForGC::ID = 0;
 
@@ -136,9 +179,11 @@ INITIALIZE_PASS_END(RewriteStatepointsForGC, "rewrite-statepoints-for-gc",
                     "Make relocations explicit at statepoints", false, false)
 
 namespace {
+
 struct GCPtrLivenessData {
   /// Values defined in this block.
   MapVector<BasicBlock *, SetVector<Value *>> KillSet;
+
   /// Values used in this block (and thus live); does not included values
   /// killed within this block.
   MapVector<BasicBlock *, SetVector<Value *>> LiveSet;
@@ -162,10 +207,10 @@ struct GCPtrLivenessData {
 // Generally, after the execution of a full findBasePointer call, only the
 // base relation will remain.  Internally, we add a mixture of the two
 // types, then update all the second type to the first type
-typedef MapVector<Value *, Value *> DefiningValueMapTy;
-typedef SetVector<Value *> StatepointLiveSetTy;
-typedef MapVector<AssertingVH<Instruction>, AssertingVH<Value>>
-  RematerializedValueMapTy;
+using DefiningValueMapTy = MapVector<Value *, Value *>;
+using StatepointLiveSetTy = SetVector<Value *>;
+using RematerializedValueMapTy =
+    MapVector<AssertingVH<Instruction>, AssertingVH<Value>>;
 
 struct PartiallyConstructedSafepointRecord {
   /// The set of values known to be live across this safepoint
@@ -187,7 +232,8 @@ struct PartiallyConstructedSafepointRecord {
   /// Maps rematerialized copy to it's original value.
   RematerializedValueMapTy RematerializedValues;
 };
-}
+
+} // end anonymous namespace
 
 static ArrayRef<Use> GetDeoptBundleOperands(ImmutableCallSite CS) {
   Optional<OperandBundleUse> DeoptBundle =
@@ -250,7 +296,7 @@ static bool containsGCPtrType(Type *Ty) {
   if (ArrayType *AT = dyn_cast<ArrayType>(Ty))
     return containsGCPtrType(AT->getElementType());
   if (StructType *ST = dyn_cast<StructType>(Ty))
-    return any_of(ST->subtypes(), containsGCPtrType);
+    return llvm::any_of(ST->subtypes(), containsGCPtrType);
   return false;
 }
 
@@ -295,7 +341,9 @@ analyzeParsePointLiveness(DominatorTree &DT,
 }
 
 static bool isKnownBaseResult(Value *V);
+
 namespace {
+
 /// A single base defining value - An immediate base defining value for an
 /// instruction 'Def' is an input to 'Def' whose base is also a base of 'Def'.
 /// For instructions which have multiple pointer [vector] inputs or that
@@ -307,9 +355,11 @@ namespace {
 struct BaseDefiningValueResult {
   /// Contains the value which is the base defining value.
   Value * const BDV;
+
   /// True if the base defining value is also known to be an actual base
   /// pointer.
   const bool IsKnownBase;
+
   BaseDefiningValueResult(Value *BDV, bool IsKnownBase)
     : BDV(BDV), IsKnownBase(IsKnownBase) {
 #ifndef NDEBUG
@@ -320,7 +370,8 @@ struct BaseDefiningValueResult {
 #endif
   }
 };
-}
+
+} // end anonymous namespace
 
 static BaseDefiningValueResult findBaseDefiningValue(Value *I);
 
@@ -369,6 +420,11 @@ findBaseDefiningValueOfVector(Value *I) {
   // non-vector data types.
   if (auto *GEP = dyn_cast<GetElementPtrInst>(I))
     return findBaseDefiningValue(GEP->getPointerOperand());
+
+  // If the pointer comes through a bitcast of a vector of pointers to
+  // a vector of another type of pointer, then look through the bitcast
+  if (auto *BC = dyn_cast<BitCastInst>(I))
+    return findBaseDefiningValue(BC->getOperand(0));
 
   // A PHI or Select is a base defining value.  The outer findBasePointer
   // algorithm is responsible for constructing a base value for this BDV.
@@ -425,7 +481,6 @@ static BaseDefiningValueResult findBaseDefiningValue(Value *I) {
   if (isa<LoadInst>(I))
     // The value loaded is an gc base itself
     return BaseDefiningValueResult(I, true);
-  
 
   if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(I))
     // The base of this GEP is the base
@@ -438,12 +493,11 @@ static BaseDefiningValueResult findBaseDefiningValue(Value *I) {
       break;
     case Intrinsic::experimental_gc_statepoint:
       llvm_unreachable("statepoints don't produce pointers");
-    case Intrinsic::experimental_gc_relocate: {
+    case Intrinsic::experimental_gc_relocate:
       // Rerunning safepoint insertion after safepoints are already
       // inserted is not supported.  It could probably be made to work,
       // but why are you doing this?  There's no good reason.
       llvm_unreachable("repeat safepoint insertion is not supported");
-    }
     case Intrinsic::gcroot:
       // Currently, this mechanism hasn't been extended to work with gcroot.
       // There's no reason it couldn't be, but I haven't thought about the
@@ -547,6 +601,7 @@ static bool isKnownBaseResult(Value *V) {
 }
 
 namespace {
+
 /// Models the state of a single base defining value in the findBasePointer
 /// algorithm for determining where a new instruction is needed to propagate
 /// the base of this BDV.
@@ -554,7 +609,7 @@ class BDVState {
 public:
   enum Status { Unknown, Base, Conflict };
 
-  BDVState() : Status(Unknown), BaseValue(nullptr) {}
+  BDVState() : BaseValue(nullptr) {}
 
   explicit BDVState(Status Status, Value *BaseValue = nullptr)
       : Status(Status), BaseValue(BaseValue) {
@@ -593,16 +648,17 @@ public:
     case Conflict:
       OS << "C";
       break;
-    };
+    }
     OS << " (" << getBaseValue() << " - "
        << (getBaseValue() ? getBaseValue()->getName() : "nullptr") << "): ";
   }
 
 private:
-  Status Status;
+  Status Status = Unknown;
   AssertingVH<Value> BaseValue; // Non-null only if Status == Base.
 };
-}
+
+} // end anonymous namespace
 
 #ifndef NDEBUG
 static raw_ostream &operator<<(raw_ostream &OS, const BDVState &State) {
@@ -1165,7 +1221,7 @@ static void CreateGCRelocates(ArrayRef<Value *> LiveVariables,
     return;
 
   auto FindIndex = [](ArrayRef<Value *> LiveVec, Value *Val) {
-    auto ValIt = find(LiveVec, Val);
+    auto ValIt = llvm::find(LiveVec, Val);
     assert(ValIt != LiveVec.end() && "Val not found in LiveVec!");
     size_t Index = std::distance(LiveVec.begin(), ValIt);
     assert(Index < LiveVec.size() && "Bug in std::find?");
@@ -1225,7 +1281,7 @@ class DeferredReplacement {
   AssertingVH<Instruction> New;
   bool IsDeoptimize = false;
 
-  DeferredReplacement() {}
+  DeferredReplacement() = default;
 
 public:
   static DeferredReplacement createRAUW(Instruction *Old, Instruction *New) {
@@ -1282,7 +1338,8 @@ public:
     OldI->eraseFromParent();
   }
 };
-}
+
+} // end anonymous namespace
 
 static StringRef getDeoptLowering(CallSite CS) {
   const char *DeoptLowering = "deopt-lowering";
@@ -1300,7 +1357,6 @@ static StringRef getDeoptLowering(CallSite CS) {
   return "live-through";
 }
     
-
 static void
 makeStatepointExplicitImpl(const CallSite CS, /* to replace */
                            const SmallVectorImpl<Value *> &BasePtrs,
@@ -1524,7 +1580,6 @@ static void
 insertRelocationStores(iterator_range<Value::user_iterator> GCRelocs,
                        DenseMap<Value *, Value *> &AllocaMap,
                        DenseSet<Value *> &VisitedLiveValues) {
-
   for (User *U : GCRelocs) {
     GCRelocateInst *Relocate = dyn_cast<GCRelocateInst>(U);
     if (!Relocate)
@@ -1560,7 +1615,6 @@ static void insertRematerializationStores(
     const RematerializedValueMapTy &RematerializedValues,
     DenseMap<Value *, Value *> &AllocaMap,
     DenseSet<Value *> &VisitedLiveValues) {
-
   for (auto RematerializedValuePair: RematerializedValues) {
     Instruction *RematerializedValue = RematerializedValuePair.first;
     Value *OriginalValue = RematerializedValuePair.second;
@@ -1826,7 +1880,6 @@ static void findLiveReferences(
 static Value* findRematerializableChainToBasePointer(
   SmallVectorImpl<Instruction*> &ChainToBase,
   Value *CurrentValue) {
-
   if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(CurrentValue)) {
     ChainToBase.push_back(GEP);
     return findRematerializableChainToBasePointer(ChainToBase,
@@ -1882,7 +1935,6 @@ chainToBasePointerCost(SmallVectorImpl<Instruction*> &Chain,
 }
 
 static bool AreEquivalentPhiNodes(PHINode &OrigRootPhi, PHINode &AlternateRootPhi) {
-
   unsigned PhiNum = OrigRootPhi.getNumIncomingValues();
   if (PhiNum != AlternateRootPhi.getNumIncomingValues() ||
       OrigRootPhi.getParent() != AlternateRootPhi.getParent())
@@ -1906,7 +1958,6 @@ static bool AreEquivalentPhiNodes(PHINode &OrigRootPhi, PHINode &AlternateRootPh
       return false;
   }
   return true;
-
 }
 
 // From the statepoint live set pick values that are cheaper to recompute then
@@ -1950,7 +2001,7 @@ static void rematerializeLiveValues(CallSite CS,
       // to identify the newly generated AlternateRootPhi (.base version of phi)
       // and RootOfChain (the original phi node itself) are the same, so that we
       // can rematerialize the gep and casts. This is a workaround for the
-      // deficieny in the findBasePointer algorithm.
+      // deficiency in the findBasePointer algorithm.
       if (!AreEquivalentPhiNodes(*OrigRootPhi, *AlternateRootPhi))
         continue;
       // Now that the phi nodes are proved to be the same, assert that
@@ -1990,7 +2041,7 @@ static void rematerializeLiveValues(CallSite CS,
       Instruction *LastClonedValue = nullptr;
       Instruction *LastValue = nullptr;
       for (Instruction *Instr: ChainToBase) {
-        // Only GEP's and casts are suported as we need to be careful to not
+        // Only GEP's and casts are supported as we need to be careful to not
         // introduce any new uses of pointers not in the liveset.
         // Note that it's fine to introduce new uses of pointers which were
         // otherwise not used after this statepoint.
@@ -2094,9 +2145,9 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
   // live in the IR.  We'll remove all of these when done.
   SmallVector<CallInst *, 64> Holders;
 
-  // Insert a dummy call with all of the arguments to the vm_state we'll need
-  // for the actual safepoint insertion.  This ensures reference arguments in
-  // the deopt argument list are considered live through the safepoint (and
+  // Insert a dummy call with all of the deopt operands we'll need for the
+  // actual safepoint insertion as arguments.  This ensures reference operands
+  // in the deopt argument list are considered live through the safepoint (and
   // thus makes sure they get relocated.)
   for (CallSite CS : ToUpdate) {
     SmallVector<Value *, 64> DeoptValues;
@@ -2286,12 +2337,11 @@ static void RemoveNonValidAttrAtIndex(LLVMContext &Ctx, AttrHolder &AH,
   if (AH.getDereferenceableOrNullBytes(Index))
     R.addAttribute(Attribute::get(Ctx, Attribute::DereferenceableOrNull,
                                   AH.getDereferenceableOrNullBytes(Index)));
-  if (AH.doesNotAlias(Index))
+  if (AH.getAttributes().hasAttribute(Index, Attribute::NoAlias))
     R.addAttribute(Attribute::NoAlias);
 
   if (!R.empty())
-    AH.setAttributes(AH.getAttributes().removeAttributes(
-        Ctx, Index, AttributeList::get(Ctx, Index, R)));
+    AH.setAttributes(AH.getAttributes().removeAttributes(Ctx, Index, R));
 }
 
 void
@@ -2300,13 +2350,42 @@ RewriteStatepointsForGC::stripNonValidAttributesFromPrototype(Function &F) {
 
   for (Argument &A : F.args())
     if (isa<PointerType>(A.getType()))
-      RemoveNonValidAttrAtIndex(Ctx, F, A.getArgNo() + 1);
+      RemoveNonValidAttrAtIndex(Ctx, F,
+                                A.getArgNo() + AttributeList::FirstArgIndex);
 
   if (isa<PointerType>(F.getReturnType()))
     RemoveNonValidAttrAtIndex(Ctx, F, AttributeList::ReturnIndex);
 }
 
-void RewriteStatepointsForGC::stripNonValidAttributesFromBody(Function &F) {
+void RewriteStatepointsForGC::stripInvalidMetadataFromInstruction(Instruction &I) {
+  if (!isa<LoadInst>(I) && !isa<StoreInst>(I))
+    return;
+  // These are the attributes that are still valid on loads and stores after
+  // RS4GC.
+  // The metadata implying dereferenceability and noalias are (conservatively)
+  // dropped.  This is because semantically, after RewriteStatepointsForGC runs,
+  // all calls to gc.statepoint "free" the entire heap. Also, gc.statepoint can
+  // touch the entire heap including noalias objects. Note: The reasoning is
+  // same as stripping the dereferenceability and noalias attributes that are
+  // analogous to the metadata counterparts.
+  // We also drop the invariant.load metadata on the load because that metadata
+  // implies the address operand to the load points to memory that is never
+  // changed once it became dereferenceable. This is no longer true after RS4GC.
+  // Similar reasoning applies to invariant.group metadata, which applies to
+  // loads within a group.
+  unsigned ValidMetadataAfterRS4GC[] = {LLVMContext::MD_tbaa,
+                         LLVMContext::MD_range,
+                         LLVMContext::MD_alias_scope,
+                         LLVMContext::MD_nontemporal,
+                         LLVMContext::MD_nonnull,
+                         LLVMContext::MD_align,
+                         LLVMContext::MD_type};
+
+  // Drops all metadata on the instruction other than ValidMetadataAfterRS4GC.
+  I.dropUnknownNonDebugMetadata(ValidMetadataAfterRS4GC);
+}
+
+void RewriteStatepointsForGC::stripNonValidAttributesAndMetadataFromBody(Function &F) {
   if (F.empty())
     return;
 
@@ -2333,10 +2412,12 @@ void RewriteStatepointsForGC::stripNonValidAttributesFromBody(Function &F) {
       I.setMetadata(LLVMContext::MD_tbaa, MutableTBAA);
     }
 
+    stripInvalidMetadataFromInstruction(I);
+
     if (CallSite CS = CallSite(&I)) {
       for (int i = 0, e = CS.arg_size(); i != e; i++)
         if (isa<PointerType>(CS.getArgument(i)->getType()))
-          RemoveNonValidAttrAtIndex(Ctx, CS, i + 1);
+          RemoveNonValidAttrAtIndex(Ctx, CS, i + AttributeList::FirstArgIndex);
       if (isa<PointerType>(CS.getType()))
         RemoveNonValidAttrAtIndex(Ctx, CS, AttributeList::ReturnIndex);
     }
@@ -2357,16 +2438,16 @@ static bool shouldRewriteStatepointsIn(Function &F) {
     return false;
 }
 
-void RewriteStatepointsForGC::stripNonValidAttributes(Module &M) {
+void RewriteStatepointsForGC::stripNonValidAttributesAndMetadata(Module &M) {
 #ifndef NDEBUG
-  assert(any_of(M, shouldRewriteStatepointsIn) && "precondition!");
+  assert(llvm::any_of(M, shouldRewriteStatepointsIn) && "precondition!");
 #endif
 
   for (Function &F : M)
     stripNonValidAttributesFromPrototype(F);
 
   for (Function &F : M)
-    stripNonValidAttributesFromBody(F);
+    stripNonValidAttributesAndMetadataFromBody(F);
 }
 
 bool RewriteStatepointsForGC::runOnFunction(Function &F) {
@@ -2382,10 +2463,12 @@ bool RewriteStatepointsForGC::runOnFunction(Function &F) {
   DominatorTree &DT = getAnalysis<DominatorTreeWrapperPass>(F).getDomTree();
   TargetTransformInfo &TTI =
       getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
+  const TargetLibraryInfo &TLI =
+      getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
 
-  auto NeedsRewrite = [](Instruction &I) {
+  auto NeedsRewrite = [&TLI](Instruction &I) {
     if (ImmutableCallSite CS = ImmutableCallSite(&I))
-      return !callsGCLeafFunction(CS) && !isStatepoint(CS);
+      return !callsGCLeafFunction(CS, TLI) && !isStatepoint(CS);
     return false;
   };
 
@@ -2625,7 +2708,6 @@ static void computeLiveInValues(DominatorTree &DT, Function &F,
 
 static void findLiveSetAtInst(Instruction *Inst, GCPtrLivenessData &Data,
                               StatepointLiveSetTy &Out) {
-
   BasicBlock *BB = Inst->getParent();
 
   // Note: The copy is intentional and required

@@ -1,4 +1,4 @@
-//===--- DebugInfo.cpp - Debug Information Helper Classes -----------------===//
+//===- DebugInfo.cpp - Debug Information Helper Classes -------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -12,22 +12,33 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/IR/DebugInfo.h"
+#include "llvm-c/DebugInfo.h"
 #include "LLVMContextImpl.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/None.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DIBuilder.h"
-#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/GVMaterializer.h"
-#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/IR/IntrinsicInst.h"
-#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/ValueHandle.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/Dwarf.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Casting.h"
+#include <algorithm>
+#include <cassert>
+#include <utility>
+
 using namespace llvm;
 using namespace llvm::dwarf;
 
@@ -249,7 +260,7 @@ bool DebugInfoFinder::addScope(DIScope *Scope) {
   return true;
 }
 
-static llvm::MDNode *stripDebugLocFromLoopID(llvm::MDNode *N) {
+static MDNode *stripDebugLocFromLoopID(MDNode *N) {
   assert(N->op_begin() != N->op_end() && "Missing self reference?");
 
   // if there is no debug location, we do not have to rewrite this MDNode.
@@ -283,12 +294,12 @@ static llvm::MDNode *stripDebugLocFromLoopID(llvm::MDNode *N) {
 
 bool llvm::stripDebugInfo(Function &F) {
   bool Changed = false;
-  if (F.getSubprogram()) {
+  if (F.getMetadata(LLVMContext::MD_dbg)) {
     Changed = true;
     F.setSubprogram(nullptr);
   }
 
-  llvm::DenseMap<llvm::MDNode*, llvm::MDNode*> LoopIDsMap;
+  DenseMap<MDNode*, MDNode*> LoopIDsMap;
   for (BasicBlock &BB : F) {
     for (auto II = BB.begin(), End = BB.end(); II != End;) {
       Instruction &I = *II++; // We may delete the instruction, increment now.
@@ -304,6 +315,9 @@ bool llvm::stripDebugInfo(Function &F) {
     }
 
     auto *TermInst = BB.getTerminator();
+    if (!TermInst)
+      // This is invalid IR, but we may not have run the verifier yet
+      continue;
     if (auto *LoopID = TermInst->getMetadata(LLVMContext::MD_loop)) {
       auto *NewLoopID = LoopIDsMap.lookup(LoopID);
       if (!NewLoopID)
@@ -463,7 +477,7 @@ private:
         CU->getSplitDebugFilename(), DICompileUnit::LineTablesOnly, EnumTypes,
         RetainedTypes, GlobalVariables, ImportedEntities, CU->getMacros(),
         CU->getDWOId(), CU->getSplitDebugInlining(),
-        CU->getDebugInfoForProfiling());
+        CU->getDebugInfoForProfiling(), CU->getGnuPubnames());
   }
 
   DILocation *getReplacementMDLocation(DILocation *MLD) {
@@ -525,7 +539,7 @@ private:
   void traverse(MDNode *);
 };
 
-} // Anonymous namespace.
+} // end anonymous namespace
 
 void DebugTypeInfoRemoval::traverse(MDNode *N) {
   if (!N || Replacements.count(N))
@@ -590,7 +604,7 @@ bool llvm::stripNonLineTableDebugInfo(Module &M) {
     GV.eraseMetadata(LLVMContext::MD_dbg);
 
   DebugTypeInfoRemoval Mapper(M.getContext());
-  auto remap = [&](llvm::MDNode *Node) -> llvm::MDNode * {
+  auto remap = [&](MDNode *Node) -> MDNode * {
     if (!Node)
       return nullptr;
     Mapper.traverseAndRemap(Node);
@@ -658,4 +672,103 @@ unsigned llvm::getDebugMetadataVersionFromModule(const Module &M) {
           M.getModuleFlag("Debug Info Version")))
     return Val->getZExtValue();
   return 0;
+}
+
+void Instruction::applyMergedLocation(const DILocation *LocA,
+                                      const DILocation *LocB) {
+  if (LocA && LocB && (LocA == LocB || !LocA->canDiscriminate(*LocB))) {
+    setDebugLoc(LocA);
+    return;
+  }
+  if (!LocA || !LocB || !isa<CallInst>(this)) {
+    setDebugLoc(nullptr);
+    return;
+  }
+  SmallPtrSet<DILocation *, 5> InlinedLocationsA;
+  for (DILocation *L = LocA->getInlinedAt(); L; L = L->getInlinedAt())
+    InlinedLocationsA.insert(L);
+  const DILocation *Result = LocB;
+  for (DILocation *L = LocB->getInlinedAt(); L; L = L->getInlinedAt()) {
+    Result = L;
+    if (InlinedLocationsA.count(L))
+      break;
+  }
+  setDebugLoc(DILocation::get(
+      Result->getContext(), 0, 0, Result->getScope(), Result->getInlinedAt()));
+}
+
+//===----------------------------------------------------------------------===//
+// LLVM C API implementations.
+//===----------------------------------------------------------------------===//
+
+static unsigned map_from_llvmDWARFsourcelanguage(LLVMDWARFSourceLanguage lang) {
+  switch (lang) {
+#define HANDLE_DW_LANG(ID, NAME, VERSION, VENDOR) \
+case LLVMDWARFSourceLanguage##NAME: return ID;
+#include "llvm/BinaryFormat/Dwarf.def"
+#undef HANDLE_DW_LANG
+  }
+  llvm_unreachable("Unhandled Tag");
+}
+
+unsigned LLVMDebugMetadataVersion() {
+  return DEBUG_METADATA_VERSION;
+}
+
+LLVMDIBuilderRef LLVMCreateDIBuilderDisallowUnresolved(LLVMModuleRef M) {
+  return wrap(new DIBuilder(*unwrap(M), false));
+}
+
+LLVMDIBuilderRef LLVMCreateDIBuilder(LLVMModuleRef M) {
+  return wrap(new DIBuilder(*unwrap(M)));
+}
+
+unsigned LLVMGetModuleDebugMetadataVersion(LLVMModuleRef M) {
+  return getDebugMetadataVersionFromModule(*unwrap(M));
+}
+
+LLVMBool LLVMStripModuleDebugInfo(LLVMModuleRef M) {
+  return StripDebugInfo(*unwrap(M));
+}
+
+void LLVMDisposeDIBuilder(LLVMDIBuilderRef Builder) {
+  delete unwrap(Builder);
+}
+
+void LLVMDIBuilderFinalize(LLVMDIBuilderRef Builder) {
+  unwrap(Builder)->finalize();
+}
+
+LLVMMetadataRef LLVMDIBuilderCreateCompileUnit(
+    LLVMDIBuilderRef Builder, LLVMDWARFSourceLanguage Lang,
+    LLVMMetadataRef FileRef, const char *Producer, size_t ProducerLen,
+    LLVMBool isOptimized, const char *Flags, size_t FlagsLen,
+    unsigned RuntimeVer, const char *SplitName, size_t SplitNameLen,
+    LLVMDWARFEmissionKind Kind, unsigned DWOId, LLVMBool SplitDebugInlining,
+    LLVMBool DebugInfoForProfiling) {
+  auto File = unwrap<DIFile>(FileRef);
+
+  return wrap(unwrap(Builder)->createCompileUnit(
+                 map_from_llvmDWARFsourcelanguage(Lang), File,
+                 StringRef(Producer, ProducerLen), isOptimized,
+                 StringRef(Flags, FlagsLen), RuntimeVer,
+                 StringRef(SplitName, SplitNameLen),
+                 static_cast<DICompileUnit::DebugEmissionKind>(Kind), DWOId,
+                 SplitDebugInlining, DebugInfoForProfiling));
+}
+
+LLVMMetadataRef
+LLVMDIBuilderCreateFile(LLVMDIBuilderRef Builder, const char *Filename,
+                        size_t FilenameLen, const char *Directory,
+                        size_t DirectoryLen) {
+  return wrap(unwrap(Builder)->createFile(StringRef(Filename, FilenameLen),
+                                          StringRef(Directory, DirectoryLen)));
+}
+
+LLVMMetadataRef
+LLVMDIBuilderCreateDebugLocation(LLVMContextRef Ctx, unsigned Line,
+                                 unsigned Column, LLVMMetadataRef Scope,
+                                 LLVMMetadataRef InlinedAt) {
+  return wrap(DILocation::get(*unwrap(Ctx), Line, Column, unwrap(Scope),
+                              unwrap(InlinedAt)));
 }

@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/CodeGen/LowLevelType.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -18,7 +19,6 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineOperand.h"
-#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Function.h"
@@ -600,4 +600,22 @@ void MachineRegisterInfo::setCalleeSavedRegs(ArrayRef<MCPhysReg> CSRs) {
   // (no more registers should be pushed).
   UpdatedCSRs.push_back(0);
   IsUpdatedCSRsInitialized = true;
+}
+
+bool MachineRegisterInfo::isReservedRegUnit(unsigned Unit) const {
+  const TargetRegisterInfo *TRI = getTargetRegisterInfo();
+  for (MCRegUnitRootIterator Root(Unit, TRI); Root.isValid(); ++Root) {
+    bool IsRootReserved = true;
+    for (MCSuperRegIterator Super(*Root, TRI, /*IncludeSelf=*/true);
+         Super.isValid(); ++Super) {
+      unsigned Reg = *Super;
+      if (!isReserved(Reg)) {
+        IsRootReserved = false;
+        break;
+      }
+    }
+    if (IsRootReserved)
+      return true;
+  }
+  return false;
 }

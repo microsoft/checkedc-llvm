@@ -65,7 +65,7 @@ public:
 //===----------------------------------------------------------------------===//
 /// This dwarf writer support class manages information associated with a
 /// source file.
-  class DwarfUnit : public DIEUnit {
+class DwarfUnit : public DIEUnit {
 protected:
   /// MDNode for the compile unit.
   const DICompileUnit *CUNode;
@@ -102,6 +102,9 @@ protected:
             DwarfFile *DWU);
 
   bool applySubprogramDefinitionAttributes(const DISubprogram *SP, DIE &SPDie);
+
+  bool shareAcrossDWOCUs() const;
+  bool isShareableAcrossCUs(const DINode *D) const;
 
 public:
   // Accessors.
@@ -287,6 +290,15 @@ public:
   virtual DwarfCompileUnit &getCU() = 0;
 
   void constructTypeDIE(DIE &Buffer, const DICompositeType *CTy);
+
+  /// addSectionDelta - Add a label delta attribute data and value.
+  DIE::value_iterator addSectionDelta(DIE &Die, dwarf::Attribute Attribute,
+                                      const MCSymbol *Hi, const MCSymbol *Lo);
+
+  /// Add a Dwarf section label attribute data and value.
+  DIE::value_iterator addSectionLabel(DIE &Die, dwarf::Attribute Attribute,
+                                      const MCSymbol *Label,
+                                      const MCSymbol *Sec);
 
 protected:
   ~DwarfUnit();

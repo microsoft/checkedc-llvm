@@ -16,19 +16,19 @@
 #define LLVM_OBJECT_MACHO_H
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/ADT/iterator_range.h"
+#include "llvm/BinaryFormat/MachO.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Object/SymbolicFile.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Format.h"
-#include "llvm/Support/MachO.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdint>
@@ -66,11 +66,13 @@ using dice_iterator = content_iterator<DiceRef>;
 /// ExportEntry encapsulates the current-state-of-the-walk used when doing a
 /// non-recursive walk of the trie data structure.  This allows you to iterate
 /// across all exported symbols using:
-///      for (const llvm::object::ExportEntry &AnExport : Obj->exports()) {
+///      Error Err;
+///      for (const llvm::object::ExportEntry &AnExport : Obj->exports(&Err)) {
 ///      }
+///      if (Err) { report error ...
 class ExportEntry {
 public:
-  ExportEntry(ArrayRef<uint8_t> Trie);
+  ExportEntry(Error *Err, const MachOObjectFile *O, ArrayRef<uint8_t> Trie);
 
   StringRef name() const;
   uint64_t flags() const;
@@ -88,7 +90,7 @@ private:
 
   void moveToFirst();
   void moveToEnd();
-  uint64_t readULEB128(const uint8_t *&p);
+  uint64_t readULEB128(const uint8_t *&p, const char **error);
   void pushDownUntilBottom();
   void pushNode(uint64_t Offset);
 
@@ -107,12 +109,19 @@ private:
     unsigned ParentStringLength = 0;
     bool IsExportNode = false;
   };
+  using NodeList = SmallVector<NodeState, 16>;
+  using node_iterator = NodeList::const_iterator;
 
+  Error *E;
+  const MachOObjectFile *O;
   ArrayRef<uint8_t> Trie;
   SmallString<256> CumulativeString;
-  SmallVector<NodeState, 16> Stack;
-  bool Malformed = false;
+  NodeList Stack;
   bool Done = false;
+
+  iterator_range<node_iterator> nodes() const {
+    return make_range(Stack.begin(), Stack.end());
+  }
 };
 using export_iterator = content_iterator<ExportEntry>;
 
@@ -290,6 +299,7 @@ public:
   std::error_code getSectionName(DataRefImpl Sec,
                                  StringRef &Res) const override;
   uint64_t getSectionAddress(DataRefImpl Sec) const override;
+  uint64_t getSectionIndex(DataRefImpl Sec) const override;
   uint64_t getSectionSize(DataRefImpl Sec) const override;
   std::error_code getSectionContents(DataRefImpl Sec,
                                      StringRef &Res) const override;
@@ -300,8 +310,24 @@ public:
   bool isSectionBSS(DataRefImpl Sec) const override;
   bool isSectionVirtual(DataRefImpl Sec) const override;
   bool isSectionBitcode(DataRefImpl Sec) const override;
+
+  /// When dsymutil generates the companion file, it strips all unnecessary
+  /// sections (e.g. everything in the _TEXT segment) by omitting their body
+  /// and setting the offset in their corresponding load command to zero.
+  ///
+  /// While the load command itself is valid, reading the section corresponds
+  /// to reading the number of bytes specified in the load command, starting
+  /// from offset 0 (i.e. the Mach-O header at the beginning of the file).
+  bool isSectionStripped(DataRefImpl Sec) const override;
+
   relocation_iterator section_rel_begin(DataRefImpl Sec) const override;
   relocation_iterator section_rel_end(DataRefImpl Sec) const override;
+
+  relocation_iterator extrel_begin() const;
+  relocation_iterator extrel_end() const;
+  iterator_range<relocation_iterator> external_relocations() const {
+    return make_range(extrel_begin(), extrel_end());
+  }
 
   void moveRelocationNext(DataRefImpl &Rel) const override;
   uint64_t getRelocationOffset(DataRefImpl Rel) const override;
@@ -349,10 +375,13 @@ public:
   iterator_range<load_command_iterator> load_commands() const;
 
   /// For use iterating over all exported symbols.
-  iterator_range<export_iterator> exports() const;
+  iterator_range<export_iterator> exports(Error &Err) const;
 
   /// For use examining a trie not in a MachOObjectFile.
-  static iterator_range<export_iterator> exports(ArrayRef<uint8_t> Trie);
+  static iterator_range<export_iterator> exports(Error &Err,
+                                                 ArrayRef<uint8_t> Trie,
+                                                 const MachOObjectFile *O =
+                                                                      nullptr);
 
   /// For use iterating over all rebase table entries.
   iterator_range<rebase_iterator> rebaseTable(Error &Err);
@@ -548,6 +577,8 @@ public:
   static Triple getHostArch();
 
   bool isRelocatableObject() const override;
+
+  StringRef mapDebugSectionName(StringRef Name) const override;
 
   bool hasPageZeroSegment() const { return HasPageZeroSegment; }
 

@@ -58,13 +58,13 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
-#include "llvm/IR/Module.h"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Pass.h"
@@ -405,7 +405,7 @@ void Lint::visitMemoryReference(Instruction &I,
   Assert(!isa<UndefValue>(UnderlyingObject),
          "Undefined behavior: Undef pointer dereference", &I);
   Assert(!isa<ConstantInt>(UnderlyingObject) ||
-             !cast<ConstantInt>(UnderlyingObject)->isAllOnesValue(),
+             !cast<ConstantInt>(UnderlyingObject)->isMinusOne(),
          "Unusual: All-ones pointer dereference", &I);
   Assert(!isa<ConstantInt>(UnderlyingObject) ||
              !cast<ConstantInt>(UnderlyingObject)->isOne(),
@@ -534,10 +534,8 @@ static bool isZero(Value *V, const DataLayout &DL, DominatorTree *DT,
 
   VectorType *VecTy = dyn_cast<VectorType>(V->getType());
   if (!VecTy) {
-    unsigned BitWidth = V->getType()->getIntegerBitWidth();
-    KnownBits Known(BitWidth);
-    computeKnownBits(V, Known, DL, 0, AC, dyn_cast<Instruction>(V), DT);
-    return Known.Zero.isAllOnesValue();
+    KnownBits Known = computeKnownBits(V, DL, 0, AC, dyn_cast<Instruction>(V), DT);
+    return Known.isZero();
   }
 
   // Per-component check doesn't work with zeroinitializer
@@ -550,15 +548,13 @@ static bool isZero(Value *V, const DataLayout &DL, DominatorTree *DT,
 
   // For a vector, KnownZero will only be true if all values are zero, so check
   // this per component
-  unsigned BitWidth = VecTy->getElementType()->getIntegerBitWidth();
   for (unsigned I = 0, N = VecTy->getNumElements(); I != N; ++I) {
     Constant *Elem = C->getAggregateElement(I);
     if (isa<UndefValue>(Elem))
       return true;
 
-    KnownBits Known(BitWidth);
-    computeKnownBits(Elem, Known, DL);
-    if (Known.Zero.isAllOnesValue())
+    KnownBits Known = computeKnownBits(Elem, DL);
+    if (Known.isZero())
       return true;
   }
 
@@ -687,7 +683,7 @@ Value *Lint::findValueImpl(Value *V, bool OffsetOk,
     if (Instruction::isCast(CE->getOpcode())) {
       if (CastInst::isNoopCast(Instruction::CastOps(CE->getOpcode()),
                                CE->getOperand(0)->getType(), CE->getType(),
-                               DL->getIntPtrType(V->getType())))
+                               *DL))
         return findValueImpl(CE->getOperand(0), OffsetOk, Visited);
     } else if (CE->getOpcode() == Instruction::ExtractValue) {
       ArrayRef<unsigned> Indices = CE->getIndices();

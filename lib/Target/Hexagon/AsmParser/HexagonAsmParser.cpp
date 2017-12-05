@@ -17,11 +17,12 @@
 #include "MCTargetDesc/HexagonMCInstrInfo.h"
 #include "MCTargetDesc/HexagonMCTargetDesc.h"
 #include "MCTargetDesc/HexagonShuffler.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDirectives.h"
@@ -42,13 +43,12 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/TargetRegistry.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -96,7 +96,6 @@ class HexagonAsmParser : public MCTargetAsmParser {
 
   MCAsmParser &Parser;
   MCAssembler *Assembler;
-  MCInstrInfo const &MCII;
   MCInst MCB;
   bool InBrackets;
 
@@ -155,8 +154,8 @@ class HexagonAsmParser : public MCTargetAsmParser {
 public:
   HexagonAsmParser(const MCSubtargetInfo &_STI, MCAsmParser &_Parser,
                    const MCInstrInfo &MII, const MCTargetOptions &Options)
-    : MCTargetAsmParser(Options, _STI), Parser(_Parser),
-      MCII (MII), MCB(HexagonMCInstrInfo::createBundle()), InBrackets(false) {
+    : MCTargetAsmParser(Options, _STI, MII), Parser(_Parser),
+      MCB(HexagonMCInstrInfo::createBundle()), InBrackets(false) {
     setAvailableFeatures(ComputeAvailableFeatures(getSTI().getFeatureBits()));
 
     MCAsmParserExtension::Initialize(_Parser);
@@ -307,7 +306,7 @@ public:
   bool iss31_1Imm() const { return true; }
   bool iss30_2Imm() const { return true; }
   bool iss29_3Imm() const { return true; }
-  bool iss23_2Imm() const { return CheckImmRange(23, 2, true, true, false); }
+  bool iss27_2Imm() const { return CheckImmRange(27, 2, true, true, false); }
   bool iss10_0Imm() const { return CheckImmRange(10, 0, true, false, false); }
   bool iss10_6Imm() const { return CheckImmRange(10, 6, true, false, false); }
   bool iss9_0Imm() const { return CheckImmRange(9, 0, true, false, false); }
@@ -462,9 +461,9 @@ bool HexagonAsmParser::finishBundle(SMLoc IDLoc, MCStreamer &Out) {
   MCB.setLoc(IDLoc);
   // Check the bundle for errors.
   const MCRegisterInfo *RI = getContext().getRegisterInfo();
-  HexagonMCChecker Check(getContext(), MCII, getSTI(), MCB, *RI);
+  HexagonMCChecker Check(getContext(), MII, getSTI(), MCB, *RI);
 
-  bool CheckOk = HexagonMCInstrInfo::canonicalizePacket(MCII, getSTI(),
+  bool CheckOk = HexagonMCInstrInfo::canonicalizePacket(MII, getSTI(),
                                                         getContext(), MCB,
                                                         &Check);
 
@@ -608,7 +607,7 @@ bool HexagonAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                           MatchingInlineAsm))
     return true;
   HexagonMCInstrInfo::extendIfNeeded(
-      getParser().getContext(), MCII, MCB, *SubInst);
+      getParser().getContext(), MII, MCB, *SubInst);
   MCB.addOperand(MCOperand::createInst(SubInst));
   if (!InBrackets)
     return finishBundle(IDLoc, Out);
@@ -1292,13 +1291,13 @@ int HexagonAsmParser::processInstruction(MCInst &Inst,
   case Hexagon::A2_iconst: {
     Inst.setOpcode(Hexagon::A2_addi);
     MCOperand Reg = Inst.getOperand(0);
-    MCOperand S16 = Inst.getOperand(1);
-    HexagonMCInstrInfo::setMustNotExtend(*S16.getExpr());
-    HexagonMCInstrInfo::setS23_2_reloc(*S16.getExpr());
+    MCOperand S27 = Inst.getOperand(1);
+    HexagonMCInstrInfo::setMustNotExtend(*S27.getExpr());
+    HexagonMCInstrInfo::setS27_2_reloc(*S27.getExpr());
     Inst.clear();
     Inst.addOperand(Reg);
     Inst.addOperand(MCOperand::createReg(Hexagon::R0));
-    Inst.addOperand(S16);
+    Inst.addOperand(S27);
     break;
   }
   case Hexagon::M4_mpyrr_addr:
@@ -1413,6 +1412,7 @@ int HexagonAsmParser::processInstruction(MCInst &Inst,
   // Translate a "$Rx =  CONST32(#imm)" to "$Rx = memw(gp+#LABEL) "
   case Hexagon::CONST32:
     is32bit = true;
+    LLVM_FALLTHROUGH;
   // Translate a "$Rx:y =  CONST64(#imm)" to "$Rx:y = memd(gp+#LABEL) "
   case Hexagon::CONST64:
     // FIXME: need better way to detect AsmStreamer (upstream removed getKind())

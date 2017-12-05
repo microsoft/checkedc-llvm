@@ -47,6 +47,14 @@ public:
 
   /// @}
 
+  /// \name Cache TTI Implementation
+  /// @{
+  llvm::Optional<unsigned> getCacheSize(
+    TargetTransformInfo::CacheLevel Level) const;
+  llvm::Optional<unsigned> getCacheAssociativity(
+    TargetTransformInfo::CacheLevel Level) const;
+  /// @}
+
   /// \name Vector TTI Implementations
   /// @{
 
@@ -76,6 +84,8 @@ public:
   int getAddressComputationCost(Type *PtrTy, ScalarEvolution *SE,
                                 const SCEV *Ptr);
 
+  unsigned getAtomicMemIntrinsicMaxElementSize() const;
+
   int getIntrinsicInstrCost(Intrinsic::ID IID, Type *RetTy,
                             ArrayRef<Type *> Tys, FastMathFlags FMF,
                             unsigned ScalarizationCostPassed = UINT_MAX);
@@ -83,7 +93,11 @@ public:
                             ArrayRef<Value *> Args, FastMathFlags FMF,
                             unsigned VF = 1);
 
-  int getReductionCost(unsigned Opcode, Type *Ty, bool IsPairwiseForm);
+  int getArithmeticReductionCost(unsigned Opcode, Type *Ty,
+                                 bool IsPairwiseForm);
+
+  int getMinMaxReductionCost(Type *Ty, Type *CondTy, bool IsPairwiseForm,
+                             bool IsUnsigned);
 
   int getInterleavedMemoryOpCost(unsigned Opcode, Type *VecTy,
                                  unsigned Factor, ArrayRef<unsigned> Indices,
@@ -91,21 +105,30 @@ public:
   int getInterleavedMemoryOpCostAVX512(unsigned Opcode, Type *VecTy,
                                  unsigned Factor, ArrayRef<unsigned> Indices,
                                  unsigned Alignment, unsigned AddressSpace);
+  int getInterleavedMemoryOpCostAVX2(unsigned Opcode, Type *VecTy,
+                                 unsigned Factor, ArrayRef<unsigned> Indices,
+                                 unsigned Alignment, unsigned AddressSpace);
 
   int getIntImmCost(int64_t);
 
   int getIntImmCost(const APInt &Imm, Type *Ty);
 
+  unsigned getUserCost(const User *U, ArrayRef<const Value *> Operands);
+
   int getIntImmCost(unsigned Opcode, unsigned Idx, const APInt &Imm, Type *Ty);
   int getIntImmCost(Intrinsic::ID IID, unsigned Idx, const APInt &Imm,
                     Type *Ty);
+  bool isLSRCostLess(TargetTransformInfo::LSRCost &C1,
+                     TargetTransformInfo::LSRCost &C2);
   bool isLegalMaskedLoad(Type *DataType);
   bool isLegalMaskedStore(Type *DataType);
   bool isLegalMaskedGather(Type *DataType);
   bool isLegalMaskedScatter(Type *DataType);
+  bool hasDivRemOp(Type *DataType, bool IsSigned);
   bool areInlineCompatible(const Function *Caller,
                            const Function *Callee) const;
-
+  const TTI::MemCmpExpansionOptions *enableMemCmpExpansion(
+      bool IsZeroCmp) const;
   bool enableInterleavedAccessVectorization();
 private:
   int getGSScalarCost(unsigned Opcode, Type *DataTy, bool VariableMask,

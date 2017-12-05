@@ -6,43 +6,59 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
 /// \file
 ///
 /// This file provides internal interfaces used to implement the InstCombine.
-///
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIB_TRANSFORMS_INSTCOMBINE_INSTCOMBINEINTERNAL_H
 #define LLVM_LIB_TRANSFORMS_INSTCOMBINE_INSTCOMBINEINTERNAL_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/InstructionSimplify.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/TargetFolder.h"
 #include "llvm/Analysis/ValueTracking.h"
-#include "llvm/IR/DIBuilder.h"
-#include "llvm/IR/Dominators.h"
+#include "llvm/IR/Argument.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constant.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstVisitor.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/IR/IntrinsicInst.h"
-#include "llvm/IR/Operator.h"
-#include "llvm/IR/PatternMatch.h"
-#include "llvm/Pass.h"
-#include "llvm/Support/Dwarf.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/Use.h"
+#include "llvm/IR/Value.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/KnownBits.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/InstCombine/InstCombineWorklist.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include <cassert>
+#include <cstdint>
 
 #define DEBUG_TYPE "instcombine"
 
 namespace llvm {
+
+class APInt;
+class AssumptionCache;
 class CallSite;
 class DataLayout;
 class DominatorTree;
+class GEPOperator;
+class GlobalVariable;
+class LoopInfo;
+class OptimizationRemarkEmitter;
 class TargetLibraryInfo;
-class DbgDeclareInst;
-class MemIntrinsic;
-class MemSetInst;
+class User;
 
 /// Assign a complexity or rank value to LLVM Values. This is used to reduce
 /// the amount of pattern matching needed for compares and commutative
@@ -73,10 +89,44 @@ static inline unsigned getComplexity(Value *V) {
   return isa<Constant>(V) ? (isa<UndefValue>(V) ? 0 : 1) : 2;
 }
 
+/// Predicate canonicalization reduces the number of patterns that need to be
+/// matched by other transforms. For example, we may swap the operands of a
+/// conditional branch or select to create a compare with a canonical (inverted)
+/// predicate which is then more likely to be matched with other values.
+static inline bool isCanonicalPredicate(CmpInst::Predicate Pred) {
+  switch (Pred) {
+  case CmpInst::ICMP_NE:
+  case CmpInst::ICMP_ULE:
+  case CmpInst::ICMP_SLE:
+  case CmpInst::ICMP_UGE:
+  case CmpInst::ICMP_SGE:
+  // TODO: There are 16 FCMP predicates. Should others be (not) canonical?
+  case CmpInst::FCMP_ONE:
+  case CmpInst::FCMP_OLE:
+  case CmpInst::FCMP_OGE:
+    return false;
+  default:
+    return true;
+  }
+}
+
+/// Return the source operand of a potentially bitcasted value while optionally
+/// checking if it has one use. If there is no bitcast or the one use check is
+/// not met, return the input value itself.
+static inline Value *peekThroughBitcast(Value *V, bool OneUseOnly = false) {
+  if (auto *BitCast = dyn_cast<BitCastInst>(V))
+    if (!OneUseOnly || BitCast->hasOneUse())
+      return BitCast->getOperand(0);
+
+  // V is not a bitcast or V has more than one use and OneUseOnly is true.
+  return V;
+}
+
 /// \brief Add one to a Constant
 static inline Constant *AddOne(Constant *C) {
   return ConstantExpr::getAdd(C, ConstantInt::get(C->getType(), 1));
 }
+
 /// \brief Subtract one from a Constant
 static inline Constant *SubOne(Constant *C) {
   return ConstantExpr::getSub(C, ConstantInt::get(C->getType(), 1));
@@ -86,7 +136,6 @@ static inline Constant *SubOne(Constant *C) {
 /// This happens in cases where the ~ can be eliminated.  If WillInvertAllUses
 /// is true, work under the assumption that the caller intends to remove all
 /// uses of V and only keep uses of ~V.
-///
 static inline bool IsFreeToInvert(Value *V, bool WillInvertAllUses) {
   // ~(~(X)) -> X.
   if (BinaryOperator::isNot(V))
@@ -97,11 +146,10 @@ static inline bool IsFreeToInvert(Value *V, bool WillInvertAllUses) {
     return true;
 
   // A vector of constant integers can be inverted easily.
-  Constant *CV;
-  if (V->getType()->isVectorTy() && match(V, PatternMatch::m_Constant(CV))) {
+  if (V->getType()->isVectorTy() && isa<Constant>(V)) {
     unsigned NumElts = V->getType()->getVectorNumElements();
     for (unsigned i = 0; i != NumElts; ++i) {
-      Constant *Elt = CV->getAggregateElement(i);
+      Constant *Elt = cast<Constant>(V)->getAggregateElement(i);
       if (!Elt)
         return false;
 
@@ -129,7 +177,6 @@ static inline bool IsFreeToInvert(Value *V, bool WillInvertAllUses) {
 
   return false;
 }
-
 
 /// \brief Specific patterns of overflow check idioms that we match.
 enum OverflowCheckFlavor {
@@ -178,12 +225,13 @@ public:
 
   /// \brief An IRBuilder that automatically inserts new instructions into the
   /// worklist.
-  typedef IRBuilder<TargetFolder, IRBuilderCallbackInserter> BuilderTy;
-  BuilderTy *Builder;
+  using BuilderTy = IRBuilder<TargetFolder, IRBuilderCallbackInserter>;
+  BuilderTy &Builder;
 
 private:
   // Mode in which we are running the combiner.
   const bool MinimizeSize;
+
   /// Enable combines that trigger rarely but are costly in compiletime.
   const bool ExpensiveCombines;
 
@@ -195,20 +243,23 @@ private:
   DominatorTree &DT;
   const DataLayout &DL;
   const SimplifyQuery SQ;
+  OptimizationRemarkEmitter &ORE;
+
   // Optional analyses. When non-null, these can both be used to do better
   // combining and will be updated to reflect any changes.
   LoopInfo *LI;
 
-  bool MadeIRChange;
+  bool MadeIRChange = false;
 
 public:
-  InstCombiner(InstCombineWorklist &Worklist, BuilderTy *Builder,
+  InstCombiner(InstCombineWorklist &Worklist, BuilderTy &Builder,
                bool MinimizeSize, bool ExpensiveCombines, AliasAnalysis *AA,
                AssumptionCache &AC, TargetLibraryInfo &TLI, DominatorTree &DT,
-               const DataLayout &DL, LoopInfo *LI)
+               OptimizationRemarkEmitter &ORE, const DataLayout &DL,
+               LoopInfo *LI)
       : Worklist(Worklist), Builder(Builder), MinimizeSize(MinimizeSize),
         ExpensiveCombines(ExpensiveCombines), AA(AA), AC(AC), TLI(TLI), DT(DT),
-        DL(DL), SQ(DL, &TLI, &DT, &AC), LI(LI), MadeIRChange(false) {}
+        DL(DL), SQ(DL, &TLI, &DT, &AC), ORE(ORE), LI(LI) {}
 
   /// \brief Run the combiner over the entire worklist until it is empty.
   ///
@@ -244,7 +295,7 @@ public:
   Instruction *visitURem(BinaryOperator &I);
   Instruction *visitSRem(BinaryOperator &I);
   Instruction *visitFRem(BinaryOperator &I);
-  bool SimplifyDivRemOfSelect(BinaryOperator &I);
+  bool simplifyDivRemOfSelectWithZeroOp(BinaryOperator &I);
   Instruction *commonRemTransforms(BinaryOperator &I);
   Instruction *commonIRemTransforms(BinaryOperator &I);
   Instruction *commonDivTransforms(BinaryOperator &I);
@@ -253,15 +304,7 @@ public:
   Instruction *visitSDiv(BinaryOperator &I);
   Instruction *visitFDiv(BinaryOperator &I);
   Value *simplifyRangeCheck(ICmpInst *Cmp0, ICmpInst *Cmp1, bool Inverted);
-  Value *FoldAndOfICmps(ICmpInst *LHS, ICmpInst *RHS);
-  Value *FoldAndOfFCmps(FCmpInst *LHS, FCmpInst *RHS);
   Instruction *visitAnd(BinaryOperator &I);
-  Value *FoldOrOfICmps(ICmpInst *LHS, ICmpInst *RHS, Instruction *CxtI);
-  Value *FoldOrOfFCmps(FCmpInst *LHS, FCmpInst *RHS);
-  Instruction *FoldOrWithConstants(BinaryOperator &I, Value *Op, Value *A,
-                                   Value *B, Value *C);
-  Instruction *FoldXorWithConstants(BinaryOperator &I, Value *Op, Value *A,
-                                    Value *B, Value *C);
   Instruction *visitOr(BinaryOperator &I);
   Instruction *visitXor(BinaryOperator &I);
   Instruction *visitShl(BinaryOperator &I);
@@ -388,15 +431,38 @@ private:
                                  bool DoTransform = true);
 
   Instruction *transformSExtICmp(ICmpInst *ICI, Instruction &CI);
-  bool WillNotOverflowSignedAdd(Value *LHS, Value *RHS, Instruction &CxtI);
-  bool WillNotOverflowSignedSub(Value *LHS, Value *RHS, Instruction &CxtI);
-  bool WillNotOverflowUnsignedSub(Value *LHS, Value *RHS, Instruction &CxtI);
-  bool WillNotOverflowSignedMul(Value *LHS, Value *RHS, Instruction &CxtI);
+
+  bool willNotOverflowSignedAdd(const Value *LHS, const Value *RHS,
+                                const Instruction &CxtI) const {
+    return computeOverflowForSignedAdd(LHS, RHS, &CxtI) ==
+           OverflowResult::NeverOverflows;
+  }
+
+  bool willNotOverflowUnsignedAdd(const Value *LHS, const Value *RHS,
+                                  const Instruction &CxtI) const {
+    return computeOverflowForUnsignedAdd(LHS, RHS, &CxtI) ==
+           OverflowResult::NeverOverflows;
+  }
+
+  bool willNotOverflowSignedSub(const Value *LHS, const Value *RHS,
+                                const Instruction &CxtI) const;
+  bool willNotOverflowUnsignedSub(const Value *LHS, const Value *RHS,
+                                  const Instruction &CxtI) const;
+  bool willNotOverflowSignedMul(const Value *LHS, const Value *RHS,
+                                const Instruction &CxtI) const;
+
+  bool willNotOverflowUnsignedMul(const Value *LHS, const Value *RHS,
+                                  const Instruction &CxtI) const {
+    return computeOverflowForUnsignedMul(LHS, RHS, &CxtI) ==
+           OverflowResult::NeverOverflows;
+  }
+
   Value *EmitGEPOffset(User *GEP);
   Instruction *scalarizePHI(ExtractElementInst &EI, PHINode *PN);
   Value *EvaluateInDifferentElementOrder(Value *V, ArrayRef<int> Mask);
   Instruction *foldCastedBitwiseLogic(BinaryOperator &I);
-  Instruction *shrinkBitwiseLogic(TruncInst &Trunc);
+  Instruction *narrowBinOp(TruncInst &Trunc);
+  Instruction *narrowRotate(TruncInst &Trunc);
   Instruction *optimizeBitCastFromPhi(CastInst &CI, PHINode *PN);
 
   /// Determine if a pair of casts can be replaced by a single cast.
@@ -412,6 +478,17 @@ private:
   Instruction::CastOps isEliminableCastPair(const CastInst *CI1,
                                             const CastInst *CI2);
 
+  Value *foldAndOfICmps(ICmpInst *LHS, ICmpInst *RHS, Instruction &CxtI);
+  Value *foldOrOfICmps(ICmpInst *LHS, ICmpInst *RHS, Instruction &CxtI);
+  Value *foldXorOfICmps(ICmpInst *LHS, ICmpInst *RHS);
+
+  /// Optimize (fcmp)&(fcmp) or (fcmp)|(fcmp).
+  /// NOTE: Unlike most of instcombine, this returns a Value which should
+  /// already be inserted into the function.
+  Value *foldLogicOfFCmps(FCmpInst *LHS, FCmpInst *RHS, bool IsAnd);
+
+  Value *foldAndOrOfICmpsOfAndWithPow2(ICmpInst *LHS, ICmpInst *RHS,
+                                       bool JoinedByAnd, Instruction &CxtI);
 public:
   /// \brief Inserts an instruction \p New before instruction \p Old
   ///
@@ -490,31 +567,48 @@ public:
     return nullptr; // Don't do anything with FI
   }
 
-  void computeKnownBits(Value *V, KnownBits &Known,
-                        unsigned Depth, Instruction *CxtI) const {
-    return llvm::computeKnownBits(V, Known, DL, Depth, &AC, CxtI, &DT);
+  void computeKnownBits(const Value *V, KnownBits &Known,
+                        unsigned Depth, const Instruction *CxtI) const {
+    llvm::computeKnownBits(V, Known, DL, Depth, &AC, CxtI, &DT);
   }
 
-  bool MaskedValueIsZero(Value *V, const APInt &Mask, unsigned Depth = 0,
-                         Instruction *CxtI = nullptr) const {
+  KnownBits computeKnownBits(const Value *V, unsigned Depth,
+                             const Instruction *CxtI) const {
+    return llvm::computeKnownBits(V, DL, Depth, &AC, CxtI, &DT);
+  }
+
+  bool isKnownToBeAPowerOfTwo(const Value *V, bool OrZero = false,
+                              unsigned Depth = 0,
+                              const Instruction *CxtI = nullptr) {
+    return llvm::isKnownToBeAPowerOfTwo(V, DL, OrZero, Depth, &AC, CxtI, &DT);
+  }
+
+  bool MaskedValueIsZero(const Value *V, const APInt &Mask, unsigned Depth = 0,
+                         const Instruction *CxtI = nullptr) const {
     return llvm::MaskedValueIsZero(V, Mask, DL, Depth, &AC, CxtI, &DT);
   }
-  unsigned ComputeNumSignBits(Value *Op, unsigned Depth = 0,
-                              Instruction *CxtI = nullptr) const {
+
+  unsigned ComputeNumSignBits(const Value *Op, unsigned Depth = 0,
+                              const Instruction *CxtI = nullptr) const {
     return llvm::ComputeNumSignBits(Op, DL, Depth, &AC, CxtI, &DT);
   }
-  void ComputeSignBit(Value *V, bool &KnownZero, bool &KnownOne,
-                      unsigned Depth = 0, Instruction *CxtI = nullptr) const {
-    return llvm::ComputeSignBit(V, KnownZero, KnownOne, DL, Depth, &AC, CxtI,
-                                &DT);
-  }
-  OverflowResult computeOverflowForUnsignedMul(Value *LHS, Value *RHS,
-                                               const Instruction *CxtI) {
+
+  OverflowResult computeOverflowForUnsignedMul(const Value *LHS,
+                                               const Value *RHS,
+                                               const Instruction *CxtI) const {
     return llvm::computeOverflowForUnsignedMul(LHS, RHS, DL, &AC, CxtI, &DT);
   }
-  OverflowResult computeOverflowForUnsignedAdd(Value *LHS, Value *RHS,
-                                               const Instruction *CxtI) {
+
+  OverflowResult computeOverflowForUnsignedAdd(const Value *LHS,
+                                               const Value *RHS,
+                                               const Instruction *CxtI) const {
     return llvm::computeOverflowForUnsignedAdd(LHS, RHS, DL, &AC, CxtI, &DT);
+  }
+
+  OverflowResult computeOverflowForSignedAdd(const Value *LHS,
+                                             const Value *RHS,
+                                             const Instruction *CxtI) const {
+    return llvm::computeOverflowForSignedAdd(LHS, RHS, DL, &AC, CxtI, &DT);
   }
 
   /// Maximum size of array considered when transforming.
@@ -534,11 +628,24 @@ private:
   /// value, or null if it didn't simplify.
   Value *SimplifyUsingDistributiveLaws(BinaryOperator &I);
 
+  // Binary Op helper for select operations where the expression can be
+  // efficiently reorganized.
+  Value *SimplifySelectsFeedingBinaryOp(BinaryOperator &I, Value *LHS,
+                                        Value *RHS);
+
   /// This tries to simplify binary operations by factorizing out common terms
   /// (e. g. "(A*B)+(A*C)" -> "A*(B+C)").
-  Value *tryFactorization(InstCombiner::BuilderTy *, BinaryOperator &,
-                          Instruction::BinaryOps, Value *, Value *, Value *,
-                          Value *);
+  Value *tryFactorization(BinaryOperator &, Instruction::BinaryOps, Value *,
+                          Value *, Value *, Value *);
+
+  /// Match a select chain which produces one of three values based on whether
+  /// the LHS is less than, equal to, or greater than RHS respectively.
+  /// Return true if we matched a three way compare idiom. The LHS, RHS, Less,
+  /// Equal and Greater values are saved in the matching process and returned to
+  /// the caller.
+  bool matchThreeWayIntCompare(SelectInst *SI, Value *&LHS, Value *&RHS,
+                               ConstantInt *&Less, ConstantInt *&Equal,
+                               ConstantInt *&Greater);
 
   /// \brief Attempts to replace V with a simpler value based on the demanded
   /// bits.
@@ -547,6 +654,7 @@ private:
   bool SimplifyDemandedBits(Instruction *I, unsigned Op,
                             const APInt &DemandedMask, KnownBits &Known,
                             unsigned Depth = 0);
+
   /// Helper routine of SimplifyDemandedUseBits. It computes KnownZero/KnownOne
   /// bits. It also tries to handle simplifications that can be done based on
   /// DemandedMask, but without modifying the Instruction.
@@ -554,6 +662,7 @@ private:
                                          const APInt &DemandedMask,
                                          KnownBits &Known,
                                          unsigned Depth, Instruction *CxtI);
+
   /// Helper routine of SimplifyDemandedUseBits. It tries to simplify demanded
   /// bit for "r1 = shr x, c1; r2 = shl r1, c2" instruction sequence.
   Value *simplifyShrShlDemandedBits(
@@ -568,7 +677,6 @@ private:
                                     APInt &UndefElts, unsigned Depth = 0);
 
   Value *SimplifyVectorOp(BinaryOperator &Inst);
-  Value *SimplifyBSwap(BinaryOperator &Inst);
 
 
   /// Given a binary operator, cast instruction, or select which has a PHI node
@@ -585,6 +693,8 @@ private:
   /// This is a convenience wrapper function for the above two functions.
   Instruction *foldOpWithConstantIntoOperand(BinaryOperator &I);
 
+  Instruction *foldAddWithConstant(BinaryOperator &Add);
+
   /// \brief Try to rotate an operation below a PHI node, using PHI nodes for
   /// its operands.
   Instruction *FoldPHIArgOpIntoPHI(PHINode &PN);
@@ -593,9 +703,14 @@ private:
   Instruction *FoldPHIArgLoadIntoPHI(PHINode &PN);
   Instruction *FoldPHIArgZextsIntoPHI(PHINode &PN);
 
-  /// Helper function for FoldPHIArgXIntoPHI() to get debug location for the
+  /// If an integer typed PHI has only one use which is an IntToPtr operation,
+  /// replace the PHI with an existing pointer typed PHI if it exists. Otherwise
+  /// insert a new pointer typed PHI and replace the original one.
+  Instruction *FoldIntegerTypedPHI(PHINode &PN);
+
+  /// Helper function for FoldPHIArgXIntoPHI() to set debug location for the
   /// folded operation.
-  DebugLoc PHIArgMergedDebugLoc(PHINode &PN);
+  void PHIArgMergedDebugLoc(Instruction *Inst, PHINode &PN);
 
   Instruction *foldGEPICmp(GEPOperator *GEPLHS, Value *RHS,
                            ICmpInst::Predicate Cond, Instruction &I);
@@ -606,7 +721,7 @@ private:
                                             ConstantInt *AndCst = nullptr);
   Instruction *foldFCmpIntToFPConst(FCmpInst &I, Instruction *LHSI,
                                     Constant *RHSC);
-  Instruction *foldICmpAddOpConst(Instruction &ICI, Value *X, ConstantInt *CI,
+  Instruction *foldICmpAddOpConst(Value *X, ConstantInt *CI,
                                   ICmpInst::Predicate Pred);
   Instruction *foldICmpWithCastAndCast(ICmpInst &ICI);
 
@@ -616,33 +731,36 @@ private:
   Instruction *foldICmpInstWithConstantNotInt(ICmpInst &Cmp);
   Instruction *foldICmpBinOp(ICmpInst &Cmp);
   Instruction *foldICmpEquality(ICmpInst &Cmp);
+  Instruction *foldICmpWithZero(ICmpInst &Cmp);
 
-  Instruction *foldICmpTruncConstant(ICmpInst &Cmp, Instruction *Trunc,
-                                     const APInt *C);
+  Instruction *foldICmpSelectConstant(ICmpInst &Cmp, SelectInst *Select,
+                                      ConstantInt *C);
+  Instruction *foldICmpTruncConstant(ICmpInst &Cmp, TruncInst *Trunc,
+                                     const APInt &C);
   Instruction *foldICmpAndConstant(ICmpInst &Cmp, BinaryOperator *And,
-                                   const APInt *C);
+                                   const APInt &C);
   Instruction *foldICmpXorConstant(ICmpInst &Cmp, BinaryOperator *Xor,
-                                   const APInt *C);
+                                   const APInt &C);
   Instruction *foldICmpOrConstant(ICmpInst &Cmp, BinaryOperator *Or,
-                                  const APInt *C);
+                                  const APInt &C);
   Instruction *foldICmpMulConstant(ICmpInst &Cmp, BinaryOperator *Mul,
-                                   const APInt *C);
+                                   const APInt &C);
   Instruction *foldICmpShlConstant(ICmpInst &Cmp, BinaryOperator *Shl,
-                                   const APInt *C);
+                                   const APInt &C);
   Instruction *foldICmpShrConstant(ICmpInst &Cmp, BinaryOperator *Shr,
-                                   const APInt *C);
+                                   const APInt &C);
   Instruction *foldICmpUDivConstant(ICmpInst &Cmp, BinaryOperator *UDiv,
-                                    const APInt *C);
+                                    const APInt &C);
   Instruction *foldICmpDivConstant(ICmpInst &Cmp, BinaryOperator *Div,
-                                   const APInt *C);
+                                   const APInt &C);
   Instruction *foldICmpSubConstant(ICmpInst &Cmp, BinaryOperator *Sub,
-                                   const APInt *C);
+                                   const APInt &C);
   Instruction *foldICmpAddConstant(ICmpInst &Cmp, BinaryOperator *Add,
-                                   const APInt *C);
+                                   const APInt &C);
   Instruction *foldICmpAndConstConst(ICmpInst &Cmp, BinaryOperator *And,
-                                     const APInt *C1);
+                                     const APInt &C1);
   Instruction *foldICmpAndShift(ICmpInst &Cmp, BinaryOperator *And,
-                                const APInt *C1, const APInt *C2);
+                                const APInt &C1, const APInt &C2);
   Instruction *foldICmpShrConstConst(ICmpInst &I, Value *ShAmt, const APInt &C1,
                                      const APInt &C2);
   Instruction *foldICmpShlConstConst(ICmpInst &I, Value *ShAmt, const APInt &C1,
@@ -650,8 +768,8 @@ private:
 
   Instruction *foldICmpBinOpEqualityWithConstant(ICmpInst &Cmp,
                                                  BinaryOperator *BO,
-                                                 const APInt *C);
-  Instruction *foldICmpIntrinsicWithConstant(ICmpInst &ICI, const APInt *C);
+                                                 const APInt &C);
+  Instruction *foldICmpIntrinsicWithConstant(ICmpInst &ICI, const APInt &C);
 
   // Helpers of visitSelectInst().
   Instruction *foldSelectExtConst(SelectInst &Sel);
@@ -671,7 +789,7 @@ private:
   Instruction *MatchBSwap(BinaryOperator &I);
   bool SimplifyStoreAtEndOfBlock(StoreInst &SI);
 
-  Instruction *SimplifyElementAtomicMemCpy(ElementAtomicMemCpyInst *AMI);
+  Instruction *SimplifyElementUnorderedAtomicMemCpy(AtomicMemCpyInst *AMI);
   Instruction *SimplifyMemTransfer(MemIntrinsic *MI);
   Instruction *SimplifyMemSet(MemSetInst *MI);
 
@@ -683,8 +801,8 @@ private:
   Value *Descale(Value *Val, APInt Scale, bool &NoSignedWrap);
 };
 
-} // end namespace llvm.
+} // end namespace llvm
 
 #undef DEBUG_TYPE
 
-#endif
+#endif // LLVM_LIB_TRANSFORMS_INSTCOMBINE_INSTCOMBINEINTERNAL_H

@@ -18,10 +18,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ProfileData/SampleProfWriter.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ProfileData/ProfileCommon.h"
 #include "llvm/ProfileData/SampleProf.h"
-#include "llvm/ProfileData/SampleProfWriter.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/LEB128.h"
@@ -29,12 +29,39 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 using namespace llvm;
 using namespace sampleprof;
+
+std::error_code
+SampleProfileWriter::write(const StringMap<FunctionSamples> &ProfileMap) {
+  if (std::error_code EC = writeHeader(ProfileMap))
+    return EC;
+
+  // Sort the ProfileMap by total samples.
+  typedef std::pair<StringRef, const FunctionSamples *> NameFunctionSamples;
+  std::vector<NameFunctionSamples> V;
+  for (const auto &I : ProfileMap)
+    V.push_back(std::make_pair(I.getKey(), &I.second));
+
+  std::stable_sort(
+      V.begin(), V.end(),
+      [](const NameFunctionSamples &A, const NameFunctionSamples &B) {
+        if (A.second->getTotalSamples() == B.second->getTotalSamples())
+          return A.first > B.first;
+        return A.second->getTotalSamples() > B.second->getTotalSamples();
+      });
+
+  for (const auto &I : V) {
+    if (std::error_code EC = write(*I.second))
+      return EC;
+  }
+  return sampleprof_error::success;
+}
 
 /// \brief Write samples to a text file.
 ///
@@ -97,8 +124,7 @@ std::error_code SampleProfileWriterBinary::writeNameIdx(StringRef FName) {
 }
 
 void SampleProfileWriterBinary::addName(StringRef FName) {
-  auto NextIdx = NameTable.size();
-  NameTable.insert(std::make_pair(FName, NextIdx));
+  NameTable.insert(std::make_pair(FName, 0));
 }
 
 void SampleProfileWriterBinary::addNames(const FunctionSamples &S) {
@@ -136,10 +162,18 @@ std::error_code SampleProfileWriterBinary::writeHeader(
     addNames(I.second);
   }
 
+  // Sort the names to make NameTable is deterministic.
+  std::set<StringRef> V;
+  for (const auto &I : NameTable)
+    V.insert(I.first);
+  int i = 0;
+  for (const StringRef &N : V)
+    NameTable[N] = i++;
+
   // Write out the name table.
   encodeULEB128(NameTable.size(), OS);
-  for (auto N : NameTable) {
-    OS << N.first;
+  for (auto N : V) {
+    OS << N;
     encodeULEB128(0, OS);
   }
   return sampleprof_error::success;
@@ -188,7 +222,10 @@ std::error_code SampleProfileWriterBinary::writeBody(const FunctionSamples &S) {
   }
 
   // Recursively emit all the callsite samples.
-  encodeULEB128(S.getCallsiteSamples().size(), OS);
+  uint64_t NumCallsites = 0;
+  for (const auto &J : S.getCallsiteSamples())
+    NumCallsites += J.second.size();
+  encodeULEB128(NumCallsites, OS);
   for (const auto &J : S.getCallsiteSamples())
     for (const auto &FS : J.second) {
       LineLocation Loc = J.first;
@@ -214,8 +251,6 @@ std::error_code SampleProfileWriterBinary::write(const FunctionSamples &S) {
 ///
 /// \param Filename The file to create.
 ///
-/// \param Writer The writer to instantiate according to the specified format.
-///
 /// \param Format Encoding format for the profile file.
 ///
 /// \returns an error code indicating the status of the created writer.
@@ -236,8 +271,6 @@ SampleProfileWriter::create(StringRef Filename, SampleProfileFormat Format) {
 /// \brief Create a sample profile stream writer based on the specified format.
 ///
 /// \param OS The output stream to store the profile data to.
-///
-/// \param Writer The writer to instantiate according to the specified format.
 ///
 /// \param Format Encoding format for the profile file.
 ///

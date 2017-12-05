@@ -111,7 +111,7 @@ void ilist_traits<MachineInstr>::removeNodeFromList(MachineInstr *N) {
   assert(N->getParent() && "machine instruction not in a basic block");
 
   // Remove from the use/def lists.
-  if (MachineFunction *MF = N->getParent()->getParent())
+  if (MachineFunction *MF = N->getMF())
     N->RemoveRegOperandsFromUseLists(MF->getRegInfo());
 
   N->setParent(nullptr);
@@ -227,6 +227,12 @@ LLVM_DUMP_METHOD void MachineBasicBlock::dump() const {
   print(dbgs());
 }
 #endif
+
+bool MachineBasicBlock::isLegalToHoistInto() const {
+  if (isReturnBlock() || hasEHPadSuccessor())
+    return false;
+  return true;
+}
 
 StringRef MachineBasicBlock::getName() const {
   if (const BasicBlock *LBB = getBasicBlock())
@@ -348,6 +354,13 @@ void MachineBasicBlock::removeLiveIn(MCPhysReg Reg, LaneBitmask LaneMask) {
   I->LaneMask &= ~LaneMask;
   if (I->LaneMask.none())
     LiveIns.erase(I);
+}
+
+MachineBasicBlock::livein_iterator
+MachineBasicBlock::removeLiveIn(MachineBasicBlock::livein_iterator I) {
+  // Get non-const version of iterator.
+  LiveInVector::iterator LI = LiveIns.begin() + (I - LiveIns.begin());
+  return LiveIns.erase(LI);
 }
 
 bool MachineBasicBlock::isLiveIn(MCPhysReg Reg, LaneBitmask LaneMask) const {

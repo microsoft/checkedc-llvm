@@ -1,4 +1,4 @@
-//===---- OrcRemoteTargetServer.h - Orc Remote-target Server ----*- C++ -*-===//
+//===- OrcRemoteTargetServer.h - Orc Remote-target Server -------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -15,10 +15,9 @@
 #ifndef LLVM_EXECUTIONENGINE_ORC_ORCREMOTETARGETSERVER_H
 #define LLVM_EXECUTIONENGINE_ORC_ORCREMOTETARGETSERVER_H
 
-#include "OrcRemoteTargetRPCAPI.h"
 #include "llvm/ExecutionEngine/JITSymbol.h"
 #include "llvm/ExecutionEngine/Orc/OrcError.h"
-#include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
+#include "llvm/ExecutionEngine/Orc/OrcRemoteTargetRPCAPI.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Format.h"
@@ -46,47 +45,50 @@ namespace orc {
 namespace remote {
 
 template <typename ChannelT, typename TargetT>
-class OrcRemoteTargetServer : public OrcRemoteTargetRPCAPI {
+class OrcRemoteTargetServer
+    : public rpc::SingleThreadedRPCEndpoint<rpc::RawByteChannel> {
 public:
-  typedef std::function<JITTargetAddress(const std::string &Name)>
-      SymbolLookupFtor;
+  using SymbolLookupFtor =
+      std::function<JITTargetAddress(const std::string &Name)>;
 
-  typedef std::function<void(uint8_t *Addr, uint32_t Size)>
-      EHFrameRegistrationFtor;
+  using EHFrameRegistrationFtor =
+      std::function<void(uint8_t *Addr, uint32_t Size)>;
 
   OrcRemoteTargetServer(ChannelT &Channel, SymbolLookupFtor SymbolLookup,
                         EHFrameRegistrationFtor EHFramesRegister,
                         EHFrameRegistrationFtor EHFramesDeregister)
-      : OrcRemoteTargetRPCAPI(Channel), SymbolLookup(std::move(SymbolLookup)),
+      : rpc::SingleThreadedRPCEndpoint<rpc::RawByteChannel>(Channel, true),
+        SymbolLookup(std::move(SymbolLookup)),
         EHFramesRegister(std::move(EHFramesRegister)),
-        EHFramesDeregister(std::move(EHFramesDeregister)),
-        TerminateFlag(false) {
-
+        EHFramesDeregister(std::move(EHFramesDeregister)) {
     using ThisT = typename std::remove_reference<decltype(*this)>::type;
-    addHandler<CallIntVoid>(*this, &ThisT::handleCallIntVoid);
-    addHandler<CallMain>(*this, &ThisT::handleCallMain);
-    addHandler<CallVoidVoid>(*this, &ThisT::handleCallVoidVoid);
-    addHandler<CreateRemoteAllocator>(*this,
-                                      &ThisT::handleCreateRemoteAllocator);
-    addHandler<CreateIndirectStubsOwner>(
+    addHandler<exec::CallIntVoid>(*this, &ThisT::handleCallIntVoid);
+    addHandler<exec::CallMain>(*this, &ThisT::handleCallMain);
+    addHandler<exec::CallVoidVoid>(*this, &ThisT::handleCallVoidVoid);
+    addHandler<mem::CreateRemoteAllocator>(*this,
+                                           &ThisT::handleCreateRemoteAllocator);
+    addHandler<mem::DestroyRemoteAllocator>(
+        *this, &ThisT::handleDestroyRemoteAllocator);
+    addHandler<mem::ReadMem>(*this, &ThisT::handleReadMem);
+    addHandler<mem::ReserveMem>(*this, &ThisT::handleReserveMem);
+    addHandler<mem::SetProtections>(*this, &ThisT::handleSetProtections);
+    addHandler<mem::WriteMem>(*this, &ThisT::handleWriteMem);
+    addHandler<mem::WritePtr>(*this, &ThisT::handleWritePtr);
+    addHandler<eh::RegisterEHFrames>(*this, &ThisT::handleRegisterEHFrames);
+    addHandler<eh::DeregisterEHFrames>(*this, &ThisT::handleDeregisterEHFrames);
+    addHandler<stubs::CreateIndirectStubsOwner>(
         *this, &ThisT::handleCreateIndirectStubsOwner);
-    addHandler<DeregisterEHFrames>(*this, &ThisT::handleDeregisterEHFrames);
-    addHandler<DestroyRemoteAllocator>(*this,
-                                       &ThisT::handleDestroyRemoteAllocator);
-    addHandler<DestroyIndirectStubsOwner>(
+    addHandler<stubs::DestroyIndirectStubsOwner>(
         *this, &ThisT::handleDestroyIndirectStubsOwner);
-    addHandler<EmitIndirectStubs>(*this, &ThisT::handleEmitIndirectStubs);
-    addHandler<EmitResolverBlock>(*this, &ThisT::handleEmitResolverBlock);
-    addHandler<EmitTrampolineBlock>(*this, &ThisT::handleEmitTrampolineBlock);
-    addHandler<GetSymbolAddress>(*this, &ThisT::handleGetSymbolAddress);
-    addHandler<GetRemoteInfo>(*this, &ThisT::handleGetRemoteInfo);
-    addHandler<ReadMem>(*this, &ThisT::handleReadMem);
-    addHandler<RegisterEHFrames>(*this, &ThisT::handleRegisterEHFrames);
-    addHandler<ReserveMem>(*this, &ThisT::handleReserveMem);
-    addHandler<SetProtections>(*this, &ThisT::handleSetProtections);
-    addHandler<TerminateSession>(*this, &ThisT::handleTerminateSession);
-    addHandler<WriteMem>(*this, &ThisT::handleWriteMem);
-    addHandler<WritePtr>(*this, &ThisT::handleWritePtr);
+    addHandler<stubs::EmitIndirectStubs>(*this,
+                                         &ThisT::handleEmitIndirectStubs);
+    addHandler<stubs::EmitResolverBlock>(*this,
+                                         &ThisT::handleEmitResolverBlock);
+    addHandler<stubs::EmitTrampolineBlock>(*this,
+                                           &ThisT::handleEmitTrampolineBlock);
+    addHandler<utils::GetSymbolAddress>(*this, &ThisT::handleGetSymbolAddress);
+    addHandler<utils::GetRemoteInfo>(*this, &ThisT::handleGetRemoteInfo);
+    addHandler<utils::TerminateSession>(*this, &ThisT::handleTerminateSession);
   }
 
   // FIXME: Remove move/copy ops once MSVC supports synthesizing move ops.
@@ -97,7 +99,7 @@ public:
   OrcRemoteTargetServer &operator=(OrcRemoteTargetServer &&) = delete;
 
   Expected<JITTargetAddress> requestCompile(JITTargetAddress TrampolineAddr) {
-    return callB<RequestCompile>(TrampolineAddr);
+    return callB<utils::RequestCompile>(TrampolineAddr);
   }
 
   bool receivedTerminate() const { return TerminateFlag; }
@@ -106,6 +108,7 @@ private:
   struct Allocator {
     Allocator() = default;
     Allocator(Allocator &&Other) : Allocs(std::move(Other.Allocs)) {}
+
     Allocator &operator=(Allocator &&Other) {
       Allocs = std::move(Other.Allocs);
       return *this;
@@ -153,7 +156,8 @@ private:
   }
 
   Expected<int32_t> handleCallIntVoid(JITTargetAddress Addr) {
-    typedef int (*IntVoidFnTy)();
+    using IntVoidFnTy = int (*)();
+
     IntVoidFnTy Fn =
         reinterpret_cast<IntVoidFnTy>(static_cast<uintptr_t>(Addr));
 
@@ -166,7 +170,7 @@ private:
 
   Expected<int32_t> handleCallMain(JITTargetAddress Addr,
                                    std::vector<std::string> Args) {
-    typedef int (*MainFnTy)(int, const char *[]);
+    using MainFnTy = int (*)(int, const char *[]);
 
     MainFnTy Fn = reinterpret_cast<MainFnTy>(static_cast<uintptr_t>(Addr));
     int ArgC = Args.size() + 1;
@@ -175,6 +179,12 @@ private:
     ArgV[0] = "<jit process>";
     for (auto &Arg : Args)
       ArgV[Idx++] = Arg.c_str();
+    ArgV[ArgC] = 0;
+    DEBUG(
+      for (int Idx = 0; Idx < ArgC; ++Idx) {
+        llvm::dbgs() << "Arg " << Idx << ": " << ArgV[Idx] << "\n";
+      }
+    );
 
     DEBUG(dbgs() << "  Calling " << format("0x%016x", Addr) << "\n");
     int Result = Fn(ArgC, ArgV.get());
@@ -184,7 +194,8 @@ private:
   }
 
   Error handleCallVoidVoid(JITTargetAddress Addr) {
-    typedef void (*VoidVoidFnTy)();
+    using VoidVoidFnTy = void (*)();
+
     VoidVoidFnTy Fn =
         reinterpret_cast<VoidVoidFnTy>(static_cast<uintptr_t>(Addr));
 
@@ -420,11 +431,11 @@ private:
   SymbolLookupFtor SymbolLookup;
   EHFrameRegistrationFtor EHFramesRegister, EHFramesDeregister;
   std::map<ResourceIdMgr::ResourceId, Allocator> Allocators;
-  typedef std::vector<typename TargetT::IndirectStubsInfo> ISBlockOwnerList;
+  using ISBlockOwnerList = std::vector<typename TargetT::IndirectStubsInfo>;
   std::map<ResourceIdMgr::ResourceId, ISBlockOwnerList> IndirectStubsOwners;
   sys::OwningMemoryBlock ResolverBlock;
   std::vector<sys::OwningMemoryBlock> TrampolineBlocks;
-  bool TerminateFlag;
+  bool TerminateFlag = false;
 };
 
 } // end namespace remote
@@ -433,4 +444,4 @@ private:
 
 #undef DEBUG_TYPE
 
-#endif
+#endif // LLVM_EXECUTIONENGINE_ORC_ORCREMOTETARGETSERVER_H

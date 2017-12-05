@@ -1,4 +1,4 @@
-; RUN: llc -stack-symbol-ordering=0 -mcpu=nehalem -debug-only=stackmaps < %s | FileCheck %s
+; RUN: llc -verify-machineinstrs -stack-symbol-ordering=0 -mcpu=nehalem -debug-only=stackmaps < %s | FileCheck %s
 ; REQUIRES: asserts
 
 target triple = "x86_64-pc-linux-gnu"
@@ -49,8 +49,8 @@ entry:
 ; CHECK: subq	$40, %rsp
 ; CHECK: testb	$1, %dil
 ; CHECK: movaps	(%rsi), %xmm0
-; CHECK: movaps	%xmm0, 16(%rsp)
-; CHECK: movaps	%xmm0, (%rsp)
+; CHECK-DAG: movaps	%xmm0, (%rsp)
+; CHECK-DAG: movaps	%xmm0, 16(%rsp)
 ; CHECK: callq	do_safepoint
 ; CHECK: movaps	(%rsp), %xmm0
 ; CHECK: addq	$40, %rsp

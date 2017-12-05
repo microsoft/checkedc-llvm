@@ -115,8 +115,8 @@ void WebAssemblyTargetAsmStreamer::emitStackPointer(uint32_t Index) {
 void WebAssemblyTargetAsmStreamer::emitEndFunc() { OS << "\t.endfunc\n"; }
 
 void WebAssemblyTargetAsmStreamer::emitIndirectFunctionType(
-    StringRef name, SmallVectorImpl<MVT> &Params, SmallVectorImpl<MVT> &Results) {
-  OS << "\t.functype\t" << name;
+    MCSymbol *Symbol, SmallVectorImpl<MVT> &Params, SmallVectorImpl<MVT> &Results) {
+  OS << "\t.functype\t" << Symbol->getName();
   if (Results.empty())
     OS << ", void";
   else {
@@ -171,7 +171,7 @@ void WebAssemblyTargetELFStreamer::emitIndIdx(const MCExpr *Value) {
 }
 
 void WebAssemblyTargetELFStreamer::emitIndirectFunctionType(
-    StringRef name, SmallVectorImpl<MVT> &Params, SmallVectorImpl<MVT> &Results) {
+    MCSymbol *Symbol, SmallVectorImpl<MVT> &Params, SmallVectorImpl<MVT> &Results) {
   // Nothing to emit here. TODO: Re-design how linking works and re-evaluate
   // whether it's necessary for .o files to declare indirect function types.
 }
@@ -219,8 +219,8 @@ void WebAssemblyTargetWasmStreamer::emitGlobal(
   // section. This will later be decoded and turned into contents for the
   // Globals Section.
   Streamer.PushSection();
-  Streamer.SwitchSection(Streamer.getContext()
-                                 .getWasmSection(".global_variables", 0, 0));
+  Streamer.SwitchSection(Streamer.getContext().getWasmSection(
+      ".global_variables", SectionKind::getMetadata()));
   for (const wasm::Global &G : Globals) {
     Streamer.EmitIntValue(int32_t(G.Type), 1);
     Streamer.EmitIntValue(G.Mutable, 1);
@@ -240,8 +240,8 @@ void WebAssemblyTargetWasmStreamer::emitGlobal(
 
 void WebAssemblyTargetWasmStreamer::emitStackPointer(uint32_t Index) {
   Streamer.PushSection();
-  Streamer.SwitchSection(Streamer.getContext()
-                                 .getWasmSection(".stack_pointer", 0, 0));
+  Streamer.SwitchSection(Streamer.getContext().getWasmSection(
+      ".stack_pointer", SectionKind::getMetadata()));
   Streamer.EmitIntValue(Index, 4);
   Streamer.PopSection();
 }
@@ -255,9 +255,25 @@ void WebAssemblyTargetWasmStreamer::emitIndIdx(const MCExpr *Value) {
 }
 
 void WebAssemblyTargetWasmStreamer::emitIndirectFunctionType(
-    StringRef name, SmallVectorImpl<MVT> &Params, SmallVectorImpl<MVT> &Results) {
-  // Nothing to emit here. TODO: Re-design how linking works and re-evaluate
-  // whether it's necessary for .o files to declare indirect function types.
+    MCSymbol *Symbol, SmallVectorImpl<MVT> &Params,
+    SmallVectorImpl<MVT> &Results) {
+  MCSymbolWasm *WasmSym = cast<MCSymbolWasm>(Symbol);
+  if (WasmSym->isFunction()) {
+    // Symbol already has its arguments and result set.
+    return;
+  }
+
+  SmallVector<wasm::ValType, 4> ValParams;
+  for (MVT Ty : Params)
+    ValParams.push_back(WebAssembly::toValType(Ty));
+
+  SmallVector<wasm::ValType, 1> ValResults;
+  for (MVT Ty : Results)
+    ValResults.push_back(WebAssembly::toValType(Ty));
+
+  WasmSym->setParams(std::move(ValParams));
+  WasmSym->setReturns(std::move(ValResults));
+  WasmSym->setIsFunction(true);
 }
 
 void WebAssemblyTargetWasmStreamer::emitGlobalImport(StringRef name) {

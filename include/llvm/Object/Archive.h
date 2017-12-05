@@ -14,9 +14,9 @@
 #ifndef LLVM_OBJECT_ARCHIVE_H
 #define LLVM_OBJECT_ARCHIVE_H
 
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Support/Chrono.h"
 #include "llvm/Support/Error.h"
@@ -229,7 +229,7 @@ public:
 
   enum Kind {
     K_GNU,
-    K_MIPS64,
+    K_GNU64,
     K_BSD,
     K_DARWIN,
     K_DARWIN64,
@@ -253,7 +253,7 @@ public:
   }
 
   // Cast methods.
-  static inline bool classof(Binary const *v) {
+  static bool classof(Binary const *v) {
     return v->isArchive();
   }
 
