@@ -40,6 +40,15 @@ IF EXIST %D% GOTO FOUND_V140
 
 :TRY_V150
 
+REM The install directory for msbuild is now under Visual Studio.
+if EXIST "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+  for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -version 15 -property installationPath`) do (
+    set INSTALLDIR=%%i
+  )
+  SET D="%INSTALLDIR%\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
+  if EXIST %D% GOTO FOUND_V150
+)
+
 GOTO PLATFORMLOOPHEAD
 
 :PLATFORMLOOPEND
@@ -110,6 +119,21 @@ IF NOT %ERRORLEVEL% == 0 GOTO FAILED
 set SUCCESS=1
 GOTO TRY_V150
 
+:FOUND_V150
+REM Routine for installing v140 toolchain.
+IF NOT EXIST %D%\LLVM-vs2017 mkdir %D%\LLVM-vs2017
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+copy %PLATFORM%\toolset-vs2017.props %D%\LLVM-vs2017\toolset.props
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+copy %PLATFORM%\toolset-vs2017.targets %D%\LLVM-vs2017\toolset.targets
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+IF NOT EXIST %D%\LLVM-vs2017_xp mkdir %D%\LLVM-vs2017_xp
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+copy %PLATFORM%\toolset-vs2017_xp.props %D%\LLVM-vs2017_xp\toolset.props
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+copy %PLATFORM%\toolset-vs2017_xp.targets %D%\LLVM-vs2017_xp\toolset.targets
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+set SUCCESS=1
 
 :DONE
 echo Done!
