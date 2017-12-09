@@ -1,4 +1,4 @@
-@echo off
+echo off
 
 echo Installing MSVC integration...
 set SUCCESS=0
@@ -39,6 +39,15 @@ SET D="%ProgramFiles(x86)%\MSBuild\Microsoft.Cpp\v4.0\V140\Platforms\%PLATFORM%\
 IF EXIST %D% GOTO FOUND_V140
 
 :TRY_V150
+
+REM MSBuild is now under the Visual Studio installation.  VSWhere is a new executable placed in a known
+REM location that can be used to find the VS installation, starting with VS 2017 SP1
+IF EXIST "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -version 15 -property installationPath`) DO (
+    SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
+  )
+)
+if EXIST %D% GOTO FOUND_V150
 
 GOTO PLATFORMLOOPHEAD
 
@@ -110,6 +119,21 @@ IF NOT %ERRORLEVEL% == 0 GOTO FAILED
 set SUCCESS=1
 GOTO TRY_V150
 
+:FOUND_V150
+REM Routine for installing v140 toolchain.
+IF NOT EXIST %D%\LLVM-vs2017 mkdir %D%\LLVM-vs2017
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+copy %PLATFORM%\toolset-vs2017.props %D%\LLVM-vs2017\toolset.props
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+copy %PLATFORM%\toolset-vs2017.targets %D%\LLVM-vs2017\toolset.targets
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+IF NOT EXIST %D%\LLVM-vs2017_xp mkdir %D%\LLVM-vs2017_xp
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+copy %PLATFORM%\toolset-vs2017_xp.props %D%\LLVM-vs2017_xp\toolset.props
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+copy %PLATFORM%\toolset-vs2017_xp.targets %D%\LLVM-vs2017_xp\toolset.targets
+IF NOT %ERRORLEVEL% == 0 GOTO FAILED
+set SUCCESS=1
 
 :DONE
 echo Done!
@@ -117,7 +141,6 @@ goto END
 
 :FAILED
 echo MSVC integration install failed.
-pause
 goto END
 
 :END
