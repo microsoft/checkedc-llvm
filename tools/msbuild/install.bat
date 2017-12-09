@@ -1,4 +1,4 @@
-@echo off
+echo off
 
 echo Installing MSVC integration...
 set SUCCESS=0
@@ -40,14 +40,14 @@ IF EXIST %D% GOTO FOUND_V140
 
 :TRY_V150
 
-REM The install directory for msbuild is now under Visual Studio.
-if EXIST "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
-  for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -version 15 -property installationPath`) do (
-    set INSTALLDIR=%%i
+REM MSBuild is now under the Visual Studio installation.  VSWhere is a new executable placed in a known
+REM location that can be used to find the VS installation, starting with VS 2017 SP1
+IF EXIST "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -version 15 -property installationPath`) DO (
+    SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
   )
-  SET D="%INSTALLDIR%\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
-  if EXIST %D% GOTO FOUND_V150
 )
+if EXIST %D% GOTO FOUND_V150
 
 GOTO PLATFORMLOOPHEAD
 
@@ -141,7 +141,6 @@ goto END
 
 :FAILED
 echo MSVC integration install failed.
-pause
 goto END
 
 :END

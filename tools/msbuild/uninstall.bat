@@ -66,6 +66,19 @@ IF EXIST %D%\LLVM-vs2014_xp del %D%\LLVM-vs2014_xp\toolset.props
 IF EXIST %D%\LLVM-vs2014_xp del %D%\LLVM-vs2014_xp\toolset.targets
 IF EXIST %D%\LLVM-vs2014_xp rmdir %D%\LLVM-vs2014_xp
 
+REM MSBuild is now under the Visual Studio installation.  VSWhere is a new executable placed in a known
+REM location that can be used to find the VS installation, starting with VS 2017 SP1
+IF EXIST "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -version 15 -property installationPath`) DO (
+    SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
+  )
+)
+IF EXIST %D%\LLVM-vs2017 del %D%\LLVM-vs2017\toolset.props
+IF EXIST %D%\LLVM-vs2017 del %D%\LLVM-vs2017\toolset.targets
+IF EXIST %D%\LLVM-vs2017 rmdir %D%\LLVM-vs2017
+IF EXIST %D%\LLVM-vs2017_xp del %D%\LLVM-vs2017_xp\toolset.props
+IF EXIST %D%\LLVM-vs2017_xp del %D%\LLVM-vs2017_xp\toolset.targets
+IF EXIST %D%\LLVM-vs2017_xp rmdir %D%\LLVM-vs2017_xp
 
 GOTO LOOPHEAD
 
