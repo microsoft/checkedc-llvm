@@ -47,6 +47,12 @@ IF EXIST "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
     SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
   )
 )
+REM On 32-bit Windows OSes before Windows 10, vswhere will be installed under %ProgramFiles%
+IF EXIST "%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" (
+  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" -version 15 -property installationPath`) DO (
+    SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
+  )
+)
 if EXIST %D% GOTO FOUND_V150
 
 GOTO PLATFORMLOOPHEAD
