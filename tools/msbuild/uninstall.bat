@@ -69,14 +69,14 @@ IF EXIST %D%\LLVM-vs2014_xp rmdir %D%\LLVM-vs2014_xp
 REM MSBuild is now under the Visual Studio installation.  VSWhere is a new executable placed in a known
 REM location that can be used to find the VS installation, starting with VS 2017 SP1
 IF EXIST "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
-  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -version 15 -property installationPath`) DO (
+  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -prerelease -version 15 -property installationPath`) DO (
     SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
   )
 )
 
 REM On 32-bit Windows OSes before Windows 10, vswhere will be installed under %ProgramFiles%
 IF EXIST "%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" (
-  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -version 15 -property installationPath`) DO (
+  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -prerelease -version 15 -property installationPath`) DO (
     SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
   )
 )
