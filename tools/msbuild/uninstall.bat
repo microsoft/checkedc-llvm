@@ -13,58 +13,58 @@ IF %PLATFORM% == None SET PLATFORM=Win32
 
 
 SET D="%ProgramFiles%\MSBuild\Microsoft.Cpp\v4.0\Platforms\%PLATFORM%\PlatformToolsets"
-IF EXIST %D%\LLVM-vs2010 del %D%\LLVM-vs2010\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.props
-IF EXIST %D%\LLVM-vs2010 del %D%\LLVM-vs2010\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.targets
-IF EXIST %D%\LLVM-vs2010 rmdir %D%\LLVM-vs2010
+IF EXIST %D%\CheckedC-LLVM-vs2010 del %D%\CheckedC-LLVM-vs2010\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.props
+IF EXIST %D%\CheckedC-LLVM-vs2010 del %D%\LLVM-vs2010\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.targets
+IF EXIST %D%\CheckedC-LLVM-vs2010 rmdir %D%\CheckedC-LLVM-vs2010
 SET D="%ProgramFiles(x86)%\MSBuild\Microsoft.Cpp\v4.0\Platforms\%PLATFORM%\PlatformToolsets"
-IF EXIST %D%\LLVM-vs2010 del %D%\LLVM-vs2010\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.props
-IF EXIST %D%\LLVM-vs2010 del %D%\LLVM-vs2010\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.targets
-IF EXIST %D%\LLVM-vs2010 rmdir %D%\LLVM-vs2010
+IF EXIST %D%\CheckedC-LLVM-vs2010 del %D%\CheckedC-LLVM-vs2010\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.props
+IF EXIST %D%\CheckedC-LLVM-vs2010 del %D%\CheckedC-LLVM-vs2010\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.targets
+IF EXIST %D%\CheckedC-LLVM-vs2010 rmdir %D%\CheckedC-LLVM-vs2010
 
 SET D="%ProgramFiles%\MSBuild\Microsoft.Cpp\v4.0\V110\Platforms\%PLATFORM%\PlatformToolsets"
-IF EXIST %D%\LLVM-vs2012 del %D%\LLVM-vs2012\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.props
-IF EXIST %D%\LLVM-vs2012 del %D%\LLVM-vs2012\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.targets
-IF EXIST %D%\LLVM-vs2012 rmdir %D%\LLVM-vs2012
-IF EXIST %D%\LLVM-vs2012_xp del %D%\LLVM-vs2012_xp\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.props
-IF EXIST %D%\LLVM-vs2012_xp del %D%\LLVM-vs2012_xp\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.targets
-IF EXIST %D%\LLVM-vs2012_xp rmdir %D%\LLVM-vs2012_xp
+IF EXIST %D%\CheckedC-LLVM-vs2012 del %D%\CheckedC-LLVM-vs2012\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.props
+IF EXIST %D%\CheckedC-LLVM-vs2012 del %D%\CheckedC-LLVM-vs2012\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.targets
+IF EXIST %D%\CheckedC-LLVM-vs2012 rmdir %D%\CheckedC-LLVM-vs2012
+IF EXIST %D%\CheckedC-LLVM-vs2012_xp del %D%\CheckedC-LLVM-vs2012_xp\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.props
+IF EXIST %D%\CheckedC-LLVM-vs2012_xp del %D%\CheckedC-LLVM-vs2012_xp\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.targets
+IF EXIST %D%\CheckedC-LLVM-vs2012_xp rmdir %D%\CheckedC-LLVM-vs2012_xp
 SET D="%ProgramFiles(x86)%\MSBuild\Microsoft.Cpp\v4.0\V110\Platforms\%PLATFORM%\PlatformToolsets"
-IF EXIST %D%\LLVM-vs2012 del %D%\LLVM-vs2012\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.props
-IF EXIST %D%\LLVM-vs2012 del %D%\LLVM-vs2012\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.targets
-IF EXIST %D%\LLVM-vs2012 rmdir %D%\LLVM-vs2012
-IF EXIST %D%\LLVM-vs2012_xp del %D%\LLVM-vs2012_xp\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.props
-IF EXIST %D%\LLVM-vs2012_xp del %D%\LLVM-vs2012_xp\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.targets
-IF EXIST %D%\LLVM-vs2012_xp rmdir %D%\LLVM-vs2012_xp
+IF EXIST %D%\CheckedC-LLVM-vs2012 del %D%\CheckedC-LLVM-vs2012\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.props
+IF EXIST %D%\CheckedC-LLVM-vs2012 del %D%\CheckedC-LLVM-vs2012\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.targets
+IF EXIST %D%\CheckedC-LLVM-vs2012 rmdir %D%\CheckedC-LLVM-vs2012
+IF EXIST %D%\CheckedC-LLVM-vs2012_xp del %D%\CheckedC-LLVM-vs2012_xp\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.props
+IF EXIST %D%\CheckedC-LLVM-vs2012_xp del %D%\CheckedC-LLVM-vs2012_xp\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.targets
+IF EXIST %D%\CheckedC-LLVM-vs2012_xp rmdir %D%\CheckedC-LLVM-vs2012_xp
 
 SET D="%ProgramFiles%\MSBuild\Microsoft.Cpp\v4.0\V120\Platforms\%PLATFORM%\PlatformToolsets"
-IF EXIST %D%\LLVM-vs2013 del %D%\LLVM-vs2013\toolset.props
-IF EXIST %D%\LLVM-vs2013 del %D%\LLVM-vs2013\toolset.targets
-IF EXIST %D%\LLVM-vs2013 rmdir %D%\LLVM-vs2013
-IF EXIST %D%\LLVM-vs2013_xp del %D%\LLVM-vs2013_xp\toolset.props
-IF EXIST %D%\LLVM-vs2013_xp del %D%\LLVM-vs2013_xp\toolset.targets
-IF EXIST %D%\LLVM-vs2013_xp rmdir %D%\LLVM-vs2013_xp
+IF EXIST %D%\CheckedC-LLVM-vs2013 del %D%\CheckedC-LLVM-vs2013\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2013 del %D%\CheckedC-LLVM-vs2013\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2013 rmdir %D%\CheckedC-LLVM-vs2013
+IF EXIST %D%\CheckedC-LLVM-vs2013_xp del %D%\CheckedC-LLVM-vs2013_xp\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2013_xp del %D%\CheckedC-LLVM-vs2013_xp\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2013_xp rmdir %D%\CheckedC-LLVM-vs2013_xp
 SET D="%ProgramFiles(x86)%\MSBuild\Microsoft.Cpp\v4.0\V120\Platforms\%PLATFORM%\PlatformToolsets"
-IF EXIST %D%\LLVM-vs2013 del %D%\LLVM-vs2013\toolset.props
-IF EXIST %D%\LLVM-vs2013 del %D%\LLVM-vs2013\toolset.targets
-IF EXIST %D%\LLVM-vs2013 rmdir %D%\LLVM-vs2013
-IF EXIST %D%\LLVM-vs2013_xp del %D%\LLVM-vs2013_xp\toolset.props
-IF EXIST %D%\LLVM-vs2013_xp del %D%\LLVM-vs2013_xp\toolset.targets
-IF EXIST %D%\LLVM-vs2013_xp rmdir %D%\LLVM-vs2013_xp
+IF EXIST %D%\CheckedC-LLVM-vs2013 del %D%\CheckedC-LLVM-vs2013\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2013 del %D%\CheckedC-LLVM-vs2013\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2013 rmdir %D%\CheckedC-LLVM-vs2013
+IF EXIST %D%\CheckedC-LLVM-vs2013_xp del %D%\CheckedC-LLVM-vs2013_xp\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2013_xp del %D%\CheckedC-LLVM-vs2013_xp\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2013_xp rmdir %D%\CheckedC-LLVM-vs2013_xp
 
 SET D="%ProgramFiles%\MSBuild\Microsoft.Cpp\v4.0\V140\Platforms\%PLATFORM%\PlatformToolsets"
-IF EXIST %D%\LLVM-vs2014 del %D%\LLVM-vs2014\toolset.props
-IF EXIST %D%\LLVM-vs2014 del %D%\LLVM-vs2014\toolset.targets
-IF EXIST %D%\LLVM-vs2014 rmdir %D%\LLVM-vs2014
-IF EXIST %D%\LLVM-vs2014_xp del %D%\LLVM-vs2014_xp\toolset.props
-IF EXIST %D%\LLVM-vs2014_xp del %D%\LLVM-vs2014_xp\toolset.targets
-IF EXIST %D%\LLVM-vs2014_xp rmdir %D%\LLVM-vs2014_xp
+IF EXIST %D%\CheckedC-LLVM-vs2014 del %D%\CheckedC-LLVM-vs2014\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2014 del %D%\CheckedC-LLVM-vs2014\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2014 rmdir %D%\CheckedC-LLVM-vs2014
+IF EXIST %D%\CheckedC-LLVM-vs2014_xp del %D%\CheckedC-LLVM-vs2014_xp\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2014_xp del %D%\CheckedC-LLVM-vs2014_xp\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2014_xp rmdir %D%\CheckedC-LLVM-vs2014_xp
 SET D="%ProgramFiles(x86)%\MSBuild\Microsoft.Cpp\v4.0\V140\Platforms\%PLATFORM%\PlatformToolsets"
-IF EXIST %D%\LLVM-vs2014 del %D%\LLVM-vs2014\toolset.props
-IF EXIST %D%\LLVM-vs2014 del %D%\LLVM-vs2014\toolset.targets
-IF EXIST %D%\LLVM-vs2014 rmdir %D%\LLVM-vs2014
-IF EXIST %D%\LLVM-vs2014_xp del %D%\LLVM-vs2014_xp\toolset.props
-IF EXIST %D%\LLVM-vs2014_xp del %D%\LLVM-vs2014_xp\toolset.targets
-IF EXIST %D%\LLVM-vs2014_xp rmdir %D%\LLVM-vs2014_xp
+IF EXIST %D%\CheckedC-LLVM-vs2014 del %D%\CheckedC-LLVM-vs2014\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2014 del %D%\CheckedC-LLVM-vs2014\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2014 rmdir %D%\CheckedC-LLVM-vs2014
+IF EXIST %D%\CheckedC-LLVM-vs2014_xp del %D%\CheckedC-LLVM-vs2014_xp\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2014_xp del %D%\CheckedC-LLVM-vs2014_xp\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2014_xp rmdir %D%\CheckedC-LLVM-vs2014_xp
 
 REM MSBuild is now under the Visual Studio installation.  VSWhere is a new executable placed in a known
 REM location that can be used to find the VS installation, starting with VS 2017 SP1
@@ -80,12 +80,12 @@ IF EXIST "%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" (
     SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
   )
 )
-IF EXIST %D%\LLVM-vs2017 del %D%\LLVM-vs2017\toolset.props
-IF EXIST %D%\LLVM-vs2017 del %D%\LLVM-vs2017\toolset.targets
-IF EXIST %D%\LLVM-vs2017 rmdir %D%\LLVM-vs2017
-IF EXIST %D%\LLVM-vs2017_xp del %D%\LLVM-vs2017_xp\toolset.props
-IF EXIST %D%\LLVM-vs2017_xp del %D%\LLVM-vs2017_xp\toolset.targets
-IF EXIST %D%\LLVM-vs2017_xp rmdir %D%\LLVM-vs2017_xp
+IF EXIST %D%\CheckedC-LLVM-vs2017 del %D%\CheckedC-LLVM-vs2017\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2017 del %D%\CheckedC-LLVM-vs2017\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2017 rmdir %D%\CheckedC-LLVM-vs2017
+IF EXIST %D%\CheckedC-LLVM-vs2017_xp del %D%\CheckedC-LLVM-vs2017_xp\toolset.props
+IF EXIST %D%\CheckedC-LLVM-vs2017_xp del %D%\CheckedC-LLVM-vs2017_xp\toolset.targets
+IF EXIST %D%\CheckedC-LLVM-vs2017_xp rmdir %D%\CheckedC-LLVM-vs2017_xp
 
 GOTO LOOPHEAD
 
