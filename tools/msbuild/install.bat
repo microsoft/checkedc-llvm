@@ -43,13 +43,13 @@ IF EXIST %D% GOTO FOUND_V140
 REM MSBuild is now under the Visual Studio installation.  VSWhere is a new executable placed in a known
 REM location that can be used to find the VS installation, starting with VS 2017 SP1
 IF EXIST "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
-  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -version 15 -property installationPath`) DO (
+  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -prerelease -latest -version 15 -property installationPath`) DO (
     SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
   )
 )
 REM On 32-bit Windows OSes before Windows 10, vswhere will be installed under %ProgramFiles%
 IF EXIST "%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" (
-  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -version 15 -property installationPath`) DO (
+  FOR /f "usebackq delims=" %%i IN (`"%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" -prerelease -latest -version 15 -property installationPath`) DO (
     SET D="%%i\Common7\IDE\VC\VCTargets\Platforms\%PLATFORM%\PlatformToolsets"
   )
 )
@@ -65,79 +65,79 @@ goto FAILED
 
 :FOUND_V100
 REM Routine for installing v100 toolchain.
-IF NOT EXIST %D%\LLVM-vs2010 mkdir %D%\LLVM-vs2010
+IF NOT EXIST %D%\CheckedC-LLVM-vs2010 mkdir %D%\CheckedC-LLVM-vs2010
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.props %D%\LLVM-vs2010
+copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.props %D%\CheckedC-LLVM-vs2010
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.targets %D%\LLVM-vs2010
+copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2010.targets %D%\CheckedC-LLVM-vs2010
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
 set SUCCESS=1
 GOTO TRY_V110
 
 :FOUND_V110
 REM Routine for installing v110 toolchain.
-IF NOT EXIST %D%\LLVM-vs2012 mkdir %D%\LLVM-vs2012
+IF NOT EXIST %D%\CheckedC-LLVM-vs2012 mkdir %D%\CheckedC-LLVM-vs2012
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.props %D%\LLVM-vs2012
+copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.props %D%\CheckedC-LLVM-vs2012
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.targets %D%\LLVM-vs2012
+copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012.targets %D%\CheckedC-LLVM-vs2012
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-IF NOT EXIST %D%\LLVM-vs2012_xp mkdir %D%\LLVM-vs2012_xp
+IF NOT EXIST %D%\CheckedC-LLVM-vs2012_xp mkdir %D%\CheckedC-LLVM-vs2012_xp
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.props %D%\LLVM-vs2012_xp
+copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.props %D%\CheckedC-LLVM-vs2012_xp
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.targets %D%\LLVM-vs2012_xp
+copy %PLATFORM%\Microsoft.Cpp.%PLATFORM%.LLVM-vs2012_xp.targets %D%\CheckedC-LLVM-vs2012_xp
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
 set SUCCESS=1
 GOTO TRY_V120
 
 :FOUND_V120
 REM Routine for installing v120 toolchain.
-IF NOT EXIST %D%\LLVM-vs2013 mkdir %D%\LLVM-vs2013
+IF NOT EXIST %D%\CheckedC-LLVM-vs2013 mkdir %D%\CheckedC-LLVM-vs2013
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2013.props %D%\LLVM-vs2013\toolset.props
+copy %PLATFORM%\toolset-vs2013.props %D%\CheckedC-LLVM-vs2013\toolset.props
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2013.targets %D%\LLVM-vs2013\toolset.targets
+copy %PLATFORM%\toolset-vs2013.targets %D%\CheckedC-LLVM-vs2013\toolset.targets
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-IF NOT EXIST %D%\LLVM-vs2013_xp mkdir %D%\LLVM-vs2013_xp
+IF NOT EXIST %D%\CheckedC-LLVM-vs2013_xp mkdir %D%\CheckedC-LLVM-vs2013_xp
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2013_xp.props %D%\LLVM-vs2013_xp\toolset.props
+copy %PLATFORM%\toolset-vs2013_xp.props %D%\CheckedC-LLVM-vs2013_xp\toolset.props
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2013_xp.targets %D%\LLVM-vs2013_xp\toolset.targets
+copy %PLATFORM%\toolset-vs2013_xp.targets %D%\CheckedC-LLVM-vs2013_xp\toolset.targets
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
 set SUCCESS=1
 GOTO TRY_V140
 
 :FOUND_V140
 REM Routine for installing v140 toolchain.
-IF NOT EXIST %D%\LLVM-vs2014 mkdir %D%\LLVM-vs2014
+IF NOT EXIST %D%\CheckedC-LLVM-vs2014 mkdir %D%\CheckedC-LLVM-vs2014
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2014.props %D%\LLVM-vs2014\toolset.props
+copy %PLATFORM%\toolset-vs2014.props %D%\CheckedC-LLVM-vs2014\toolset.props
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2014.targets %D%\LLVM-vs2014\toolset.targets
+copy %PLATFORM%\toolset-vs2014.targets %D%\CheckedC-LLVM-vs2014\toolset.targets
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-IF NOT EXIST %D%\LLVM-vs2014_xp mkdir %D%\LLVM-vs2014_xp
+IF NOT EXIST %D%\CheckedC-LLVM-vs2014_xp mkdir %D%\CheckedC-LLVM-vs2014_xp
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2014_xp.props %D%\LLVM-vs2014_xp\toolset.props
+copy %PLATFORM%\toolset-vs2014_xp.props %D%\CheckedC-LLVM-vs2014_xp\toolset.props
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2014_xp.targets %D%\LLVM-vs2014_xp\toolset.targets
+copy %PLATFORM%\toolset-vs2014_xp.targets %D%\CheckedC-LLVM-vs2014_xp\toolset.targets
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
 set SUCCESS=1
 GOTO TRY_V150
 
 :FOUND_V150
 REM Routine for installing v140 toolchain.
-IF NOT EXIST %D%\LLVM-vs2017 mkdir %D%\LLVM-vs2017
+IF NOT EXIST %D%\CheckedC-LLVM-vs2017 mkdir %D%\CheckedC-LLVM-vs2017
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2017.props %D%\LLVM-vs2017\toolset.props
+copy %PLATFORM%\toolset-vs2017.props %D%\CheckedC-LLVM-vs2017\toolset.props
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2017.targets %D%\LLVM-vs2017\toolset.targets
+copy %PLATFORM%\toolset-vs2017.targets %D%\CheckedC-LLVM-vs2017\toolset.targets
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-IF NOT EXIST %D%\LLVM-vs2017_xp mkdir %D%\LLVM-vs2017_xp
+IF NOT EXIST %D%\CheckedC-LLVM-vs2017_xp mkdir %D%\CheckedC-LLVM-vs2017_xp
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2017_xp.props %D%\LLVM-vs2017_xp\toolset.props
+copy %PLATFORM%\toolset-vs2017_xp.props %D%\CheckedC-LLVM-vs2017_xp\toolset.props
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
-copy %PLATFORM%\toolset-vs2017_xp.targets %D%\LLVM-vs2017_xp\toolset.targets
+copy %PLATFORM%\toolset-vs2017_xp.targets %D%\CheckedC-LLVM-vs2017_xp\toolset.targets
 IF NOT %ERRORLEVEL% == 0 GOTO FAILED
 set SUCCESS=1
 
