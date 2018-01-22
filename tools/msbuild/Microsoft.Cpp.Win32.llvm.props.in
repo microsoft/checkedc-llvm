@@ -3,8 +3,8 @@
   <Import Project="$(VCTargetsPath)\Platforms\$(Platform)\PlatformToolsets\@VS_VERSION@\Toolset.props" Condition="Exists('$(VCTargetsPath)\Platforms\$(Platform)\PlatformToolsets\@VS_VERSION@\Toolset.props')"/>
 
   <PropertyGroup>
-    <LLVMInstallDir>$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\LLVM\@REG_KEY@)</LLVMInstallDir>
-    <LLVMInstallDir Condition="'$(LLVMInstallDir)' == ''">$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\LLVM\@REG_KEY@)</LLVMInstallDir>
+    <LLVMInstallDir>$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\@REG_KEY@)</LLVMInstallDir>
+    <LLVMInstallDir Condition="'$(LLVMInstallDir)' == ''">$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\@REG_KEY@)</LLVMInstallDir>
     <ExecutablePath>$(LLVMInstallDir)\msbuild-bin;$(ExecutablePath)</ExecutablePath>
     <LibraryPath>$(LLVMInstallDir)\lib\clang\@LIB_PATH_VERSION@\lib\windows;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
