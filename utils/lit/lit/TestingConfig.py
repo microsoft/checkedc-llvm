@@ -37,6 +37,7 @@ class TestingConfig:
             environment.update({
                     'INCLUDE' : os.environ.get('INCLUDE',''),
                     'PATHEXT' : os.environ.get('PATHEXT',''),
+                    'PROGRAMDATA' : os.environ.get('PROGRAMDATA',''),
                     'PYTHONUNBUFFERED' : '1',
                     'TEMP' : os.environ.get('TEMP',''),
                     'TMP' : os.environ.get('TMP',''),
