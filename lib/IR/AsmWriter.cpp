@@ -386,7 +386,10 @@ static void PrintCallingConv(unsigned cc, raw_ostream &Out) {
 void llvm::PrintEscapedString(StringRef Name, raw_ostream &Out) {
   for (unsigned i = 0, e = Name.size(); i != e; ++i) {
     unsigned char C = Name[i];
-    if (isprint(C) && C != '\\' && C != '"')
+    // Check for tab explicitly to handle buggy behavior
+    // in Windows 10 ucrtbase.dll, which regards tab as a printable
+    // character in version 10.0.17134.165.
+    if (isprint(C) && C != '\\' && C != '"' && C != '\t')
       Out << C;
     else
       Out << '\\' << hexdigit(C >> 4) << hexdigit(C & 0x0F);
