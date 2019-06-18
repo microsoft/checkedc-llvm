@@ -170,6 +170,9 @@ def calculate_arch_features(arch_string):
     features = []
     for arch in arch_string.split():
         features.append(arch.lower() + '-registered-target')
+
+    for arch in config.checkedc_lit_targets.split(';'):
+        features.append('CHECKEDC_LIT_' + arch)
     return features
 
 
@@ -198,3 +201,8 @@ if macOSSDKVersion is not None:
 if os.path.exists('/etc/gentoo-release'):
     config.available_features.add('gentoo')
 
+config.substitutions.append(
+    ('%checkedc_arm_sysroot', config.checkedc_arm_sysroot))
+
+config.substitutions.append(
+    ('%checkedc_arm_rununder', config.checkedc_arm_rununder))
