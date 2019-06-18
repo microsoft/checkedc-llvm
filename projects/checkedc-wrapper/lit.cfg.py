@@ -172,7 +172,7 @@ def calculate_arch_features(arch_string):
         features.append(arch.lower() + '-registered-target')
 
     for arch in config.checkedc_lit_targets.split(';'):
-        features.append('CHECKEDC_LIT_' + arch)
+        features.append(config.name + '-lit-' + arch.lower())
     return features
 
 
@@ -203,6 +203,5 @@ if os.path.exists('/etc/gentoo-release'):
 
 config.substitutions.append(
     ('%checkedc_arm_sysroot', config.checkedc_arm_sysroot))
-
 config.substitutions.append(
     ('%checkedc_arm_rununder', config.checkedc_arm_rununder))
