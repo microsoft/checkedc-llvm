@@ -477,6 +477,11 @@ public:
   /// address space.
   static PointerType *get(Type *ElementType, unsigned AddressSpace);
 
+  /// This constructs a _MMSafe_ptr pointer to a struct object in a numbered 
+  /// address space.
+  static StructType *getMMSafePtr(Type *ElementType, LLVMContext &Context,
+                                  unsigned AddressSpace);
+
   /// This constructs a pointer to an object of the specified type in the
   /// generic address space (address space zero).
   static PointerType *getUnqual(Type *ElementType) {

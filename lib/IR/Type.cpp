@@ -642,6 +642,47 @@ PointerType *PointerType::get(Type *EltTy, unsigned AddressSpace) {
   return Entry;
 }
 
+//
+// Checked C
+//
+// Method: PointerType::getMMSafePtr()
+//
+// This method builds a _MMSafe_ptr pointer. Essentially we use a struct
+// to contain both the real pointer to the struct object and the ID which 
+// is a unsigned long type.
+//
+// \param EltTy - the typ of the pointee.
+// \param Context - the LLVMContext.
+// \param AddressSpace - target address space
+//
+// \return a struct that contains a pointer to the pointee and an ID of
+//         64-bit integer.
+//
+StructType *PointerType::getMMSafePtr(Type *EltTy, LLVMContext &Context, 
+                                      unsigned AddressSpace) {
+  assert(EltTy && "Can't get a pointer to <null> type!");
+  assert(isValidElementType(EltTy) && "Invalid type for pointer element!");
+
+  LLVMContextImpl *CImpl = EltTy->getContext().pImpl;
+
+  // Since AddressSpace #0 is the common case, we special case it.
+  PointerType *&PointeeEntry = AddressSpace == 0 ? CImpl->PointerTypes[EltTy]
+     : CImpl->ASPointerTypes[std::make_pair(EltTy, AddressSpace)];
+
+  // Create a pointer to the pointee.
+  if (!PointeeEntry)
+    PointeeEntry = new (CImpl->TypeAllocator) PointerType(EltTy, AddressSpace);
+  PointeeEntry->dump();
+
+  // Create an ID entry. 
+  // Currently we hardcode the ID to be a 64-bit integer. This may affect
+  // program's performance on a 32-bit platform. Maybe we should change it
+  // to a "unsigned long" type.
+  IntegerType *IDEntry = Type::getInt64Ty(Context);
+
+  return StructType::get(PointeeEntry, IDEntry);
+}
+
 PointerType::PointerType(Type *E, unsigned AddrSpace)
   : Type(E->getContext(), PointerTyID), PointeeTy(E) {
   ContainedTys = &PointeeTy;
