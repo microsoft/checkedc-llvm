@@ -170,9 +170,6 @@ def calculate_arch_features(arch_string):
     features = []
     for arch in arch_string.split():
         features.append(arch.lower() + '-registered-target')
-
-    for arch in config.checkedc_lit_targets.split(';'):
-        features.append(config.name + '-lit-' + arch.lower())
     return features
 
 
@@ -205,3 +202,7 @@ config.substitutions.append(
     ('%checkedc_arm_sysroot', config.checkedc_arm_sysroot))
 config.substitutions.append(
     ('%checkedc_arm_rununder', config.checkedc_arm_rununder))
+config.substitutions.append(
+    ('%checkedc_target_flags', config.checkedc_target_flags))
+config.substitutions.append(
+    ('%checkedc_rununder', config.checkedc_rununder))
