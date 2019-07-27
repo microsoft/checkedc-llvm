@@ -477,7 +477,6 @@ if (MSVC_IDE OR XCODE)
 endif()
 set(LLVM_LIT_ARGS "${LIT_ARGS_DEFAULT}" CACHE STRING "Default options for lit")
 
-set(CHECKEDC_LIT_TARGETS "" CACHE STRING "Targets to enable for lit")
 set(CHECKEDC_ARM_SYSROOT "" CACHE STRING "Sysroot for building ARM tests")
 set(CHECKEDC_ARM_RUNUNDER "" CACHE STRING "Device to run ARM tests")
 
