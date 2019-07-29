@@ -49,7 +49,7 @@ if checkedc_target == "ARM":
   if not config.checkedc_arm_sysroot:
     lit_config.fatal("ARM sysroot not set. Set it using llvm configure option CHECKEDC_ARM_SYSROOT")
   if not config.checkedc_arm_rununder:
-    lit_config.fatal("ARM rununder not set. Set it using llvm configure CHECKEDC_ARM_RUNUNDER")
+    lit_config.fatal("ARM run device not set. Set it using llvm configure option CHECKEDC_ARM_RUNUNDER")
 
   config.checkedc_target_flags = \
     "-target arm-linux-gnueabihf -march=armv7-a -static \
