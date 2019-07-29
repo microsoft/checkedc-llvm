@@ -40,7 +40,11 @@ config.checkedc_arm_rununder = "@CHECKEDC_ARM_RUNUNDER@"
 config.checkedc_target_flags = ""
 config.checkedc_rununder = ""
 
+# Various targets can be enabled in lit by setting the lit flag
+# -DCHECKEDC_TARGET=<target>.
 checkedc_target = lit_config.params.get("CHECKEDC_TARGET")
+
+# Set the target-specific flags and run device for ARM.
 if checkedc_target == "ARM":
   config.checkedc_target_flags = \
     "-target arm-linux-gnueabihf -march=armv7-a -static \
