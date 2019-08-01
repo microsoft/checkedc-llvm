@@ -465,9 +465,12 @@ unsigned Type::getVectorNumElements() const {
 
 /// Class to represent pointers.
 class PointerType : public Type {
-  explicit PointerType(Type *ElType, unsigned AddrSpace);
+  explicit PointerType(Type *ElType, unsigned AddrSpace,
+                       bool isMMSafePtr = false);
 
   Type *PointeeTy;
+
+  bool isMMSafePtr;
 
 public:
   PointerType(const PointerType &) = delete;
@@ -489,6 +492,11 @@ public:
   }
 
   Type *getElementType() const { return PointeeTy; }
+
+  /// Return true if this is a _MMSafe_ptr<T> pointer.
+  bool isMMSafePointerTy() const {
+    return isMMSafePtr;
+  }
 
   /// Return true if the specified type is valid as a element type.
   static bool isValidElementType(Type *ElemTy);

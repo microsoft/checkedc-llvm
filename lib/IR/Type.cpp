@@ -670,10 +670,12 @@ StructType *PointerType::getMMSafePtr(Type *EltTy, LLVMContext &Context,
      : CImpl->ASPointerTypes[std::make_pair(EltTy, AddressSpace)];
 
   // Create a pointer to the pointee.
-  if (!PointeeEntry)
+  if (!PointeeEntry) {
     PointeeEntry = new (CImpl->TypeAllocator) PointerType(EltTy, AddressSpace);
-  PointeeEntry->dump();
+  }
 
+  PointeeEntry->isMMSafePtr = true;
+ 
   // Create an ID entry. 
   // Currently we hardcode the ID to be a 64-bit integer. This may affect
   // program's performance on a 32-bit platform. Maybe we should change it
@@ -683,8 +685,8 @@ StructType *PointerType::getMMSafePtr(Type *EltTy, LLVMContext &Context,
   return StructType::get(PointeeEntry, IDEntry);
 }
 
-PointerType::PointerType(Type *E, unsigned AddrSpace)
-  : Type(E->getContext(), PointerTyID), PointeeTy(E) {
+PointerType::PointerType(Type *E, unsigned AddrSpace, bool isMMSafePtrTy)
+  : Type(E->getContext(), PointerTyID), PointeeTy(E), isMMSafePtr(isMMSafePtrTy) {
   ContainedTys = &PointeeTy;
   NumContainedTys = 1;
   setSubclassData(AddrSpace);
