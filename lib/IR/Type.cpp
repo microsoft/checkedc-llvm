@@ -112,6 +112,11 @@ bool Type::isEmptyTy() const {
   return false;
 }
 
+/// Testing if this represents a _MMSafe_ptr type.
+bool Type::isMMSafePointerTy() const {
+    return isStructTy() && dyn_cast<StructType>(this)->isMMSafePointerRep();
+}
+
 unsigned Type::getPrimitiveSizeInBits() const {
   switch (getTypeID()) {
   case Type::HalfTyID: return 16;
@@ -681,8 +686,15 @@ StructType *PointerType::getMMSafePtr(Type *EltTy, LLVMContext &Context,
   // program's performance on a 32-bit platform. Maybe we should change it
   // to a "unsigned long" type.
   IntegerType *IDEntry = Type::getInt64Ty(Context);
+  
+  StructType *MMSafePtrStruct = StructType::get(PointeeEntry, IDEntry);
+  // Since StructType::get() is the primary way to create a literal struct
+  // and it is a static method, we cannot pass a boolean to it to indicate
+  // if this struct represents a _MMSafe_ptr. So we set the isMMSafePtr
+  // field separately here.
+  MMSafePtrStruct->isMMSafePtr = true;
 
-  return StructType::get(PointeeEntry, IDEntry);
+  return MMSafePtrStruct;
 }
 
 PointerType::PointerType(Type *E, unsigned AddrSpace, bool isMMSafePtrTy)

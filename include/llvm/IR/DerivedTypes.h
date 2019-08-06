@@ -219,6 +219,9 @@ public:
   StructType(const StructType &) = delete;
   StructType &operator=(const StructType &) = delete;
 
+  // Whether this struct is an instance  of a _MMSafe_ptr.
+  bool isMMSafePtr;
+
   /// This creates an identified struct.
   static StructType *create(LLVMContext &Context, StringRef Name);
   static StructType *create(LLVMContext &Context);
@@ -273,6 +276,9 @@ public:
 
   /// Return true if this is a named struct that has a non-empty name.
   bool hasName() const { return SymbolTableEntry != nullptr; }
+
+  /// Return true if this represents a _MMSafe_ptr<T>.
+  bool isMMSafePointerRep() const { return isMMSafePtr; }
 
   /// Return the name for this struct type if it has an identity.
   /// This may return an empty string for an unnamed struct type.  Do not call
