@@ -381,6 +381,9 @@ public:
     return ContainedTys[0];
   }
 
+  /// Return the real pointer inside a MMSafe_ptr.
+  Type *getInnerPtrFromMMSafePtr() const;
+
   /// Get the address space of this pointer or pointer vector type.
   inline unsigned getPointerAddressSpace() const;
 

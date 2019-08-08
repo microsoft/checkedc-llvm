@@ -114,7 +114,13 @@ bool Type::isEmptyTy() const {
 
 /// Testing if this represents a _MMSafe_ptr type.
 bool Type::isMMSafePointerTy() const {
-    return isStructTy() && dyn_cast<StructType>(this)->isMMSafePointerRep();
+    return isStructTy() && cast<StructType>(this)->isMMSafePointerRep();
+}
+
+/// Return the real pointer inside a MMSafe_ptr.
+Type *Type::getInnerPtrFromMMSafePtr() const {
+  assert(isMMSafePointerTy() && "This type is not a MMSafe_ptr");
+  return cast<StructType>(this)->getInnerPtrFromMMSafePtrStruct();
 }
 
 unsigned Type::getPrimitiveSizeInBits() const {

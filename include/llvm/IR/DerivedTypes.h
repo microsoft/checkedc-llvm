@@ -280,6 +280,13 @@ public:
   /// Return true if this represents a _MMSafe_ptr<T>.
   bool isMMSafePointerRep() const { return isMMSafePtr; }
 
+  /// Return the real pointer inside the struct representation of a _MMSafe_ptr.
+  PointerType *getInnerPtrFromMMSafePtrStruct() const {
+    assert(isMMSafePointerRep() &&
+        "This struct does not represent a MMSafe_ptr");
+    return cast<PointerType>(getElementType(0));
+  }
+
   /// Return the name for this struct type if it has an identity.
   /// This may return an empty string for an unnamed struct type.  Do not call
   /// this on an literal type.
