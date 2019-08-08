@@ -118,7 +118,7 @@ bool Type::isMMSafePointerTy() const {
 }
 
 /// Return the real pointer inside a MMSafe_ptr.
-Type *Type::getInnerPtrFromMMSafePtr() const {
+PointerType *Type::getInnerPtrFromMMSafePtr() const {
   assert(isMMSafePointerTy() && "This type is not a MMSafe_ptr");
   return cast<StructType>(this)->getInnerPtrFromMMSafePtrStruct();
 }
