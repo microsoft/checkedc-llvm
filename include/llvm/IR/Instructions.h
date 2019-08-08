@@ -1189,13 +1189,18 @@ public:
 /// Represent an integer comparison operator.
 class ICmpInst: public CmpInst {
   void AssertOK() {
-    assert(isIntPredicate() &&
-           "Invalid ICmp predicate value");
-    assert(getOperand(0)->getType() == getOperand(1)->getType() &&
+    Type *LHS = getOperand(0)->getType();
+    Type *RHS = getOperand(1)->getType();
+    if (LHS->isMMSafePointerTy())
+      LHS = dyn_cast<StructType>(LHS)->getElementType(0);
+    if (RHS->isMMSafePointerTy())
+      RHS = dyn_cast<StructType>(LHS)->getElementType(0);
+
+    assert(isIntPredicate() && "Invalid ICmp predicate value");
+    assert(LHS == RHS &&
           "Both operands to ICmp instruction are not of the same type!");
     // Check that the operands are the right type
-    assert((getOperand(0)->getType()->isIntOrIntVectorTy() ||
-            getOperand(0)->getType()->isPtrOrPtrVectorTy()) &&
+    assert((LHS->isIntOrIntVectorTy() || LHS->isPtrOrPtrVectorTy()) &&
            "Invalid operand types for ICmp instruction");
   }
 
