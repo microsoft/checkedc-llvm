@@ -114,7 +114,7 @@ bool Type::isEmptyTy() const {
 
 /// Testing if this represents a _MMSafe_ptr type.
 bool Type::isMMSafePointerTy() const {
-    return isStructTy() && cast<StructType>(this)->isMMSafePointerRep();
+  return isStructTy() && cast<StructType>(this)->isMMSafePointerRep();
 }
 
 /// Return the real pointer inside a MMSafe_ptr.
