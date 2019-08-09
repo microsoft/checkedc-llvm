@@ -1194,7 +1194,7 @@ class ICmpInst: public CmpInst {
     if (LHS->isMMSafePointerTy())
       LHS = dyn_cast<StructType>(LHS)->getElementType(0);
     if (RHS->isMMSafePointerTy())
-      RHS = dyn_cast<StructType>(LHS)->getElementType(0);
+      RHS = dyn_cast<StructType>(RHS)->getElementType(0);
 
     assert(isIntPredicate() && "Invalid ICmp predicate value");
     assert(LHS == RHS &&
