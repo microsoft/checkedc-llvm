@@ -219,6 +219,9 @@ public:
   StructType(const StructType &) = delete;
   StructType &operator=(const StructType &) = delete;
 
+  // Whether this struct is an instance  of a _MMSafe_ptr.
+  bool isMMSafePtr;
+
   /// This creates an identified struct.
   static StructType *create(LLVMContext &Context, StringRef Name);
   static StructType *create(LLVMContext &Context);
@@ -273,6 +276,16 @@ public:
 
   /// Return true if this is a named struct that has a non-empty name.
   bool hasName() const { return SymbolTableEntry != nullptr; }
+
+  /// Return true if this represents a _MMSafe_ptr<T>.
+  bool isMMSafePointerRep() const { return isMMSafePtr; }
+
+  /// Return the real pointer inside the struct representation of a _MMSafe_ptr.
+  PointerType *getInnerPtrFromMMSafePtrStruct() const {
+    assert(isMMSafePointerRep() &&
+        "This struct does not represent a MMSafe_ptr");
+    return cast<PointerType>(getElementType(0));
+  }
 
   /// Return the name for this struct type if it has an identity.
   /// This may return an empty string for an unnamed struct type.  Do not call
@@ -465,9 +478,12 @@ unsigned Type::getVectorNumElements() const {
 
 /// Class to represent pointers.
 class PointerType : public Type {
-  explicit PointerType(Type *ElType, unsigned AddrSpace);
+  explicit PointerType(Type *ElType, unsigned AddrSpace,
+                       bool isMMSafePtr = false);
 
   Type *PointeeTy;
+
+  bool isMMSafePtr;
 
 public:
   PointerType(const PointerType &) = delete;
@@ -477,6 +493,11 @@ public:
   /// address space.
   static PointerType *get(Type *ElementType, unsigned AddressSpace);
 
+  /// This constructs a _MMSafe_ptr pointer to a struct object in a numbered 
+  /// address space.
+  static StructType *getMMSafePtr(Type *ElementType, LLVMContext &Context,
+                                  unsigned AddressSpace);
+
   /// This constructs a pointer to an object of the specified type in the
   /// generic address space (address space zero).
   static PointerType *getUnqual(Type *ElementType) {
@@ -484,6 +505,11 @@ public:
   }
 
   Type *getElementType() const { return PointeeTy; }
+
+  /// Return true if this is a _MMSafe_ptr<T> pointer.
+  bool isMMSafePointerTy() const {
+    return isMMSafePtr;
+  }
 
   /// Return true if the specified type is valid as a element type.
   static bool isValidElementType(Type *ElemTy);

@@ -112,6 +112,17 @@ bool Type::isEmptyTy() const {
   return false;
 }
 
+/// Testing if this represents a _MMSafe_ptr type.
+bool Type::isMMSafePointerTy() const {
+  return isStructTy() && cast<StructType>(this)->isMMSafePointerRep();
+}
+
+/// Return the real pointer inside a MMSafe_ptr.
+PointerType *Type::getInnerPtrFromMMSafePtr() const {
+  assert(isMMSafePointerTy() && "This type is not a MMSafe_ptr");
+  return cast<StructType>(this)->getInnerPtrFromMMSafePtrStruct();
+}
+
 unsigned Type::getPrimitiveSizeInBits() const {
   switch (getTypeID()) {
   case Type::HalfTyID: return 16;
@@ -642,8 +653,58 @@ PointerType *PointerType::get(Type *EltTy, unsigned AddressSpace) {
   return Entry;
 }
 
-PointerType::PointerType(Type *E, unsigned AddrSpace)
-  : Type(E->getContext(), PointerTyID), PointeeTy(E) {
+//
+// Checked C
+//
+// Method: PointerType::getMMSafePtr()
+//
+// This method builds a _MMSafe_ptr pointer. Essentially we use a struct
+// to contain both the real pointer to the struct object and the ID which 
+// is a unsigned long type.
+//
+// \param EltTy - the typ of the pointee.
+// \param Context - the LLVMContext.
+// \param AddressSpace - target address space
+//
+// \return a struct that contains a pointer to the pointee and an ID of
+//         64-bit integer.
+//
+StructType *PointerType::getMMSafePtr(Type *EltTy, LLVMContext &Context, 
+                                      unsigned AddressSpace) {
+  assert(EltTy && "Can't get a pointer to <null> type!");
+  assert(isValidElementType(EltTy) && "Invalid type for pointer element!");
+
+  LLVMContextImpl *CImpl = EltTy->getContext().pImpl;
+
+  // Since AddressSpace #0 is the common case, we special case it.
+  PointerType *&PointeeEntry = AddressSpace == 0 ? CImpl->PointerTypes[EltTy]
+     : CImpl->ASPointerTypes[std::make_pair(EltTy, AddressSpace)];
+
+  // Create a pointer to the pointee.
+  if (!PointeeEntry) {
+    PointeeEntry = new (CImpl->TypeAllocator) PointerType(EltTy, AddressSpace);
+  }
+
+  PointeeEntry->isMMSafePtr = true;
+ 
+  // Create an ID entry. 
+  // Currently we hardcode the ID to be a 64-bit integer. This may affect
+  // program's performance on a 32-bit platform. Maybe we should change it
+  // to a "unsigned long" type.
+  IntegerType *IDEntry = Type::getInt64Ty(Context);
+  
+  StructType *MMSafePtrStruct = StructType::get(PointeeEntry, IDEntry);
+  // Since StructType::get() is the primary way to create a literal struct
+  // and it is a static method, we cannot pass a boolean to it to indicate
+  // if this struct represents a _MMSafe_ptr. So we set the isMMSafePtr
+  // field separately here.
+  MMSafePtrStruct->isMMSafePtr = true;
+
+  return MMSafePtrStruct;
+}
+
+PointerType::PointerType(Type *E, unsigned AddrSpace, bool isMMSafePtrTy)
+  : Type(E->getContext(), PointerTyID), PointeeTy(E), isMMSafePtr(isMMSafePtrTy) {
   ContainedTys = &PointeeTy;
   NumContainedTys = 1;
   setSubclassData(AddrSpace);
